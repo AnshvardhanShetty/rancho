@@ -1,0 +1,605 @@
+{
+  "baseline": {
+    "description": "Original simulator before the readability refactor",
+    "commit": "0833ddacfcae4e288bf3e472d876a81d517ec13d",
+    "source_sha256": "f29469dff523e552eea71061759c630ed9ea104490319ce8eb3dbb0b78208dcd"
+  },
+  "cases": [
+    {
+      "name": "mixed_seed17",
+      "requests": 24000,
+      "flash": 23,
+      "hbm": 11,
+      "budget": 80000,
+      "seed": 17,
+      "pattern": "mixed"
+    },
+    {
+      "name": "mixed_seed29",
+      "requests": 24000,
+      "flash": 23,
+      "hbm": 11,
+      "budget": 80000,
+      "seed": 29,
+      "pattern": "mixed"
+    },
+    {
+      "name": "mixed_seed43",
+      "requests": 24000,
+      "flash": 23,
+      "hbm": 11,
+      "budget": 80000,
+      "seed": 43,
+      "pattern": "mixed"
+    },
+    {
+      "name": "flash_only",
+      "requests": 2200,
+      "flash": 50,
+      "hbm": 0,
+      "budget": 15000,
+      "seed": 17,
+      "pattern": "mixed"
+    },
+    {
+      "name": "budget_denied",
+      "requests": 1100,
+      "flash": 3,
+      "hbm": 7,
+      "budget": 9,
+      "seed": 29,
+      "pattern": "mixed",
+      "debug": true
+    },
+    {
+      "name": "zero_budget",
+      "requests": 35,
+      "flash": 5,
+      "hbm": 4,
+      "budget": 0,
+      "seed": 43,
+      "pattern": "mixed",
+      "debug": true
+    },
+    {
+      "name": "duplicate_rewrites",
+      "requests": 2400,
+      "flash": 4,
+      "hbm": 3,
+      "budget": 18000,
+      "seed": 17,
+      "pattern": "rewrite",
+      "debug": true
+    },
+    {
+      "name": "equal_scores",
+      "requests": 24000,
+      "flash": 1,
+      "hbm": 1,
+      "budget": 18000,
+      "seed": 29,
+      "pattern": "tie"
+    },
+    {
+      "name": "empty_suffixes",
+      "requests": 1500,
+      "flash": 5,
+      "hbm": 4,
+      "budget": 100,
+      "seed": 43,
+      "pattern": "empty"
+    },
+    {
+      "name": "no_evaluation_requests",
+      "requests": 0,
+      "flash": 5,
+      "hbm": 4,
+      "budget": 100,
+      "seed": 17,
+      "pattern": "empty"
+    }
+  ],
+  "results": {
+    "mixed_seed17": {
+      "outputs": {
+        "decisions.bin": "54cc3aebe731ef5755249966fd42d1bbcbcaee436b8263f93c560302b8975673",
+        "diagnostic.json": "ef2b6cac18e91e094fb87c388c33cb5675b085a9ebd3fed2959eefdb8debc3f7",
+        "effective_mask.u8": "c100e4f3f9672023a9b61075cb9ae5e85127a898f5857dba07ce2e4311ca62af",
+        "final.hbf.i32": "64889945d1b161210777773548e328d9e5e916ce6005f31327bc3c4de16c74a0",
+        "final.hbm.i32": "0f5c90f4c20304e859a2167bf3e157bdcfdda3b3a6eb4901e34167b8a4cabfe5",
+        "final.json": "ba185a912eb88b638df97b520a0ecd3f56c164d52775af40ea8847e950057a1f",
+        "final_history.bin": "bb1c46039df35978cb6a777ac1fcfc90ba1ff6468521260d17912a0970829219",
+        "metrics.json": "6c47e54f3b1518daaf77e62a82cddb3942878e21193f1c194a7688fb9829fea6",
+        "requested_mask.u8": "c100e4f3f9672023a9b61075cb9ae5e85127a898f5857dba07ce2e4311ca62af",
+        "rows.i64": "049ec0374c5944811ab6bb826d9902e59736984fa34f0be8c82cebe6ab90af53",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 24000,
+        "positions": 459893,
+        "fetched_prefix_positions": 71688,
+        "hbf_hits": 3786,
+        "hbm_hits": 26,
+        "credited_hits": 3812,
+        "eligible_first_distinct": 30141,
+        "writes": 79893,
+        "requested_admissions": 4480,
+        "admitted": 4480,
+        "budget_rejections": 0,
+        "no_offer_requests": 4089
+      },
+      "diagnostic": {
+        "reason_counts": [
+          2182,
+          3710,
+          0,
+          0,
+          0,
+          13628,
+          755,
+          3725
+        ],
+        "offered_write_cost": 340279,
+        "threshold_rejected_write_cost": 260386,
+        "wallet_W": 79893,
+        "wallet_observations": 21818,
+        "remaining_budget": 107
+      }
+    },
+    "mixed_seed29": {
+      "outputs": {
+        "decisions.bin": "01fff4ab9d7e5c4393e1e5423de2affe3ef1f3b02901ec1d8cf882d1bc70bd92",
+        "diagnostic.json": "9ae72d8391402fb6380d1afbf5c67862d63e879c950d3a741e3f935fbc353d3d",
+        "effective_mask.u8": "18df5a299692761d944d7e5942c2a2956c0628133140a32bf6462ee694d323d4",
+        "final.hbf.i32": "64889945d1b161210777773548e328d9e5e916ce6005f31327bc3c4de16c74a0",
+        "final.hbm.i32": "0f5c90f4c20304e859a2167bf3e157bdcfdda3b3a6eb4901e34167b8a4cabfe5",
+        "final.json": "e36d61400b2451171bd068457c867c315f081d4eedb2368b2676c5b779c5e9e0",
+        "final_history.bin": "651fe179b89c3d624422a903848af8fa7a436ad544a1f1f665047885d528cae8",
+        "metrics.json": "a9de2e35568728b53b7766ea900693fb4a3e82a846725837835952aa61a9ed26",
+        "requested_mask.u8": "18df5a299692761d944d7e5942c2a2956c0628133140a32bf6462ee694d323d4",
+        "rows.i64": "42c1b88ac702c862dfcf71b8ce0b1dcec3d608b4578099456c7a4b380e2d630a",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 24000,
+        "positions": 459893,
+        "fetched_prefix_positions": 71704,
+        "hbf_hits": 3786,
+        "hbm_hits": 26,
+        "credited_hits": 3812,
+        "eligible_first_distinct": 30141,
+        "writes": 79905,
+        "requested_admissions": 4480,
+        "admitted": 4480,
+        "budget_rejections": 0,
+        "no_offer_requests": 4090
+      },
+      "diagnostic": {
+        "reason_counts": [
+          2182,
+          3711,
+          0,
+          0,
+          0,
+          13627,
+          755,
+          3725
+        ],
+        "offered_write_cost": 340248,
+        "threshold_rejected_write_cost": 260343,
+        "wallet_W": 79905,
+        "wallet_observations": 21818,
+        "remaining_budget": 95
+      }
+    },
+    "mixed_seed43": {
+      "outputs": {
+        "decisions.bin": "2dd28be4e1a040ba49b3ac48eea000fef83da3ecedf3d233ba243dff9f6a64f6",
+        "diagnostic.json": "de2300db16f90dfd7d01d8a35ca91e18009644c095b223292a538da260bf7467",
+        "effective_mask.u8": "11d65ff25552c1a1cf27957588faa13ffa580208f4c4186d01818faff5a7a78d",
+        "final.hbf.i32": "64889945d1b161210777773548e328d9e5e916ce6005f31327bc3c4de16c74a0",
+        "final.hbm.i32": "0f5c90f4c20304e859a2167bf3e157bdcfdda3b3a6eb4901e34167b8a4cabfe5",
+        "final.json": "5a941304c7ccef23f674a5aa130195f88e28d0e69c47741a69e0234ad12c00c8",
+        "final_history.bin": "52c352f6368a4fd919e8459dbbb3e20e1375c80709e66f8caab80aaa411e56df",
+        "metrics.json": "642080a2a78461fc0fbdd5c4f93f944f7f2b2c167ccc48ec250b30b8426ca4ca",
+        "requested_mask.u8": "11d65ff25552c1a1cf27957588faa13ffa580208f4c4186d01818faff5a7a78d",
+        "rows.i64": "a97be90b6a8b0309cdaa018b9d07232559dcf1bf09c9512ac20ff52148ee0788",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 24000,
+        "positions": 459893,
+        "fetched_prefix_positions": 71617,
+        "hbf_hits": 3786,
+        "hbm_hits": 26,
+        "credited_hits": 3812,
+        "eligible_first_distinct": 30141,
+        "writes": 79906,
+        "requested_admissions": 4479,
+        "admitted": 4479,
+        "budget_rejections": 0,
+        "no_offer_requests": 4085
+      },
+      "diagnostic": {
+        "reason_counts": [
+          2182,
+          3706,
+          0,
+          0,
+          0,
+          13633,
+          755,
+          3724
+        ],
+        "offered_write_cost": 340305,
+        "threshold_rejected_write_cost": 260399,
+        "wallet_W": 79906,
+        "wallet_observations": 21818,
+        "remaining_budget": 94
+      }
+    },
+    "flash_only": {
+      "outputs": {
+        "decisions.bin": "34d8008758ed49821f3c89e6a20318aacf9846f43a580b9bb5d35fff7ce74bb3",
+        "diagnostic.json": "1ec7d685b2ecc61fc701bc841f0b86c61886e7603a73c5b68e6eaaef842dbcea",
+        "effective_mask.u8": "4b3a7800592a0faf8caef76d3897ca10219222538dae0066c04a594c4b2fdc1a",
+        "final.hbf.i32": "38734ab97f8e3e5408413384fd98385c2444374746fe8fa669014be15a2d81fd",
+        "final.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "final.json": "e4fcb5bca92250ecdcfb37c1302af3de8b47eb26d917bbf0bc17a5c23404e181",
+        "final_history.bin": "bb61023ba9bad59c914d5e1cf7be5cb49035313ecc9127e8cc6bf657e5ea24c3",
+        "metrics.json": "5957065ecd6379be2d70e9f87ad54bb8be3814e1f17df74bd92fe229f192b902",
+        "requested_mask.u8": "ca3c026b4f0285025a124a6167bf1fe833e5e6aa3f33daf046ae9272263db462",
+        "rows.i64": "36d7c966595d865c7e5fa593e791dfe0db58f106b840d1a00c5990f13a1a33c1",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 2200,
+        "positions": 42342,
+        "fetched_prefix_positions": 16216,
+        "hbf_hits": 37,
+        "hbm_hits": 0,
+        "credited_hits": 37,
+        "eligible_first_distinct": 2831,
+        "writes": 15000,
+        "requested_admissions": 1205,
+        "admitted": 1055,
+        "budget_rejections": 150,
+        "no_offer_requests": 732
+      },
+      "diagnostic": {
+        "reason_counts": [
+          200,
+          669,
+          0,
+          150,
+          0,
+          126,
+          615,
+          440
+        ],
+        "offered_write_cost": 19835,
+        "threshold_rejected_write_cost": 2003,
+        "wallet_W": 15000,
+        "wallet_observations": 2000,
+        "remaining_budget": 0
+      }
+    },
+    "budget_denied": {
+      "outputs": {
+        "debug.jsonl": "eb51afb46fd8e7abdec63cbe82ce043c41f71703a912d9ffe1c477c203f6d753",
+        "decisions.bin": "3f1421570e78685cda8d610c494ee694f47602e847bef5c279bd335ebfaae41d",
+        "diagnostic.json": "7154d03da4e912a8638265a1c8e10cc3e5a65c75f4ba95e4f5d9c7c4f00d5312",
+        "effective_mask.u8": "5dd776d9d8bba4cb69f7985399230d5680744a96de8995c2a1a100daffd80ecf",
+        "final.hbf.i32": "37fc77998cd1b4a59b1f906dbe1f31f53253b91a39377f600b214bfe8aab0e38",
+        "final.hbm.i32": "5b3079d7ae6d047d17796c1ed27c7c65dba01e19708d0bde9e4ad631428c3bf1",
+        "final.json": "a4f270132eed1dd96ee765fe236d45ce3a45d32d2cef0c0c41d2f1b5cffa5df9",
+        "final_history.bin": "a6dec03c515eb1c125c6cd59e36a47cd1e50e768df59dea56ebfddd6c19991d6",
+        "metrics.json": "67bfe22b41f3d6f07b40f58b480a6cc1b302fcc00411795e384eaf0a79a1b5b6",
+        "requested_mask.u8": "64dbde81bc14f8e25a53a096d066fb9b9db18f0e93607d92ff2b683f5961fe24",
+        "rows.i64": "0247ca572f3599b22801f797dabc096ea95ccd0fe83332168c9550fb4339f825",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 1100,
+        "positions": 21031,
+        "fetched_prefix_positions": 516,
+        "hbf_hits": 1,
+        "hbm_hits": 0,
+        "credited_hits": 1,
+        "eligible_first_distinct": 1391,
+        "writes": 9,
+        "requested_admissions": 912,
+        "admitted": 1,
+        "budget_rejections": 911,
+        "no_offer_requests": 95
+      },
+      "diagnostic": {
+        "reason_counts": [
+          100,
+          88,
+          0,
+          911,
+          0,
+          0,
+          1,
+          0
+        ],
+        "offered_write_cost": 18544,
+        "threshold_rejected_write_cost": 0,
+        "wallet_W": 9,
+        "wallet_observations": 1000,
+        "remaining_budget": 0
+      }
+    },
+    "zero_budget": {
+      "outputs": {
+        "debug.jsonl": "c8bd870a7a1d48aa170dbe0174186d8d06267eda9b7d2ba9f07a1f977421f013",
+        "decisions.bin": "e67d1374f7312c3b85767a36c56310d6427939666b02f6a0bcdd53b1e44d372c",
+        "diagnostic.json": "4cc007708065e0fc3a52a9208e81471af26b264a51fd0efe1b1592caea9ebd8c",
+        "effective_mask.u8": "36e85b8ca5cc07b01ad98462a7f8afd1794a65455dc33ea47adcb9f50dfe5207",
+        "final.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "final.hbm.i32": "b737bdbd56997b26050cc0fc67573bc4d75496e2a9154afb76af80e7dfffaa47",
+        "final.json": "07c3b1cd989d7a6cde5f7fcecd3cab3fe03a2e278a309ec8684581bf9a5aee15",
+        "final_history.bin": "049f9f73fec7d06edbdb2a28ed93013af3e985d5443bf0fb89f94cf9648ef7d5",
+        "metrics.json": "ffbc73c9f77036efe27ef241940e3289fc00fefeb498619670ed00ca5565157a",
+        "requested_mask.u8": "7b72bc4ca972cc2acee3e582e26a9af29a8cb6b55c1745d71444eca0233734ab",
+        "rows.i64": "be97b0dcf1726435d130970fdf8614f10cebdcf5a577519b426a7d71d03e3d2d",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 35,
+        "positions": 657,
+        "fetched_prefix_positions": 4,
+        "hbf_hits": 0,
+        "hbm_hits": 0,
+        "credited_hits": 0,
+        "eligible_first_distinct": 5,
+        "writes": 0,
+        "requested_admissions": 29,
+        "admitted": 0,
+        "budget_rejections": 29,
+        "no_offer_requests": 3
+      },
+      "diagnostic": {
+        "reason_counts": [
+          3,
+          3,
+          0,
+          29,
+          0,
+          0,
+          0,
+          0
+        ],
+        "offered_write_cost": 592,
+        "threshold_rejected_write_cost": 0,
+        "wallet_W": 0,
+        "wallet_observations": 32,
+        "remaining_budget": 0
+      }
+    },
+    "duplicate_rewrites": {
+      "outputs": {
+        "debug.jsonl": "abf7c5c1a45b3f7a827acdbb669d8d5b7fdda6148ef10d9eb0b01b04be679b8a",
+        "decisions.bin": "9770b30192d7f41a94bd32557c7ef31726735d94c0ce480f76c68b965f58ca73",
+        "diagnostic.json": "e591fbe8a63b9bdc7f3d6001a4329b21806d7771284fd2b3f812d7d4cfbfc948",
+        "effective_mask.u8": "b9386b470d89311ae9783838f11bebe950ff5f72916532ed6f9561c3d3a75838",
+        "final.hbf.i32": "9caad7d62953b64ffe87fbc56056d503988dc8d2187b2a077d924cfa541593f1",
+        "final.hbm.i32": "ba1a2906d299929b0f06ea0b4d80b609328c0a3ce64b9cf01d8e78d896ba1eff",
+        "final.json": "b627d8995c2332bb5cd9ff42545f3d956411014e6ea22bac4bedf8704f6c678f",
+        "final_history.bin": "5455b00c0515bb0afa41fd4f8695b9742c2118a07ec8f0d3daa765034e2a4ccf",
+        "metrics.json": "4ded921b2d322097a3ec46e7fbfc284f6b374b27a1f81b21c9293b55d5e42ea5",
+        "requested_mask.u8": "b9386b470d89311ae9783838f11bebe950ff5f72916532ed6f9561c3d3a75838",
+        "rows.i64": "c5c3ce25ef7d27aacd85d3e19dccde0965dba7e912c1debcc3301e6ae9dbc64b",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 2400,
+        "positions": 21600,
+        "fetched_prefix_positions": 3906,
+        "hbf_hits": 0,
+        "hbm_hits": 0,
+        "credited_hits": 0,
+        "eligible_first_distinct": 0,
+        "writes": 13123,
+        "requested_admissions": 1863,
+        "admitted": 1863,
+        "budget_rejections": 0,
+        "no_offer_requests": 278
+      },
+      "diagnostic": {
+        "reason_counts": [
+          218,
+          270,
+          0,
+          0,
+          0,
+          49,
+          901,
+          962
+        ],
+        "offered_write_cost": 13480,
+        "threshold_rejected_write_cost": 357,
+        "wallet_W": 13123,
+        "wallet_observations": 2182,
+        "remaining_budget": 4877
+      }
+    },
+    "equal_scores": {
+      "outputs": {
+        "decisions.bin": "a310ae3ee80db75a80c8f66682f8ccb8c6908cce80fcbb107db632106c8ce021",
+        "diagnostic.json": "e0f36d0870548e83924e1d189b19bccb3058f7e686a06fb0ff51bd686247b14b",
+        "effective_mask.u8": "7618691f221bf8315a882bedf4320e2bfe7d7a4f507f14ec3f8b123c883341bb",
+        "final.hbf.i32": "01ae8bca3feddc447c36822c041be588ef20ca9ff84c4ae180a0776f744427e2",
+        "final.hbm.i32": "977d1a863cf97921a76b1f8414af65c7463cdab40d64c174cead35ad54c4ddb3",
+        "final.json": "b7a9a596b97721639d5e6feb38a9be0df948ad895eabc0ba014e86e02a293dcc",
+        "final_history.bin": "49b5597d35052e987dc2aa22ffc7492985758fd86d883ace144f3da8007b2c54",
+        "metrics.json": "ae14670d96eb4da184df08b6a8e26e46ace5c105272d25defa4eed7da2aaf7f7",
+        "requested_mask.u8": "7618691f221bf8315a882bedf4320e2bfe7d7a4f507f14ec3f8b123c883341bb",
+        "rows.i64": "aa07a2cf31f822c0649bb7dbbb41f2fd43c809dbb1d5d947cc5ca435e66b3a6f",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 24000,
+        "positions": 48000,
+        "fetched_prefix_positions": 666,
+        "hbf_hits": 0,
+        "hbm_hits": 0,
+        "credited_hits": 0,
+        "eligible_first_distinct": 0,
+        "writes": 17786,
+        "requested_admissions": 17786,
+        "admitted": 17786,
+        "budget_rejections": 0,
+        "no_offer_requests": 324
+      },
+      "diagnostic": {
+        "reason_counts": [
+          0,
+          324,
+          0,
+          0,
+          0,
+          5890,
+          1000,
+          16786
+        ],
+        "offered_write_cost": 23676,
+        "threshold_rejected_write_cost": 5890,
+        "wallet_W": 17786,
+        "wallet_observations": 24000,
+        "remaining_budget": 214
+      }
+    },
+    "empty_suffixes": {
+      "outputs": {
+        "decisions.bin": "c69db6d6c84f34a74a42e71664e663079439a22d859bc13ae343884932531157",
+        "diagnostic.json": "74dcd376ca7d172e2e73bb6839553272048937fd8bbbab3989c7f39723e8d9f5",
+        "effective_mask.u8": "d1570b2e9bb08b551c1f98e6f8d037f846e0f5ae96c7994d4860f3bb88a5ad7e",
+        "final.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "final.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "final.json": "3a49ec190015a10b844bf4443ea22f4060af2383636d71ff30907e0c7f974a95",
+        "final_history.bin": "32da779b4c223c9c9f066aed291bc4a16c4dbeae4ad11f3510b7ea54f6a9e751",
+        "metrics.json": "bb08bf1dcfcfd136db9bbc106c6752ad2b43322650fb9e744952238d7a0859e3",
+        "requested_mask.u8": "d1570b2e9bb08b551c1f98e6f8d037f846e0f5ae96c7994d4860f3bb88a5ad7e",
+        "rows.i64": "79e4b087cc0d32cbc717e39289f02032aabf650c309bd13f5245b06aaffa106a",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "warm_controller.json": "67b8e6df0b5b18ca728e548bcbb22b3b776f6b8ec56739c3468243c3b03773b4",
+        "warm_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "metrics": {
+        "requests": 1500,
+        "positions": 0,
+        "fetched_prefix_positions": 0,
+        "hbf_hits": 0,
+        "hbm_hits": 0,
+        "credited_hits": 0,
+        "eligible_first_distinct": 0,
+        "writes": 0,
+        "requested_admissions": 0,
+        "admitted": 0,
+        "budget_rejections": 0,
+        "no_offer_requests": 1500
+      },
+      "diagnostic": {
+        "reason_counts": [
+          136,
+          1364,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "offered_write_cost": 0,
+        "threshold_rejected_write_cost": 0,
+        "wallet_W": 0,
+        "wallet_observations": 1364,
+        "remaining_budget": 100
+      }
+    },
+    "no_evaluation_requests": {
+      "outputs": {
+        "decisions.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "diagnostic.json": "e23d94aa81463041d36331630bd3b15f9ab908e678736d905248f3a1a49dc348",
+        "effective_mask.u8": "8e8fe47e4a33b178bf0433d8050cb0ad7ec323fbdeeab3ecfd857b4ce1805b7a",
+        "final.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "final.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "final.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476",
+        "final_history.bin": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "metrics.json": "095954da6dab4c68629d5140cda2e497f37ca204d0e8e547deb04e45e799c9d9",
+        "requested_mask.u8": "8e8fe47e4a33b178bf0433d8050cb0ad7ec323fbdeeab3ecfd857b4ce1805b7a",
+        "rows.i64": "4f2d67f0298d4d40157612f868e5e747b6df2095817f64fa231f0ccbba5c7bde",
+        "warm.hbf.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.hbm.i32": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "warm.json": "134ea42f1d048f1de5d1e4a188c45d8ea4033f84ba136d778c4226e28bed0476"
+      },
+      "metrics": {
+        "requests": 0,
+        "positions": 0,
+        "fetched_prefix_positions": 0,
+        "hbf_hits": 0,
+        "hbm_hits": 0,
+        "credited_hits": 0,
+        "eligible_first_distinct": 0,
+        "writes": 0,
+        "requested_admissions": 0,
+        "admitted": 0,
+        "budget_rejections": 0,
+        "no_offer_requests": 0
+      },
+      "diagnostic": {
+        "reason_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "offered_write_cost": 0,
+        "threshold_rejected_write_cost": 0,
+        "wallet_W": 0,
+        "wallet_observations": 0,
+        "remaining_budget": 100
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+.DEFAULT_GOAL := demo
+PYTHON ?= python3
+.PHONY: demo test-simulator
+
+build/rancho: simulator/write_controller.hpp simulator/simulation_io.hpp
+build/%: simulator/%.cpp simulator/cache.hpp
+	@mkdir -p build
+	$(CXX) -O2 -std=c++17 $< -o $@
+
+demo: build/rancho build/hbm_only_readable_prefix
+	$(PYTHON) examples/demo.py
+
+test-simulator: build/rancho build/hbm_only_readable_prefix
+	$(PYTHON) tests/simulator_regression.py

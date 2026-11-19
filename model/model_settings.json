@@ -1,0 +1,21 @@
+{
+  "features": [
+    "user",
+    "causal_request_position",
+    "session_age_seconds",
+    "previous_session_gap_seconds"
+  ],
+  "id": "shared_suffix_target",
+  "l1": 0.0,
+  "l2": 0.0,
+  "learning_rate": 0.05,
+  "leaves": 31,
+  "max_rounds": 300,
+  "minimum": 100,
+  "model": "tree",
+  "objective": "poisson",
+  "refresh_hours": 1,
+  "sample_weight": "recency24h",
+  "tweedie_power": 1.5,
+  "window_hours": 0
+}
