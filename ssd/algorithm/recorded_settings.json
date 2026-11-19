@@ -1,0 +1,37 @@
+{
+  "cohort_lag_hours": 0,
+  "cold_prior": 1.0,
+  "features": [
+    "causal_request_position",
+    "previous_session_gap_seconds",
+    "prior_eviction_count",
+    "prior_touch_count",
+    "seconds_in_HBM",
+    "seconds_since_last_touch",
+    "session_age_seconds",
+    "user"
+  ],
+  "horizon_hours": 0,
+  "inner_validation_hours": 6,
+  "learning_rate": 0.05,
+  "leaves": 31,
+  "max_rounds": 300,
+  "minimum": 100,
+  "model": "tree",
+  "monotone_constraints": [
+    0,
+    0,
+    1,
+    1,
+    0,
+    0,
+    0,
+    0
+  ],
+  "objective": "log_l2",
+  "position_encoding": "quantile",
+  "sample_cap": 400000,
+  "seed": 0,
+  "target_mode": "cumulative",
+  "training": "1h_all_uniform"
+}

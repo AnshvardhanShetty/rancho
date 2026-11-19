@@ -1,0 +1,71 @@
+{
+  "status": "PASS_EXACT_SOURCE_SHA256",
+  "frozen_parent_sha256": "8b5cba4cb331f0222bcbd3028327036508fc1234a8a5389c9eb5987eac78b5a4",
+  "final_replay_sha256": "bdb5299466ee40177b80207dd23982f38024f92fbfbfd497a911b7bed2b85559",
+  "reference": "accepted LIVE_GRID recipe source digest",
+  "original_source_bytes": 26343,
+  "recorded_recipe_sha256": "3994fa0107b542cb740e0ae8954e6f947d9109f1d5d989f52f2f858770998cac",
+  "worker_sha256": "2948cb6bfa596dba4883a773f4703af4f4caa151c8d79a13f87f80bac994aec8",
+  "original_test_scores_sha256": "64f96398c1b5d2232b0d60fd3a6497defa71cb31c2cc32e8e87af403da38bcbf",
+  "private_trace_rerun": false,
+  "readable_cpp_token_sha256": "b348ea45907ad460b1978e34d431bf9669c51ef647649d75e8707921fe266be5",
+  "readable_policy_preserves_operations": true,
+  "synthetic_native_comparisons": [
+    {
+      "budget": 200,
+      "requests": 6144,
+      "evictions": 11520,
+      "hourly_updates": 96,
+      "writes": 200,
+      "supplemental_counters": "16 6 3",
+      "activation": "64 15",
+      "rows_sha256": "bc1cbe32fc9311b1416ca8595fcd0416115bc75b9a100e07aab72d87f6eaa13f",
+      "bits_sha256": "62198b9a41b94a49ce2cc46f10bcd5b4e8f503f1e657f10f21a96eb373dcc2b5"
+    },
+    {
+      "budget": 2000,
+      "requests": 6144,
+      "evictions": 11520,
+      "hourly_updates": 96,
+      "writes": 2000,
+      "supplemental_counters": "160 64 32",
+      "activation": "8 159",
+      "rows_sha256": "c0cfb7334e583deafa106747532e0c7d1325b424a8653a17efc534bc0539a13a",
+      "bits_sha256": "9791328aa611fbf1f076034e8b06acb296a1b64862ccef04a1d265be2504e478"
+    },
+    {
+      "budget": 10000,
+      "requests": 6144,
+      "evictions": 11520,
+      "hourly_updates": 96,
+      "writes": 10000,
+      "supplemental_counters": "832 332 166",
+      "activation": "2 830",
+      "rows_sha256": "191ba6b97ceae718b73db923f657945128c98677073398dc8ca255abf79fa644",
+      "bits_sha256": "88483a2405e166362e9167f7eca83351bdc585377e3fe687b7d59ff664a927e0"
+    }
+  ],
+  "synthetic_training_comparisons": [
+    {
+      "hour": 72,
+      "tree_count": 1,
+      "predictions_compared": 180,
+      "exact_native_trees": true
+    },
+    {
+      "hour": 74,
+      "tree_count": 1,
+      "predictions_compared": 180,
+      "exact_native_trees": true
+    }
+  ],
+  "synthetic_complete_pipeline": {
+    "status": "PASS_SYNTHETIC_COMPLETE_PIPELINE",
+    "hourly_models": 96,
+    "measured_evictions": 262684,
+    "writes": 10000,
+    "eligible_after_hbm": 254064,
+    "saved_positions": 4216,
+    "private_data_used": false
+  }
+}

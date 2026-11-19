@@ -70,7 +70,7 @@ For a three-request walkthrough, run `make demo`. [Example code](examples/README
 | Write-budget control | [Controller](simulator/write_controller.hpp) |
 | Cache simulation | [Request replay](simulator/rancho.cpp) · [Runnable demo](examples/serving_replay.py) |
 | vLLM integration | [HBF copy path](serving/code/direct_backend_hbf.py) |
-| SSD cache replay | [Replay and independent checker](ssd/replay/README.md) |
+| SSD algorithm | [Training, replay and recomputation accounting](ssd/algorithm/README.md) |
 | SSD integration | [Saving and restoring KV](ssd/README.md) |
 
 Run `make test-simulator` for the cache tests.

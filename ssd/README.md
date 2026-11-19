@@ -15,7 +15,7 @@ The SSD engine integration is **under development**. The included small examples
 
 ## Offline cache simulator
 
-The [SSD replay code](replay/README.md) simulates cache decisions without running the language model. It includes an independent checker and 112 synthetic test cases. This lets readers follow which blocks are kept, restored and written, separately from the engine integration below.
+The [recorded SSD algorithm](algorithm/README.md) includes hourly model training, the reconstructed admission rule and the calculation of avoided KV recomputation. It runs without executing the language model. A separate [baseline replay](replay/README.md) provides 112 small cache-correctness cases. These are distinct from the engine integration below.
 
 ## Follow the code
 

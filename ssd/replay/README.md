@@ -22,7 +22,7 @@ A block already on SSD does not need another write. When the SSD cache is full, 
 
 The replay can accept supplied reuse scores, admit everything within the budget, admit randomly, or use access/eviction-count rules. In scored mode, one score corresponds to one GPU eviction. With hourly model updates, it can ask a Python driver to update the scores of earlier offers before recalculating the cutoff.
 
-This is the locally saved core replay. The later SSD results in the project README also use a separate model-training, policy and within-session accounting procedure; this source alone does not reproduce those numbers. Traces, saved production scores and models are not included.
+This is the smaller baseline replay. The [recorded SSD algorithm](../algorithm/README.md) includes the reconstructed later policy, hourly training and within-session accounting. Private traces, saved production scores and models are not included.
 
 ## Build and check
 
