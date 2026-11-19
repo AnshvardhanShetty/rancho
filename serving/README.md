@@ -20,15 +20,15 @@ The predictor estimates reuse; the write controller decides how selective to be.
 
 ## Results so far
 
-On a synthetic workload with eight shared contexts at **20 requests/s**:
+On a synthetic workload with eight shared contexts at **20 requests/s under high HBM capacity pressure**. Saved shared contexts occupy most of the baseline’s KV-cache memory, leaving little room for concurrent requests:
 
-| Configuration | HBM replaced | Output tokens/s | p95 time to first token | KV hit rate |
+| Configuration | HBM replaced | Higher output throughput | Lower p95 time to first token | KV hit rate |
 | --- | ---: | ---: | ---: | ---: |
-| HBM only | — | 67.6 | 1,020.2 s | 95.12% |
-| RANCHO, 8:1 | 66.7% | 923.1 | 20.0 s | 95.12% |
-| RANCHO, 16:1 | 85% | 429.9 | 109.6 s | 95.12% |
+| HBM only | — | Reference | Reference | 95.12% |
+| RANCHO, 8:1 | 66.7% | 1,265% | 98% | 95.12% |
+| RANCHO, 16:1 | 85% | 536% | 89% | 95.12% |
 
-“HBM replaced” is the reduction in KV-cache HBM relative to the baseline. At 16:1, each unit removed is replaced with sixteen units of HBF capacity. Output tokens/s measures how quickly the server finishes generating answers. Time to first token includes time spent waiting in the queue; p95 means 95% of requests received their first token within that time.
+Percentage changes are relative to the HBM-only baseline, calculated from the saved measurements before rounding. “HBM replaced” is the reduction in KV-cache HBM relative to the baseline. At 16:1, each unit removed is replaced with sixteen units of HBF capacity. Output tokens/s measures how quickly the server finishes generating answers. Time to first token includes time spent waiting in the queue; p95 means 95% of requests received their first token within that time.
 
 These are one-repetition measurements on a constructed workload. The baseline keeps the shared prefixes in HBM, where they occupy most of its cache; it does not use stock vLLM eviction. HBF reads are emulated as described above. See [run instructions and benchmark conditions](RUNNING.md) for details.
 

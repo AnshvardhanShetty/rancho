@@ -1,25 +1,27 @@
-# RANCHO: write-budget-aware KV-cache admission
+# RANCHO: using flash for LLM KV caches
 
 **Research in progress · Targeting OSDI '27**
 
-RANCHO is an **online cache admission algorithm** for storing LLM key-value (KV) caches in **high-bandwidth flash (HBF)** under a write-endurance constraint. It combines a learned reuse predictor with an adaptive write-budget controller to decide which KV to admit to flash.
+RANCHO is an **algorithm that decides which parts of an LLM's KV cache to save in flash, while limiting how much it writes**.
 
-LLM servers cache attention keys and values to avoid recomputing earlier input tokens. This KV occupies scarce GPU **high-bandwidth memory (HBM)**. HBF could provide more capacity and reduce the HBM needed for KV storage, but repeated writes wear out flash. The problem is to preserve cache hits while limiting the volume written.
+When a language model processes a conversation, it saves intermediate results called **key-value data (KV)**. Later requests can reuse that data instead of repeating the computation. This cache occupies the GPU's **high-bandwidth memory (HBM)**, which has limited capacity. Keeping old conversations in memory leaves less room to process new requests.
 
-## Algorithm
+**High-bandwidth flash (HBF)** could provide more space for KV. But flash wears out as data is written, so saving everything is not a practical solution. RANCHO aims to save the KV that will be reused enough to justify the write.
 
-1. **Estimate reuse.** A gradient-boosted tree predictor estimates later reads per offered KV block from four request features: user ID, turn number, session age and time since the previous request. Training uses only reuse observed before each model update.
-2. **Score the admission candidate.** When a request misses in the cache, the server recomputes the missing suffix. RANCHO scores that suffix using predicted reuse, observed reuse history and its write cost.
-3. **Enforce the write budget.** An adaptive controller estimates future write demand from recent offers and sets a score cutoff based on the remaining allowance. Accepted KV is written to HBF; rejected candidates consume no flash-write budget.
+## How the algorithm works
 
-## Implementation
+1. **Predict whether the KV will be reused.** RANCHO learns from earlier requests, using user ID, turn number, conversation age and time since the previous request.
+2. **Decide whether it is worth saving.** It combines that prediction with reuse already observed and the amount of data to write.
+3. **Stay within the write allowance.** It adjusts how selective it is based on recent requests and the budget left. Only selected KV is written to flash, where later requests can reuse it.
 
-- **Offline simulator:** replay timestamped requests through HBM and HBF caches, apply admission and eviction, and count cache hits and charged writes.
-- **vLLM integration:** run the algorithm during actual model serving. vLLM handles inference and scheduling; RANCHO decides whether to retain newly computed KV in HBF. Later requests reuse admitted KV through the cache lookup path.
+## What is in this repository
 
-The vLLM prototype **emulates HBF in a separate GPU-memory region**, with writes capped at 8 GB/s. Reads use GPU-memory speed, so these measurements do not characterize physical HBF hardware. The [serving code](serving/README.md) explains the integration.
+- **A simulator:** read a recorded sequence of requests, simulate the caches, and count how much computation they avoid and how much data they write.
+- **A vLLM prototype:** run RANCHO alongside [vLLM](https://github.com/vllm-project/vllm), the software that runs the language model and schedules requests. When vLLM computes missing KV, RANCHO decides what to save for later requests. This lets us measure the effect on serving speed and response time.
 
-This public version includes the predictor, simulator, serving integration and synthetic examples. It differs from the private working version as development continues. Private traces, trained production models and raw run logs are not included.
+The prototype represents HBF using a separate region of GPU memory. Writes are limited to 8 GB/s, but reads use GPU-memory speed. **It does not test physical HBF hardware.**
+
+This public version differs from our private working version as development continues. Private traces, trained production models and raw run logs are not included.
 
 ## Results so far
 
@@ -38,22 +40,24 @@ DWPD means drive writes per day. Hit rate is the fraction of eligible within-ses
 
 This public repository is a source snapshot and differs from our private working version, where the research and experiments are still being developed. The synthetic demo explains the pipeline; it does not reproduce the full evaluation above. Restricted trace data, trained production models, private experiment settings, and detailed run records are not distributed here.
 
-## vLLM serving
+## vLLM serving results
 
-We also connect RANCHO to [vLLM](https://github.com/vllm-project/vllm), which runs the language model and schedules requests. When vLLM computes missing KV, RANCHO decides which of it to keep in the flash tier so later requests can reuse it. This prototype emulates HBF in GPU memory, with a limit on write bandwidth.
+On a synthetic workload at **20 requests/s under high HBM capacity pressure**, RANCHO replaced **85% of the HBM used for KV caching**, with **536% higher output throughput** and **89% lower p95 time to first token** than the HBM-only baseline. Both served **95.12%** of eligible KV reads from cache.
 
-On a synthetic workload at **20 requests/s**, RANCHO replaced **85% of KV-cache HBM** and served **429.9 output tokens/s**, compared with **67.6** for the HBM-only baseline. Both served **95.12%** of eligible KV reads from cache. This was one repetition with a baseline that retains shared prefixes and emulated HBF reads at GPU-memory speed. The [serving README](serving/README.md) explains how it works and shows the comparison. **The integration is still under development.**
+Higher throughput means generating more output in the same time. The p95 time is how long 95% of requests waited for their first output token, including queueing. Here, the baseline keeps shared conversation data in most of its KV-cache memory, leaving little room to process concurrent requests.
+
+These are one-repetition results on a constructed workload, with the HBF emulation described above. They are not a general speedup across workloads. The [serving README](serving/README.md) explains the code and gives the comparison. **The integration is still under development.**
 
 ## Read the code
 
 | Order | File | What it does |
 | --- | --- | --- |
-| 1 | [experiments/trace_reader.py](experiments/trace_reader.py) | Read JSONL requests and save their block lists, sessions, and times in arrival order. |
-| 2 | [experiments/run_experiment.py](experiments/run_experiment.py) | Build the four features and provide the loop that runs successive hourly models. Inputs are supplied by the caller. |
-| 3 | [model/model_training.py](model/model_training.py) | Load checked reuse counts, prepare earlier examples, fit trees, predict, and save one hourly update. |
-| 4 | [model/tree_encoding.py](model/tree_encoding.py) | Give user IDs consistent category codes during fitting and prediction. |
+| 1 | [experiments/trace_reader.py](experiments/trace_reader.py) | Read recorded requests and save their KV block IDs, conversation IDs and arrival times in time order. |
+| 2 | [experiments/run_experiment.py](experiments/run_experiment.py) | Build the four predictor inputs and run model updates one hour at a time. |
+| 3 | [model/model_training.py](model/model_training.py) | Use earlier requests and their observed reuse to train the predictor and save its predictions. |
+| 4 | [model/tree_encoding.py](model/tree_encoding.py) | Represent each user ID consistently during training and prediction. |
 | 5 | [experiments/run_simulation.py](experiments/run_simulation.py) | Start the compiled simulator and read its output counters. |
-| 6 | [simulator/rancho.cpp](simulator/rancho.cpp) | Read the cached prefix, price and score the suffix, decide where to store it, and count hits and writes. |
+| 6 | [simulator/rancho.cpp](simulator/rancho.cpp) | Check what is cached, decide whether to save the missing KV, and count reads served and data written. |
 
 The predictor uses user ID, turn number, session age, and time since the previous request. At each training cutoff, labels include only reuse observed before that cutoff. Its output is one predicted average reads-per-offered-block value per request. The simulator determines the actual suffix using its own cache contents.
 
