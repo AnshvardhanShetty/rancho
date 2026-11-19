@@ -4,7 +4,24 @@ LLM servers use key-value (KV) caches to avoid recomputing earlier tokens. These
 
 RANCHO decides which KV to write to flash. It learns from earlier requests to predict reuse, then combines that prediction with observed reuse, write cost, and the remaining write allowance to decide whether to save a block sequence.
 
-This repository contains the Python predictor, a C++ offline cache simulator, and a runnable synthetic demo. It shows how requests become training examples, predictions, and cache decisions. Production traces, trained production models, and measured research results are not included.
+This repository contains the Python predictor, a C++ offline cache simulator, and a runnable synthetic demo. It shows how requests become training examples, predictions, and cache decisions. The headline study results are summarized below; production traces, trained production models, and detailed experiment outputs are not included.
+
+## Results so far
+
+In offline replay, the following HBM replacement points kept the combined HBM + HBF hit rate above 94%, within the write allowance:
+
+| HBF capacity per unit of HBM removed | Write limit (DWPD) | HBM replaced | Hit rate |
+| --- | ---: | ---: | ---: |
+| 8:1 | 0.3 | 25% | 94.47% |
+| 8:1 | 1 | 66⅔% | 94.19% |
+| 8:1 | 3 | 95% | 96.52% |
+| 16:1 | 0.3 | 50% | 94.37% |
+| 16:1 | 1 | 85% | 96.75% |
+| 16:1 | 3 | 100% | 98.74% |
+
+DWPD means drive writes per day. Hit rate is the fraction of eligible within-session KV reads served by HBM or HBF. These results are pooled over three seeds on one FreeInference workload used during development; each row uses its recorded study configuration. They measure cache hits in offline replay, rather than serving throughput.
+
+This public repository is a source snapshot and differs from our private working version, where the research and experiments are still being developed. The synthetic demo explains the pipeline; it does not reproduce the full evaluation above. Restricted trace data, trained production models, private experiment settings, and detailed run records are not distributed here.
 
 ## Read the code
 
@@ -49,4 +66,4 @@ This checks the pipeline, not predictor quality or performance on a real workloa
 - [reproduction_support/](reproduction_support/README.md): offline source used to construct and independently check offered-suffix reuse counts. Restricted inputs and archived files are not included.
 - [tests/](tests/README.md): deterministic synthetic regression cases. Run `make test-simulator` to check them.
 
-The demo does not fetch trace data or trained models and requires no lab-server access. The real-data experiment launchers, private paths, and measured results are not part of this sharing copy.
+The demo does not fetch trace data or trained models and requires no lab-server access. The real-data experiment launchers, private paths, and detailed result files are not part of this public snapshot.
