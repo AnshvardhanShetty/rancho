@@ -1,4 +1,4 @@
-# RANCHO: using flash for LLM KV caches
+# RANCHO
 
 **Research in progress · Targeting OSDI '27**
 
@@ -6,11 +6,11 @@ RANCHO is an **algorithm that decides which parts of an LLM's KV cache to save i
 
 When a language model processes a conversation, it saves intermediate results called **key-value data (KV)**. Later requests can reuse that data instead of repeating the computation. This cache occupies the GPU's **high-bandwidth memory (HBM)**, which has limited capacity. Keeping old conversations in memory leaves less room to process new requests.
 
-**High-bandwidth flash (HBF)** could provide more space for KV. But flash wears out as data is written, so saving everything is not a practical solution. RANCHO aims to save the KV that will be reused enough to justify the write.
+We study storing KV in **high-bandwidth flash (HBF)** and **solid-state drives (SSDs)**. Both provide additional storage, but flash wears out as data is written. RANCHO aims to save the KV that will be reused enough to justify the write.
 
 ## How the algorithm works
 
-1. **Predict whether the KV will be reused.** RANCHO learns from earlier requests, using user ID, turn number, conversation age and time since the previous request.
+1. **Predict whether the KV will be reused.** The HBF version learns from user ID, turn number, conversation age and time since the previous request. The SSD version also uses how often a block has been read or removed from GPU memory, how long it has been there, and when it was last used.
 2. **Decide whether it is worth saving.** It combines that prediction with reuse already observed and the amount of data to write.
 3. **Stay within the write allowance.** It adjusts how selective it is based on recent requests and the budget left. Only selected KV is written to flash, where later requests can reuse it.
 
@@ -25,7 +25,7 @@ The HBF prototype represents HBF using a separate region of GPU memory. Writes a
 
 This public version differs from our private working version as development continues. Private traces, trained production models and raw run logs are not included.
 
-## Results so far
+## HBF cache results
 
 In offline replay, the following HBM replacement points kept the combined HBM + HBF hit rate above 94%, within the write allowance:
 
@@ -41,6 +41,12 @@ In offline replay, the following HBM replacement points kept the combined HBM + 
 DWPD means drive writes per day. Hit rate is the fraction of eligible within-session KV reads served by HBM or HBF. These results are pooled over three seeds on one FreeInference workload used during development; each row uses its recorded study configuration. They measure cache hits in offline replay, rather than serving throughput.
 
 This public repository is a source snapshot and differs from our private working version, where the research and experiments are still being developed. The synthetic demo explains the pipeline; it does not reproduce the full evaluation above. Restricted trace data, trained production models, private experiment settings, and detailed run records are not distributed here.
+
+## SSD recomputation results
+
+Our recorded-trace evaluation also shows that SSD offloading can avoid computing KV again after it is no longer in GPU memory. In one tested setting, RANCHO avoided **88% of the eligible KV recomputation left after the GPU cache lookup**, by restoring saved KV from SSD.
+
+This result uses a 48 GB GPU cache, an SSD cache 72 times that size, and a 3-DWPD write allowance. It counts repeated KV reads within the same conversation on one recorded workload; it is not an 88% reduction in response time. The [SSD overview](ssd/README.md) gives the results at different write allowances. **The SSD engine integration is still under development.**
 
 ## HBF vLLM serving results
 

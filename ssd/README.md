@@ -13,6 +13,20 @@ This code lets the server **save selected KV on a solid-state drive (SSD), then 
 
 The SSD engine integration is **under development**. The included small examples accept every write or reject every write to check that saving and restoring data works. They are not performance results or a replacement for RANCHO's learned decision rule.
 
+## Evidence from recorded requests
+
+We also tested the SSD algorithm by replaying recorded requests and counting how much KV would otherwise have to be computed again. With a **48 GB GPU cache and a 3,456 GB SSD cache**, the saved results were:
+
+| Write allowance | Eligible KV recomputation avoided after GPU lookup |
+| --- | ---: |
+| 0.3 drive writes per day | 79.52% |
+| 1 drive write per day | 85.05% |
+| 3 drive writes per day | 87.96% |
+
+One drive write means writing an amount of data equal to the SSD's capacity. These percentages count repeated KV reads within the same conversation that SSD could serve after the GPU cache lookup. They come from days 4–7 of one recorded FreeInference workload, with models updated from earlier observations. They measure avoided KV computation, not elapsed serving time, and each replay stayed within its write allowance.
+
+The trace evaluation and the engine examples serve different purposes: the trace evaluation tests which data the algorithm keeps; the examples in this folder check moving actual KV to and from SSD. The engine integration remains under development.
+
 ## Follow the code
 
 | File | What it does |
