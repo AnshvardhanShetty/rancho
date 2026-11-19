@@ -1,15 +1,9 @@
-"""Isolated synchronous dense vLLM tier integration, not hardware HBF.
+"""Connect vLLM to HBM and emulated HBF storage.
 
-Assumptions: TP=1, runner-v1, eager execution, synchronous scheduling, dense
-16-token pages, immutable full prefill pages only. Both tiers occupy real GPU
-memory and native attention reads HBF-designated pages directly. Completed
-prefill copies are synchronous, chunked by the specified write buffer, and paced
-by the specified write bandwidth. Read bandwidth is the physical GPU's bandwidth;
-this is an optimistic HBF-read emulation, not a measurement of HBF hardware.
-The diagnostic policy is forbidden for benchmark mode. Scientific runs require
-an authenticated earlier controller state and explicit timing/features/limits.
-No global package, other engine, or unrelated GPU process is modified.
-"""
+Uses one GPU, synchronous execution and complete 16-token KV pages.
+New KV is computed in HBM. Accepted copies are transferred to HBF in chunks,
+with writes paced to the configured bandwidth. Attention reads both regions
+in GPU memory. The caller supplies the model, policy, capacities and budget."""
 
 from dataclasses import dataclass, field
 import hashlib

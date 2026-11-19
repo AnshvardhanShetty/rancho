@@ -1,11 +1,8 @@
-"""Reuse immutable HBF copies without charging or performing another write.
+"""Reuse existing HBF copies and transfer their active-reader references.
 
-Assumptions: the same pinned model and native prefix hash namespace, complete
-16-token pages, synchronous single scheduler. Existing HBF payloads are never
-overwritten. The native hash identity is the same correctness assumption used
-by vLLM prefix caching. Active-reader references are transferred atomically.
-No admission decision or scientific budget is chosen by this helper.
-"""
+Copies are identified by vLLM prefix hashes and complete 16-token pages.
+An existing immutable copy requires no further write. Reference updates use
+the single synchronous scheduler."""
 
 
 def existing_hbf(tiers, source_id):

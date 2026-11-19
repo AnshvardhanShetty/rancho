@@ -1,10 +1,8 @@
-"""Build request features and run hourly model updates on caller-supplied data.
+"""Build request features and run hourly model updates on supplied data.
 
-build_request_features() saves user ID, turn number, session age, and request gap.
-run_hourly_models() fits successive hours and combines their saved predictions.
-The synthetic runnable example is examples/demo.py. Private experiment settings,
-archived predictions, and lab-specific launch commands are not included.
-"""
+build_request_features() calculates user ID, session position, age and gap.
+run_hourly_models() fits on earlier observations and saves the next hour's
+predictions. examples/serving_replay.py runs the synthetic CPU demo."""
 
 import sys
 from pathlib import Path

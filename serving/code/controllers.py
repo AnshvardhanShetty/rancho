@@ -1,19 +1,9 @@
-"""Live admission wallets ported from the pinned HBF C7 and SSD C6 sources.
+"""Track write spending and update HBF and SSD admission thresholds.
 
-Physical-study extension: physical controller time, real daily accounting, and
-zero initial post-warm-up write credits; original feature history remains causal.
-
-Assumptions: callers supply original event IDs, logical microsecond times,
-exact paid write costs, and causally produced predictions. Calls are serialized
-in physical decision order. This module owns no cache, GPU allocation, model,
-warmup reconstruction, timing conversion, or write queue. W is charged when
-an admission is accepted, before an asynchronous transfer can finish. Failed
-transfers must terminate the experiment; they never refund the wallet.
-
-HBF observes before charging the accepted cost; SSD charges before observing.
-HBF C7 reprices history only at initialization; SSD C6 can reprice at fit cuts.
-Empty controllers are fixtures, not accepted scientific warm starting states.
-"""
+Callers supply ordered offers, predictions, timestamps and exact write costs.
+Accepted writes are charged immediately. HBF records an offer before charging;
+SSD charges first. SSD can rescore stored offers when its model is updated.
+A failed transfer stops the run because its charged write cannot be refunded."""
 
 from dataclasses import asdict, dataclass
 import hashlib
@@ -334,7 +324,7 @@ class Wallet:
 
     @classmethod
     def restore(cls, state, expected_sha256):
-        """Restore all fields from an explicitly authenticated component snapshot."""
+        """Restore controller fields from a checked saved state."""
         raw = json.dumps(
             state, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode()

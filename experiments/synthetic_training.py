@@ -1,13 +1,8 @@
-"""Train the research predictor from the serving generator's earlier requests.
+"""Build reuse labels and train RANCHO on earlier synthetic requests.
 
-The initial labels count reuse of blocks introduced by each session request.
-A causal hourly fit supplies predictions to the research simulator, which records
-the actual suffix offered by each request. The final fit uses observed reuse of
-those suffixes. Fitting, recency weighting, chronological validation, encoding and
-prediction use model_training unchanged. All labels stop before each fit cutoff.
-
-This is a local synthetic-data fit, not the archived private serving model.
-"""
+An initial hourly predictor supplies scores for a replay that records offered
+suffixes. The final model learns from later accesses to those suffixes.
+Fitting and label cutoffs use model_training.py."""
 
 from pathlib import Path
 import sys

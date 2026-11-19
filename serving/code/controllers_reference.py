@@ -1,16 +1,8 @@
-"""Live admission wallets ported from the pinned HBF C7 and SSD C6 sources.
+"""Reference controller used to check the serving implementation.
 
-Assumptions: callers supply original event IDs, logical microsecond times,
-exact paid write costs, and causally produced predictions. Calls are serialized
-in physical decision order. This module owns no cache, GPU allocation, model,
-warmup reconstruction, timing conversion, or write queue. W is charged when
-an admission is accepted, before an asynchronous transfer can finish. Failed
-transfers must terminate the experiment; they never refund the wallet.
-
-HBF observes before charging the accepted cost; SSD charges before observing.
-HBF C7 reprices history only at initialization; SSD C6 can reprice at fit cuts.
-Empty controllers are fixtures, not accepted scientific warm starting states.
-"""
+Keeps separate write accounting and threshold calculations for comparison with
+controllers.py. Offers arrive in decision order, with supplied predictions and
+write costs. HBF observes before charging; SSD charges before observing."""
 
 from dataclasses import asdict, dataclass
 import hashlib
@@ -326,7 +318,7 @@ class Wallet:
 
     @classmethod
     def restore(cls, state, expected_sha256):
-        """Restore all fields from an explicitly authenticated component snapshot."""
+        """Restore controller fields from a checked saved state."""
         raw = json.dumps(
             state, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode()

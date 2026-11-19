@@ -1,10 +1,7 @@
-"""Audit retained-prefix ownership and report concurrency after all prefixes fill.
+"""Check shared-prefix ownership and report concurrency after cache filling.
 
-Assumptions: immutable shared full blocks, one retention reference per distinct
-hash, native HBM capacity includes these pages. Runtime verifies hashes/refcounts
-and guards eviction; this log audit checks recorded ownership transitions. Actual
-cache hits are independently checked by campaign_cell, not assumed from pins.
-"""
+Each distinct shared block has one retention reference charged to HBM.
+The checker follows recorded ownership changes and verifies reference counts."""
 
 import json
 

@@ -1,11 +1,8 @@
-"""Describe the information available when deciding whether to save evicted KV.
+"""Describe an evicted block and ask whether to save it on SSD.
 
-Offer groups the block's past accesses, request inputs and remaining write budget.
-The engine passes one Offer to a supplied function and expects True or False.
-The two fixture functions always accept or reject, for correctness checks only.
-
-Assumes request metadata is supplied by the caller. These fixtures do not train
-or substitute for the learned RANCHO predictor."""
+Offer contains earlier accesses, evictions, request features and write budget.
+A supplied policy returns True to save the block. The accept-all and reject-all
+functions exercise the storage interface in the small examples."""
 
 from dataclasses import dataclass
 from typing import Mapping

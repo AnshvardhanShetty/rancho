@@ -1,16 +1,9 @@
-"""Causal input extraction for the selected HBF and SSD RANCHO predictors.
+"""Build request and block features from earlier events.
 
-Assumptions: caller supplies authenticated original integer user/session IDs,
-arrival order and logical timestamps, including negative-time prehistory.
-Request metadata advances on every arrival, irrespective of admissions. SSD
-block counters advance only through actual HBM entry/touch/eviction callbacks;
-the caller, not this module, implements HBM capacity/LRU and oversized bypass.
-
-The same-request SSD history update occurs after its eviction offers, exactly
-as in the pinned replay. This module does not infer cache state from a hit
-metric, equate trace hashes with Qwen payloads, or decide how wall-clock request
-compression affects the policy clock. Native callback wiring remains separate.
-"""
+RequestHistory tracks session position and arrival times on every request.
+BlockHistory tracks accesses, evictions and time in memory. At SSD eviction,
+features use the block's last request and history before the current request.
+The engine supplies integer identities and chronological timestamps."""
 
 from dataclasses import dataclass
 

@@ -1,10 +1,7 @@
-"""Compare the accept-all and reject-all SSD correctness examples.
+"""Compare the accept-all and reject-all SSD example runs.
 
-arm() checks one run's outputs, timing formulas and I/O accounting.
-main() checks both runs used the same requests and produced identical outputs.
-
-Assumes deterministic generation and the supplied small fixtures. This checks
-correct storage and restoration, not predictor quality or serving performance."""
+Check that they used the same requests and produced the same generated output.
+Each run's timing and I/O counts are checked separately."""
 
 import argparse
 import hashlib

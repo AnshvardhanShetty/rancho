@@ -1,8 +1,4 @@
-"""Stress physical-time accounting without a GPU or a trained predictor.
-Assumptions: synthetic monotonic timestamps isolate accounting invariants, not
-measured serving performance. Tests cover startup charging, no initial steady
-credit, daily exhaustion, time-regression rejection, and rejected-write payment.
-"""
+"""Check startup writes and elapsed-time write credits with synthetic clocks."""
 
 import unittest
 from physical_time import PhysicalBudget, DAY_NS

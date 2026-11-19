@@ -1,12 +1,9 @@
-"""Replay the bundled serving prompts through the CPU cache simulator.
+"""Train RANCHO and replay the synthetic serving prompts on the CPU.
 
-Uses the existing prompt generator, warm-up, capacities and reference eligibility.
-The predictor is fitted using the research training pipeline on the serving
-generator's existing earlier requests. Requests are replayed
-in arrival order, with no GPU scheduler or decode execution. The replay enforces
-a total one-device-day write allowance, not wall-clock GPU write credits. It
-measures cache behavior and cannot measure throughput or latency.
-"""
+Uses the serving generator's earlier requests, warm-up and cache capacities.
+Requests are processed in arrival order with a total one-device-day write
+allowance. GPU scheduling, decoding and elapsed-time credits belong to the
+separate serving runner."""
 
 import argparse
 import array

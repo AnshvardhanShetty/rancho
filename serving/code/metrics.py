@@ -1,13 +1,8 @@
-"""Summarise real GPU request timestamps without startup/teardown contamination.
+"""Calculate throughput and latency from completed GPU requests.
 
-Assumptions: one unchanged measured cohort, monotonic-nanosecond scheduled
-arrivals and completed output events from a qualified GPU backend. Empty-cache
-start is selected by the author. No throughput estimate is produced for failed,
-short-output, or partially missing runs. TTFT is undefined for zero output;
-TPOT is undefined below two output tokens. Quantiles describe this finite cohort,
-not confidence intervals or sustained serving capacity. No simulated timing is
-accepted as a GPU measurement by the trial readiness gate.
-"""
+Times use a monotonic clock. Throughput includes queue drain; first-token
+latency includes queueing. Incomplete runs are rejected. First-token latency
+requires an output token, and time per output token requires at least two."""
 
 import math
 import statistics
@@ -79,7 +74,7 @@ def summarise(records):
 
 
 def validate_pair(plan):
-    """Reject incomplete or inconsistent scientific configuration, never fill it."""
+    """Check that the run configuration is complete and consistent."""
     if plan["execution"] != "real_GPU" or plan["simulation_only"] is not False:
         raise ValueError("This trial requires real GPU generation")
     if plan["model"] != "Qwen/Qwen3-4B-Instruct-2507" or plan["exchange_ratio"] != 8:

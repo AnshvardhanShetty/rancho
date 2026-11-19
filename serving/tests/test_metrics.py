@@ -1,8 +1,4 @@
-"""Check scientific timing populations and 8:1/shared-HBM acceptance gates.
-
-Assumptions: synthetic timestamps exercise arithmetic and rejection paths only.
-They never stand in for real GPU events or certify the native cache adapter.
-"""
+"""Check throughput, latency and configuration checks using synthetic timestamps."""
 
 import unittest
 from metrics import summarise, validate_pair

@@ -22,7 +22,8 @@ A block already on SSD does not need another write. When the SSD cache is full, 
 
 The replay can accept supplied reuse scores, admit everything within the budget, admit randomly, or use access/eviction-count rules. In scored mode, one score corresponds to one GPU eviction. With hourly model updates, it can ask a Python driver to update the scores of earlier offers before recalculating the cutoff.
 
-This is the smaller baseline replay. The [recorded SSD algorithm](../algorithm/README.md) includes the reconstructed later policy, hourly training and within-session accounting. Private traces, saved production scores and models are not included.
+This is the baseline replay. The [SSD algorithm](../algorithm/README.md) adds the predictor, hourly training and within-session reuse accounting.
+
 
 ## Build and check
 
@@ -32,7 +33,7 @@ Requires a C++17 compiler, Python 3.11+, OpenSSL development headers and `pkg-co
 make -C ssd/replay test
 ```
 
-The command builds two programs under `build/ssd`, generates tiny synthetic requests in a temporary folder and runs the checks. It requires no private trace, GPU or lab-server access. Tests cover duplicates, prefix gaps, repeated writes, budget exhaustion, cache replacement, oversized requests and an intentionally corrupted write log. They validate cache accounting, not serving performance or predictor quality.
+The command builds two programs under `build/ssd` and checks generated requests against a separate Python cache model. Cases include duplicates, prefix gaps, repeated writes, budget exhaustion, replacement, oversized requests and a corrupted write log.
 
 If OpenSSL is not found automatically, supply `OPENSSL_CFLAGS` and `OPENSSL_LIBS` to Make for your installation.
 
@@ -48,4 +49,4 @@ The replay reads binary arrays supplied by the caller:
 
 It writes counters to standard output, plus a per-request `.rows.i64` file and a `.programs.bits` write-decision log. The independent checker uses that log to reconstruct what happened.
 
-Requests are processed one at a time. This is different from the concurrent engine in [the SSD integration](../README.md). The replay reports raw cached-prefix positions and does not itself apply the paper's within-session eligibility filter. Its counters must not be presented as the paper's recomputation percentages without that accounting step.
+Requests are processed one at a time. The counters report cached prompt positions. The research evaluation additionally filters accesses by conversation before calculating recomputation reduction. The [SSD integration](../README.md) handles concurrent model execution.

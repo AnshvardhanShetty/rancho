@@ -1,13 +1,8 @@
-"""Physical-time write accounting for a fresh independent emulated device-day.
+"""Track startup writes and write credits earned during measured serving.
 
-Assumptions: 1 DWPD is one user-capacity of host writes per real 24 hours.
-The actual startup fills may burst within that daily total, but all later
-writes additionally need credits earned since measured serving began. There is
-zero initial steady credit; unused credit carries forward within this run.
-We never refund paid writes or sleep to manufacture an endurance denominator.
-Startup and steady writes are separately reported. A short run does not prove
-long-term flash behavior, and this module does not simulate write amplification.
-"""
+One drive write is the flash capacity. Startup copies use the device-day
+allowance; measured writes also require credits earned since measurement began.
+Unused credits carry forward. The ledger counts writes issued by the host."""
 
 DAY_NS = 86_400_000_000_000
 

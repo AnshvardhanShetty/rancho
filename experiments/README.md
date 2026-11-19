@@ -1,7 +1,10 @@
-# Reusable experiment helpers
+# Experiment helpers
 
-- `trace_reader.py`: parse one request, collect requests, sort them, and save simulator arrays.
-- `run_experiment.py`: build request features and run the hourly model loop on supplied inputs.
-- `run_simulation.py`: start the compiled simulator with supplied paths, capacities, predictions, and budget, then read its counters.
+The CPU demo starts at [examples/serving_replay.py](../examples/serving_replay.py).
 
-The runnable entry point is [examples/demo.py](../examples/demo.py). The fixed real-data launchers, archive manifests, and detailed experiment outputs are excluded from this copy.
+| File | Purpose |
+| --- | --- |
+| [synthetic_training.py](synthetic_training.py) | Build reuse labels from earlier synthetic requests and fit the predictor. |
+| [trace_reader.py](trace_reader.py) | Read requests, sort by arrival time and save arrays for the simulator. |
+| [run_experiment.py](run_experiment.py) | Calculate request features and train hourly predictors on supplied data. |
+| [run_simulation.py](run_simulation.py) | Run the C++ simulator and read its counts. |

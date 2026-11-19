@@ -1,13 +1,8 @@
-"""Per-engine dense-cache tier allocation and completed-copy publication.
+"""Manage KV block locations for the older vLLM cache-manager interface.
 
-Assumptions: one synchronous scheduler, one dense attention group, one GPU,
-16-token full immutable prefix pages. The native allocation includes null page
-0, HBM pages 1..hbm_pages, and HBF pages thereafter. New computation allocates
-only HBM pages. HBF pages remain directly readable through native block tables.
-No scientific capacity, write budget, controller state, or arrival rate defaults
-are selected here. A caller must prove GPU copy completion before publication.
-This module alone is not a serving backend or a performance certificate.
-"""
+Block 0 is reserved. HBM blocks come next, followed by HBF blocks.
+Computation allocates HBM blocks; completed copies can move to HBF.
+The caller finishes GPU copies before updating block locations."""
 
 
 class TierPool:

@@ -1,11 +1,8 @@
-"""Load a saved four-input tree and predict later reads per KV block.
+"""Load the four-feature reuse model and predict later accesses per KV block.
 
-SuffixGBT checks the supplied model files, extracts native tree text and records
-user-ID codes. predict() applies those same codes and runs the trained trees.
-
-Assumes the documented offered-suffix training format and day-four model cutoff.
-Pickle contents are inspected as data, not executed. Production models are not
-included; file digests detect changes but do not establish who produced a file."""
+Checks model metadata, extracts native tree text and applies the saved user
+encoding. Pickle opcodes are read as data rather than executed. The caller
+supplies the model folder and its expected file hashes."""
 
 from pathlib import Path
 import hashlib, json, pickletools

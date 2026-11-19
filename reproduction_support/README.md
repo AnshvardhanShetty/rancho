@@ -1,12 +1,12 @@
-# Offline reuse-count source
+# Building reuse labels
 
-These tools build the inputs consumed by `RequestData` in the model code. Their source is included to show how labels are formed; no production inputs, private paths, saved models, or measured results are included.
+These tools build training counts from request sequences and recorded cache decisions.
 
-1. `training/initial_reuse_counts.c`: build initial trace-derived reuse counts, grouped by the supplied time interval.
-2. `training/record_write_offers.cpp`: replay an initial predictor and record each actual suffix offer, including declined offers.
-3. `training/reuse_index.cpp`: index eligible within-session reads by block and request. Its audit mode checks the index independently.
-4. `training/suffix_reuse_counts.cpp`: count each offered suffix's later eligible reads by hour, with an independent audit.
+1. `training/initial_reuse_counts.c` counts later accesses to newly introduced KV.
+2. `training/record_write_offers.cpp` records the recomputed suffix considered for each write, including rejected writes.
+3. `training/reuse_index.cpp` indexes repeated accesses by block and request.
+4. `training/suffix_reuse_counts.cpp` counts later accesses to each offered suffix and checks the counts with a separate calculation.
 
-The final label files are `c.i32` (distinct blocks per offer), `Y.u64` (observed reads by hour and offer), and `AUDIT.json`. Hourly training uses only completed hours before its cutoff.
+The output records the number of blocks per offer in `c.i32` and later accesses by hour in `Y.u64`. Training uses the hours completed before each fit.
 
-The offer collector preserves its original collection modes. The current evaluation implementation is [simulator/rancho.cpp](../simulator/rancho.cpp). The synthetic demo constructs simple labels directly and does not require these tools.
+For the small CPU demo, [synthetic_training.py](../experiments/synthetic_training.py) builds these counts in memory. The cache decisions come from [rancho.cpp](../simulator/rancho.cpp).

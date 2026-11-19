@@ -1,9 +1,4 @@
-"""CPU safety checks for retained-prefix ownership and native allocation headroom.
-
-Assumptions: fake blocks reproduce the installed native touch/free reference
-semantics; tests establish bookkeeping safety, not actual GPU hit rates or speed.
-The real GPU run separately audits retention and all actual cache hits.
-"""
+"""Check shared-prefix reference counts using small fake cache blocks."""
 
 from types import SimpleNamespace as NS
 import unittest

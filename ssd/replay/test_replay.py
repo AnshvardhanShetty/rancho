@@ -1,12 +1,8 @@
-"""Literal SSD baseline checks using a separate small Python list-cache model.
+"""Check SSD replay against a separate Python cache model.
 
-Assumptions: count distinct blocks once per cache-eligible request; stride counts
-absent-copy candidates, including skips, from1; eviction rules include current
-eviction. First/second-only are equality gates, not lower bounds. Histories start
-empty separately at day1 and day4. Fixtures include duplicates, SSD replacement,
-free retained copies, budget exhaustion, prefix gaps, final-token caps and
-oversized bypass. They do not establish serving-engine slot equivalence.
-"""
+Cases cover duplicate blocks, repeated evictions, prefix gaps, replacements,
+write limits and oversized requests. Access and eviction rules count the
+current event. Each case starts with empty caches."""
 
 from fractions import Fraction
 from pathlib import Path

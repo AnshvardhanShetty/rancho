@@ -1,4 +1,4 @@
-"""Independent verification of a frozen cost-band controller; reranks strictly past observations within powers-of-two cost bands, retaining pooled fallback and hard budget."""
+"""Check cost-group score thresholds using a separate controller implementation."""
 
 import array, math, struct
 from pathlib import Path

@@ -1,12 +1,8 @@
-"""Explicit per-layer pages for the installed vLLM hybrid cache layout.
+"""Copy the per-layer KV pages described by vLLM's native cache layout.
 
-Assumptions: registration receives the same native cache configuration and named
-tensors as vLLM's OffloadingConnectorWorker. Each transfer specifies native block
-IDs separately for every cache group. Attention pages include padding; recurrent
-pages include both convolution and temporal state. No 16-token scientific ID is
-silently equated with a native page. This component does not implement RANCHO
-admission, LRU, warm-state materialization, or the modeled flash write channel.
-"""
+Transfers use the registered cache groups and tensors. Attention pages include
+padding; recurrent pages include convolution and temporal state. Each group
+receives its own native block IDs."""
 
 from dataclasses import dataclass
 from collections.abc import Mapping

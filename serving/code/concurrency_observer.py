@@ -1,16 +1,8 @@
-"""Observe the unchanged synchronous baseline/HBF schedulers at each GPU step.
+"""Record active requests, cache occupancy and allocation failures per GPU step.
 
-Assumptions: one in-flight synchronous step, full prefill vs decode distinction
-from native computed-token counts. This mixin never changes admission, queues,
-allocations, priorities, token budget or worker output. The measured sequence
-limit is the entire submitted cohort, so GPU KV memory gates residency. Buffered
-CPU telemetry has the same cost model in both arms and remains in wall timing.
-HBM free pages and native allocate_slots refusals are recorded every step. A
-refusal means native capacity/admission headroom cannot fit the attempted work;
-it does not imply a CUDA out-of-memory error or zero free pages. HBF
-occupancy is sampled every 64 steps and on resident-count changes; those
-samples are not claimed to capture an exact peak. No GPU tensors are read.
-"""
+The observer reads scheduler counters and leaves scheduling decisions to vLLM.
+An allocation refusal means the next request does not fit the available KV
+space. HBF occupancy is sampled every 64 steps and when residency changes."""
 
 import json, time
 from pathlib import Path

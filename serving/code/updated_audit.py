@@ -1,11 +1,8 @@
-"""Independently reconstruct serving history and archived updated decisions.
+"""Check serving admission decisions against the recorded events.
 
-Assumptions: actual logged completed-prefill order is the policy serialization.
-Rebuild the HBM-only cache with a plain list (live code uses OrderedDict), count
-only strictly earlier actual observed reuse, then apply the archived independent
-cost-band verifier and exact hash tie rule. Native hit counters and physical
-write budgets are audited separately. Predictions are regenerated from trees.
-"""
+Rebuild earlier reuse in completed-prefill order, regenerate tree predictions,
+and compare decisions with the separate controller implementation.
+Hit counts and physical write limits are checked by the other run checks."""
 
 from pathlib import Path
 import hashlib, json, math, re

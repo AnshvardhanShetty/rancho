@@ -1,11 +1,14 @@
-# Reuse predictor
+# Reuse prediction
 
-`model_training.py` contains the data loading, observed-reuse labels, weighting, tree fitting, prediction, and output checks for one hourly update.
+The predictor estimates how often later requests will access a request's KV. It uses user ID, request position in the conversation, conversation age and time since the previous request.
 
-Read `RequestData`, then `training_weights()`, `prepare_training_arrays()`, `fit_tree_model()`, `predict_reuse()`, and `fit_hourly_model()`.
+[model_training.py](model_training.py) prepares the observed reuse labels, fits gradient-boosted trees and makes predictions. Each fit uses accesses observed before its cutoff. The tree count is chosen using an earlier validation period.
 
-`run_hourly_models()` in `experiments/run_experiment.py` supplies the outer loop. `tree_encoding.py` prepares categorical user IDs. `model_settings.json` is the four-feature tree recipe. `file_helpers.py` handles JSON and content fingerprints.
+- `RequestData.training_examples()` selects earlier requests and their reuse labels.
+- `fit_tree_model()` trains the model with the settings in [model_settings.json](model_settings.json).
+- `predict_reuse()` applies the fitted model to request features.
+- `fit_hourly_model()` saves a model and predictions for the next hour.
 
-Training data are supplied by the caller. The bundled demonstration uses only synthetic sessions. Production inputs, trained production models, per-request predictions, and detailed experiment outputs are not included.
+[tree_encoding.py](tree_encoding.py) handles categorical user IDs. [file_helpers.py](file_helpers.py) reads and writes model records.
 
-The CPU serving demo calls this same fitting code through [synthetic_training.py](../experiments/synthetic_training.py). That adapter builds causal reuse counts from the serving generator's earlier requests, then uses `RequestData.training_examples()` to select labels at each cutoff. An initial replay records actual offered suffixes before the final fit.
+The [CPU demo](../examples/README.md) trains this model on synthetic requests using [synthetic_training.py](../experiments/synthetic_training.py).

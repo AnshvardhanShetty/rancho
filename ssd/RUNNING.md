@@ -1,12 +1,10 @@
 # Running the SSD examples
 
-The GPU path requires Linux, compatible vLLM/CUDA, local Qwen3-30B-A3B-Instruct-2507 BF16 weights, and enough GPU memory for the model. It expects the same 48-layer, 16-token KV-block layout as the HBF serving path. See the [HBF environment notes](../serving/RUNNING.md). This public packaging has CPU checks; it has not been rerun on a GPU.
+The GPU examples require Linux, compatible vLLM/CUDA, local Qwen3-30B-A3B-Instruct-2507 BF16 weights and a local SSD with an ext4 filesystem. The code uses direct I/O and synchronous writes. It expects the same 48-layer, 16-token KV layout as the HBF integration. See the [vLLM setup](../serving/RUNNING.md). This public snapshot has been checked on CPU; it has not been rerun on a GPU.
 
-Choose an available GPU and a directory on a local SSD. The storage code currently requires an ext4 filesystem backed by a local block device. It bypasses the operating system's file cache and waits for each write to complete. The directory is supplied at launch; no lab paths or machine names are built in. The runner does not reserve a GPU or stop other jobs.
+## Save and restore KV
 
-## Run the two storage examples
-
-From the repository root:
+Run these sequentially on the same GPU and model, choosing a new output directory for each:
 
 ```bash
 export RANCHO_MODEL_PATH=/path/to/local/model
@@ -15,19 +13,15 @@ python ssd/run.py --plan ssd/examples/fixture_reject.json --ssd-directory /path/
 python ssd/code/check_pair.py /path/to/new/accept-output /path/to/new/reject-output /path/to/check-report.json
 ```
 
-Each output directory must be new. The engine uses a temporary SSD file that it removes when closed. Run the examples sequentially on the same device and model. They check the storage path using synthetic token IDs, not a real conversation trace. Byte verification adds overhead and is enabled for these correctness examples.
+One example saves every eligible block within the budget; the other rejects every write. The comparison checks that restored KV produces the same output. Byte verification is enabled. The launcher uses vLLM's batch-invariant mode for the output comparison.
 
-The launcher enables vLLM's batch-invariant mode so the output comparison is meaningful. The engine uses one synchronous process for scheduling and GPU execution. Other engine configurations need their own validation.
+The engine creates a temporary SSD file and removes it when closed. Only complete input-KV blocks are saved. Transfers pass through a CPU buffer, and writes count against the allowance, including warm-up.
 
-## Supply a decision function
+## Connect an admission policy
 
-The plan's `policy_factory` has the form `module:function`. The factory receives `policy_settings` and returns a function taking an `Offer` from [ssd_policy.py](code/ssd_policy.py). Return `True` to save a block or `False` to skip it.
+Set `policy_factory` in the plan to `module:function`. The factory receives `policy_settings` and returns a function that accepts an [Offer](code/ssd_policy.py). Return `True` to save the block or `False` to skip it.
 
-An offer includes the block's past accesses and evictions, time in GPU memory, time since its last access, and the inputs from the last request that used it. Request features and user-ID encoding must be supplied consistently with the chosen predictor. The engine does not train a model or reconstruct those request features itself.
-
-The included accept/reject functions check the interface. The production SSD predictor and its model/controller binding are not distributed in these examples. Do not interpret the examples as an evaluation of the learned SSD policy.
-
-Writes consume the declared block allowance, including warm-up writes. Host write counts do not measure additional writes inside the SSD. Only full input-KV blocks are saved. Transfers use a CPU staging buffer and are synchronous. The code depends on vLLM's internal interfaces and may need changes for other versions.
+The offer contains prior accesses and evictions, time in memory, time since the last access, features from the last request and the remaining write budget. Supply request features and user encoding consistently with the predictor. The included accept/reject policies check the storage interface; the research SSD predictor is supplied separately.
 
 ## CPU checks
 
@@ -35,4 +29,4 @@ Writes consume the declared block allowance, including warm-up writes. Host writ
 PYTHONPATH=ssd/code:serving/code python -m unittest discover -s ssd/tests
 ```
 
-These checks cover the synthetic plans, decision interface, hard write limit and protection of active or unfinished KV. The eviction checks use stand-ins for GPU interfaces. They do not test real SSD transfers or GPU execution.
+These check the example plans, policy interface, write limits and protection of active KV using stand-ins for GPU interfaces. For a CPU cache replay, see [ssd/replay](replay/README.md).

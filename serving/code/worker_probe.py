@@ -1,9 +1,6 @@
-"""Inspect this isolated worker's actual CUDA allocation and native KV geometry.
+"""Read the GPU worker's memory usage and native KV layout.
 
-Assumptions: one Qwen3-30B-A3B-Instruct-2507 BF16 GPU worker, no HBF emulation in this component
-check. This reports native allocation, not an admission/throughput result. It
-never edits tensors, other workers, installed packages, or existing engines.
-"""
+Reports CUDA allocation and per-layer cache geometry for the supplied model."""
 
 
 class MemoryProbe:

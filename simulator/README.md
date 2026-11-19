@@ -1,10 +1,14 @@
-# Cache replay
+# HBF cache simulator
 
-Start at `Simulator::process_request()` in `rancho.cpp`: read the prefix, identify reuse, count hits, price the suffix, decide, write, and update history for later requests.
+The simulator processes requests in arrival order. For each request, it finds the cached prefix, scores the remaining KV, checks the write budget and updates the caches.
 
-- `write_controller.hpp`: use recent scores and quoted write costs to choose affordable score cutoffs.
-- `cache.hpp`: store block IDs, maintain least-recently-used order, and trial writes to obtain their exact charge.
-- `hbm_only_readable_prefix.cpp`: replay a separate HBM-only cache for the history filter.
-- `simulation_io.hpp`: load caller-supplied input arrays and save decisions, counters, and cache snapshots.
+Start with `Simulator::process_request()` in [rancho.cpp](rancho.cpp).
 
-Python supplies predictions already fitted from past observations. The C++ replay makes cache decisions and counts outcomes; it does not train the model. The synthetic demo shows how the pieces connect.
+| File | Purpose |
+| --- | --- |
+| [write_controller.hpp](write_controller.hpp) | Use recent demand and remaining writes to update admission thresholds. |
+| [cache.hpp](cache.hpp) | Store block IDs, replace old blocks and count the writes needed for a copy. |
+| [hbm_only_readable_prefix.cpp](hbm_only_readable_prefix.cpp) | Track which accesses an HBM-only cache could serve. |
+| [simulation_io.hpp](simulation_io.hpp) | Read inputs and save decisions and counts. |
+
+Python supplies reuse predictions. C++ uses those predictions to make cache decisions. Run `make demo-serving` from the repository root to see them together.

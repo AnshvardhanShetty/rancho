@@ -11,7 +11,7 @@ This code lets the server **save selected KV on a solid-state drive (SSD), then 
 3. **Save accepted data.** The worker copies it from GPU memory to the SSD. An existing SSD copy does not need to be written again.
 4. **Use it later.** If another request needs that KV, the worker reads the SSD copy back into GPU memory before the model continues.
 
-The SSD engine integration is **under development**. The included small examples accept every write or reject every write to check that saving and restoring data works. They are not performance results or a replacement for RANCHO's learned decision rule.
+The SSD engine integration is under development. The small accept-all and reject-all examples check saving and restoring KV.
 
 ## Offline cache simulator
 
@@ -28,6 +28,6 @@ The [recorded SSD algorithm](algorithm/README.md) includes hourly model training
 | [code/ssd_storage.py](code/ssd_storage.py) | Write KV to an SSD file and read it back. |
 | [code/check_pair.py](code/check_pair.py) | Check that saving and restoring KV preserves the example's output. |
 
-The code uses vLLM to run the language model. It shares page-layout and timing helpers with the [HBF serving code](../serving/README.md). No private requests, model weights or trained production predictors are included.
+The code uses vLLM to run the language model. It shares page-layout and timing helpers with the [HBF serving code](../serving/README.md). The run instructions describe how to supply model weights and an admission policy.
 
 See [RUNNING.md](RUNNING.md) for requirements and commands.

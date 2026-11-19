@@ -1,12 +1,8 @@
-"""Use real clocks for C7 and enforce physical steady-write credits before payment.
+"""Apply elapsed-time write credits to HBF admissions.
 
-Assumptions: one synchronous worker on one Linux host, globally comparable
-monotonic clocks, a parent-published measurement-start receipt, and explicit
-request identities. Frozen predictor features retain the constructed workload's
-causal history; those feature timestamps are not the endurance clock. Copies
-and the 8 GB/s service cap remain in the existing HBF connector. This extension
-does not force admissions, preload KV, or use later requests' outcomes.
-"""
+The wrapper uses a monotonic clock and the recorded measurement start.
+Predictor features retain their conversation timestamps. The physical ledger
+checks payment before the controller charges an accepted write."""
 
 import json
 import re

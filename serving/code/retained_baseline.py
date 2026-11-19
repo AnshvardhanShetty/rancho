@@ -1,12 +1,8 @@
-"""HBM-only baseline retaining the declared shared prefix after GPU computation.
+"""Keep computed shared prefixes in HBM for the serving baseline.
 
-Assumptions: unchanged synchronous engine and native queue order, no speculation,
-no HBF pages. Native admission queues requests when retained pages leave too
-little space. The retained references are genuine ownership charged to HBM,
-not additional active requests. Reported ref-count-based HBM occupancy therefore
-includes idle retained prefixes. Empty starting cache, all cold fills and pinning
-overhead are timed. Never retains per-request unique suffixes or output tokens.
-"""
+Retained pages count towards HBM capacity and stay protected from replacement.
+The scheduler queues requests when the remaining space cannot hold their KV.
+Only the declared shared prefix is retained after GPU computation."""
 
 from direct_backend import DirectScheduler, log_event
 from concurrency_observer import Observer

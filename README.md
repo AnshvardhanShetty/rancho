@@ -6,7 +6,7 @@ I carried out the system design, implementation, and experiments, including the 
 
 The research is ongoing. This repository provides a limited public demo so those interested can explore my implementation and run selected components on synthetic workloads. The full research implementation and evaluation remain private and under development.
 
-## What it does
+## How it works
 
 Language models use GPU memory to process requests and keep the **KV cache**, which stores information already computed about earlier tokens. Later requests can reuse that KV to skip prompt processing, called **prefill**. Keeping more KV saves computation but leaves less memory for active requests.
 
@@ -73,4 +73,4 @@ For a three-request walkthrough, run `make demo`. [Example code](examples/README
 | SSD algorithm | [Training, replay and recomputation accounting](ssd/algorithm/README.md) |
 | SSD integration | [Saving and restoring KV](ssd/README.md) |
 
-Run `make test-simulator` for the cache tests.
+Run `make test-simulator` for the cache tests and `make test-demo` for the CPU example checks.

@@ -1,17 +1,9 @@
-"""Construct a fixed-cache-benefit serving workload without fixing admissions.
+"""Generate synthetic conversations with shared prefixes and unique endings.
 
-Assumptions: declared session/document groups; immutable full 16-token
-hash-chain blocks. A fixed earlier synthetic reference trace contains the later
-request contexts (ordinary repeated-document reuse); it seeds reference stamps
-and causal request features but contributes NO KV to measured engines. GPU C7
-calibration is separate and uses actually observed earlier prefill offers.
-Each fresh engine executes one real fill request per group before the timed
-window; actual native lookup counts determine hits. The target is about95%
-OFFLINE eligible previous-reference-same-session, first-distinct block reuse,
-not an assigned hit counter. Workload selection is permitted only on feasibility
-and matched hit ratio, never throughput/TTFT. This is a constructed capacity
-experiment and not a reproduction of a production trace distribution.
-"""
+Earlier references establish conversation features and reuse eligibility.
+Each engine starts empty and computes one warm-up prompt per conversation.
+Full blocks use chained hashes, so their identities include preceding tokens.
+Cache hits are counted from actual lookups."""
 
 import hashlib, struct
 from features import RequestHistory

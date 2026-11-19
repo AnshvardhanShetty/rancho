@@ -1,9 +1,4 @@
-"""Index the native eviction queue by tier without changing its ordering.
-
-Assumptions: one synchronous scheduler; all mutations use the pinned queue API.
-The native linked list remains authoritative. Ordered indexes mirror each tier's
-subsequence and provide constant-time counts. No capacity or admission changes.
-"""
+"""Maintain request order and membership for the synchronous scheduler."""
 
 from collections import OrderedDict
 from itertools import islice

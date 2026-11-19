@@ -1,12 +1,8 @@
-"""Explicit HBM retention ownership for already-computed shared prefix pages.
+"""Protect computed shared prefixes in the HBM-only baseline.
 
-Assumptions: dense synchronous native cache, complete 16-token shared-prefix
-pages, fixed synthetic shared-region boundary supplied by the workload. This is
-a changed baseline policy, not vLLM's default and not RANCHO. Each retained page
-has one extra native reference, stays charged to HBM, and cannot be allocated or
-evicted. No KV is manufactured, no future request is read, no admission cap is
-imposed. Caller must wait for actual GPU completion before retaining candidates.
-"""
+Each retained full page gets an extra reference and remains charged to HBM.
+The caller supplies the shared-prefix length and waits for GPU computation
+before retaining pages. This is the benchmark's prefix-retaining baseline."""
 
 
 def completed_shared_candidates(scheduled_ids, requests, tables, seen, shared_pages):
