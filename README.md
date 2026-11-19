@@ -6,48 +6,46 @@ The research is ongoing. This repository provides a limited public demo so those
 
 ## What it does
 
-Language models use GPU memory both to process requests and to keep the **KV cache**, information already computed about earlier tokens. Later requests can reuse that KV to skip prompt processing, called **prefill**. Keeping more KV saves computation but leaves less memory for active requests.
+Language models use GPU memory to process requests and keep the **KV cache**, which stores information already computed about earlier tokens. Later requests can reuse that KV to skip prompt processing, called **prefill**. Keeping more KV saves computation but leaves less memory for active requests.
 
-Flash provides more space, but wears out with writes. **RANCHO learns which KV is worth keeping and controls how quickly it spends the write budget.** Moving useful KV to flash frees GPU memory for more active requests while preserving reuse.
+RANCHO predicts which KV will be reused and decides what to save in flash. Flash provides more space, but wears out with writes, so RANCHO also controls how quickly it spends its write budget.
 
-The two flash configurations serve different purposes:
-
-- **High-bandwidth flash (HBF)** holds selected KV after prefill, replacing part of the GPU's KV cache and freeing memory for active requests.
-- **Solid-state drives (SSDs)** retain selected KV when it leaves memory. A later request can load it back, avoiding recomputation while keeping memory capacity fixed.
-
-I built this from prediction through to actual KV transfers in **vLLM**, an engine for serving language models. The aim is higher **throughput** (generated tokens per second) and lower **time to first token (TTFT)**.
+- **High-bandwidth flash (HBF)** stores selected KV after prefill, freeing GPU memory for active requests.
+- **Solid-state drives (SSDs)** save selected KV as it leaves memory, so later requests can load it back instead of computing it again.
 
 ```mermaid
 flowchart LR
-    A[KV considered for flash] --> B[RANCHO predicts reuse]
-    B --> C[Controller checks value and write budget]
+    A[Computed KV] --> B[Predict later reuse]
+    B --> C[Decide what is worth writing]
     C --> D[Save selected KV in flash]
-    D --> E[Later requests reuse it]
+    D --> E[Reuse it on later requests]
 ```
 
-## Selected results
+## Results
 
-### High-bandwidth flash (HBF)
+### High-bandwidth flash
 
-**85% of the GPU memory used for prefix caching replaced with flash**, while meeting a 95% cache-hit target (±1 percentage point).
+In simulator experiments, RANCHO replaced **85% of the GPU memory used for prefix caching** while meeting a 95% cache-hit target (±1 percentage point).
 
-| Policy | Prefix-cache GPU memory replaced |
+| Policy | KV-cache GPU memory replaced |
 | --- | ---: |
 | **RANCHO** | **85%** |
-| Original Random (fixed probability 0.5) | 20% |
-| Access Count (K=3) | 40% |
+| Random: save each request with 50% probability | 20% |
+| Access Count: save after three accesses | 40% |
 
-All three use the same 16:1 capacity exchange and one-drive-write-per-day allowance: each GB of GPU memory removed adds 16 GB of flash, and daily writes average at most the flash capacity. These are selected replay-study results.
+Access Count waits until the first missing block has been accessed three times before saving the recomputed KV. Each GB of GPU memory removed adds 16 GB of flash. All policies have a write allowance averaging one full flash-capacity write per day.
 
-The **vLLM integration achieves 6.4× output throughput and 89% lower p95 TTFT with 85% less KV-cache HBM**, compared with HBM-only serving at the same 95.12% cache-hit ratio. This is the bundled synthetic benchmark at 20 requests/s, with HBF emulated in GPU memory. p95 TTFT is the time within which 95% of requests receive their first token. [Serving results and setup](serving/README.md).
+I also integrated RANCHO into **vLLM**, an engine for serving language models. The prototype uses a separate region of GPU memory to emulate HBF and limits writes to **8 GB/s**. We test it with synthetic conversations whose shared prefixes occupy most of the baseline's KV-cache memory, leaving little room for active requests.
 
-### Solid-state drives (SSD)
+With **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token falls **89%**. **HBM** is the GPU's high-bandwidth memory; **throughput** is generated output tokens per second. [vLLM code and setup](serving/README.md).
 
-**79.5% less repeated prefill after memory caching**, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. This replay result measures avoided recomputation within conversations. [SSD implementation](ssd/README.md).
+### SSD
+
+SSD caching avoids **79.5% of the repeated prefill left after memory caching** within conversations in our simulator experiments, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. The memory capacity stays fixed. [SSD code](ssd/README.md).
 
 ## Try it without a GPU
 
-The CPU demo reuses the synthetic prompts from the vLLM example: eight conversations with shared beginnings, eight warm-up requests, and 1,200 measured requests. It runs the research training pipeline on earlier requests from that generator, then uses the fitted predictor with the RANCHO controller and C++ cache simulator.
+Run the synthetic conversations from the vLLM example through the cache simulator on your laptop. The code trains RANCHO on earlier requests, then shows how much KV later requests reuse and how much it writes to flash.
 
 Requires Python 3.11+, Make and a C++17 compiler. On macOS, install `libomp` for LightGBM.
 
@@ -58,26 +56,19 @@ pip install -r requirements.txt
 make demo-serving
 ```
 
-```text
-Policy            HBM blocks   HBM saved   Cache hits   Recomputed  Flash writes
-HBM only                 960        0.0%       95.12%         7200             0
-RANCHO 8:1               320       66.7%       95.12%         7200          5118
-RANCHO 16:1              144       85.0%       95.12%         7200          8184
-```
+The demo processes 1,200 requests across eight conversations. It prints cache-hit ratios, GPU memory savings, recomputation and flash writes. In this example, RANCHO maintains a **95.12% cache-hit ratio with 85% less KV-cache HBM**.
 
-**HBM** is the GPU's high-bandwidth memory. The demo trains the research predictor locally and computes cache hits, recomputation and writes. Writes include warm-up; cache-hit ratios exclude it. [Demo details](examples/README.md).
+For a three-request walkthrough, run `make demo`. [Example code](examples/README.md) · [Run with vLLM on a GPU](serving/RUNNING.md).
 
-For a smaller walkthrough, `make demo` runs three requests through training, prediction, admission and reuse. For actual model execution, see the [GPU serving instructions](serving/RUNNING.md).
-
-## Explore the implementation
+## Read the code
 
 | Component | Code |
 | --- | --- |
 | Reuse prediction | [Gradient-boosted model](model/model_training.py) |
 | Write-budget control | [Controller](simulator/write_controller.hpp) |
 | Cache simulation | [Request replay](simulator/rancho.cpp) · [Runnable demo](examples/serving_replay.py) |
-| vLLM integration | [HBF copy path](serving/code/direct_backend_hbf.py) · [Overview](serving/README.md) |
+| vLLM integration | [HBF copy path](serving/code/direct_backend_hbf.py) |
 | SSD cache replay | [Replay and independent checker](ssd/replay/README.md) |
 | SSD integration | [Saving and restoring KV](ssd/README.md) |
 
-Run `make test-simulator` for the synthetic cache regression cases.
+Run `make test-simulator` for the cache tests.

@@ -1,50 +1,35 @@
 # RANCHO with vLLM
 
-When an LLM answers a request, it computes information about the input tokens. This information is called **key-value data (KV)**. Saving it lets the server reuse the computation when a later request starts with the same tokens—for example, the next message in a conversation.
-
-KV normally occupies the GPU's **high-bandwidth memory (HBM)**. That memory is limited: storing old conversations leaves less room for requests being processed now. We study whether **high-bandwidth flash (HBF)** can hold some of that KV instead. Flash adds capacity, but repeated writes wear it out. We therefore need to choose what is worth saving.
-
-**RANCHO makes that choice.** It predicts how often KV will be reused and decides whether the expected benefit is worth the write, given the remaining write allowance.
+This is my integration of RANCHO into vLLM. It connects the reuse predictor and write-budget controller to the engine's KV cache, so accepted KV is copied to HBF and can be reused by later requests.
 
 ## How it works
 
-[vLLM](https://github.com/vllm-project/vllm) runs the language model and schedules requests. This code adds RANCHO and a second place to store KV:
+When a request arrives, vLLM finds its cached prefix and computes the missing KV during prefill. RANCHO predicts later reuse and decides whether to save the computed KV in HBF. After an accepted copy, the engine updates the request's cache locations and releases the original HBM space.
 
-1. **Reuse what is already saved.** When a request arrives, vLLM looks for the beginning of its input in the cache. It computes the part that is missing.
-2. **Decide whether to keep the newly computed KV.** RANCHO uses user ID, turn number, conversation age and time since the previous request to predict reuse. It combines that prediction with earlier accesses, the amount to write and the remaining allowance.
-3. **Save the selected KV in HBF.** The worker copies the accepted data. A later request can use that copy instead of recomputing it. KV that is not saved in HBF stays subject to the ordinary HBM capacity and eviction limits.
+The prototype emulates HBF in a separate region of GPU memory. Reads use GPU-memory speed, and writes share an **8 GB/s limit**. The predictor runs on the CPU.
 
-The predictor estimates reuse; the write controller decides how selective to be. As requests arrive, the controller uses recent write offers and spending to adjust its admission cutoff. This serving version uses a frozen trained predictor while updating the controller and reuse history during execution.
+## Experiment
 
-**The prototype emulates HBF in a separate region of GPU memory.** Writes are limited to 8 GB/s, but reads run at GPU-memory speed. It lets us exercise the integration with real model execution; it is not a test of physical HBF hardware.
+We use eight synthetic conversations with shared prefixes. The baseline keeps these prefixes in HBM, occupying most of its KV-cache memory and leaving little space to process requests together. Moving the prefixes to HBF lets the engine process more requests at once.
 
-## Results so far
+Requests arrive at **20 per second** for 60 seconds. Each has 1,872 shared input tokens, 96 unique input tokens and 64 output tokens. We run eight warm-up requests before the 1,200 measured requests.
 
-On a synthetic workload with eight shared contexts at **20 requests/s under high HBM capacity pressure**. Saved shared contexts occupy most of the baseline’s KV-cache memory, leaving little room for concurrent requests:
-
-| Configuration | HBM replaced | Higher output throughput | Lower p95 time to first token | KV hit rate |
+| Configuration | KV-cache HBM replaced | Output tokens/s | Time to first token, p95 | Cache-hit ratio |
 | --- | ---: | ---: | ---: | ---: |
-| HBM only | — | Reference | Reference | 95.12% |
-| RANCHO, 8:1 | 66.7% | 1,265% | 98% | 95.12% |
-| RANCHO, 16:1 | 85% | 536% | 89% | 95.12% |
+| HBM only | — | 67.6 | 1,020.2 s | 95.12% |
+| RANCHO, 16:1 | 85% | 429.9 | 109.6 s | 95.12% |
 
-Percentage changes are relative to the HBM-only baseline, calculated from the saved measurements before rounding. “HBM replaced” is the reduction in KV-cache HBM relative to the baseline. At 16:1, each unit removed is replaced with sixteen units of HBF capacity. Output tokens/s measures how quickly the server finishes generating answers. Time to first token includes time spent waiting in the queue; p95 means 95% of requests received their first token within that time.
+This gives **6.4× throughput and 89% lower p95 time to first token**. Throughput counts generated tokens over the time needed to finish all requests. Time to first token includes queueing; p95 is the time by which 95% of requests have received their first token. The benchmark uses Qwen3-30B-A3B-Instruct-2507 on one GPU, with one repetition. [Commands and settings](RUNNING.md).
 
-These are one-repetition measurements on a constructed workload. The baseline keeps the shared prefixes in HBM, where they occupy most of its cache; it does not use stock vLLM eviction. HBF reads are emulated as described above. See [run instructions and benchmark conditions](RUNNING.md) for details.
+## Code
 
-**The integration and research are still under development.** This public version differs from the private working version. Private traces, trained production predictors, model weights and raw run logs are not included.
-
-## Follow the code
-
-| Start here | What it does |
+| File | What it does |
 | --- | --- |
-| [run.py](run.py) | Start a synthetic serving test and check its output. |
-| [code/run_cell.py](code/run_cell.py) | Send requests to vLLM and measure cache hits, throughput and latency. |
-| [code/direct_backend.py](code/direct_backend.py) | Connect vLLM's scheduler and KV storage to the two memory regions. |
-| [code/direct_backend_hbf.py](code/direct_backend_hbf.py) | Pass newly computed KV to RANCHO and copy accepted data. |
-| [code/updated_policy.py](code/updated_policy.py) | Predict reuse, add earlier reuse history and make the write decision. |
-| [code/physical_hbf.py](code/physical_hbf.py) | Enforce write credits earned from real elapsed time. |
+| [run.py](run.py) | Start a serving run. |
+| [code/run_cell.py](code/run_cell.py) | Send requests and measure cache hits, throughput and latency. |
+| [code/direct_backend.py](code/direct_backend.py) | Connect vLLM's scheduler to the two KV storage regions. |
+| [code/direct_backend_hbf.py](code/direct_backend_hbf.py) | Ask RANCHO what to save, copy accepted KV and update cache locations. |
+| [code/updated_policy.py](code/updated_policy.py) | Predict reuse and make the admission decision. |
+| [code/physical_hbf.py](code/physical_hbf.py) | Track write credits as time passes. |
 
-The other modules handle storage bookkeeping, synthetic inputs and result checks. vLLM is installed separately; its source is not copied into this repository.
-
-For setup, commands and checks, see [RUNNING.md](RUNNING.md).
+For setup and run commands, see [RUNNING.md](RUNNING.md). The [CPU demo](../examples/README.md) runs the synthetic workload through the cache simulator.

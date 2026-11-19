@@ -1,23 +1,25 @@
 # Synthetic examples
 
-## Serving prompts on CPU
+## Serving workload on CPU
 
-Run `make demo-serving` from the repository root after installing the Python requirements. `serving_replay.py` uses the prompt generator and cache allocations in `serving/` to replay eight warm-up requests and 1,200 measured requests without a GPU.
+Run `make demo-serving` from the repository root after installing the Python requirements.
 
-It uses the research training code to build an initial predictor, replay earlier requests to collect actual suffix offers, and fit the final predictor from the observed reuse of those suffixes. The fitted model supplies scores to the C++ RANCHO simulator. The HBM-only comparison retains the shared beginnings as the serving baseline does. Output includes cache hits, HBM replacement, recomputation and flash writes. Writes include warm-up; measured cache metrics exclude it. The allowance is one flash-capacity equivalent across the replay.
+The demo uses the serving experiment's synthetic prompt generator: eight conversations, eight warm-up requests and 1,200 measured requests. It trains RANCHO on earlier requests, then replays the measured requests through the C++ simulator. The output shows cache hits, GPU memory savings, recomputation and flash writes.
 
-The training recipe, label-selection code and admission controller are the research implementations. The model is fitted locally on the generator's earlier requests; it is not the saved model from the GPU benchmark. It processes prompt-cache operations in arrival order, without GPU scheduling, output-token execution or the serving engine's elapsed-time write-credit guard. Matching hit ratios does not establish identical admission decisions or serving performance.
+Training uses the research pipeline. An initial predictor supplies scores for a replay that records which KV each request offers. The final predictor learns from the later reuse of that KV. Labels include only accesses observed before each training cutoff.
 
-To save a computed summary:
+The baseline keeps shared prefixes in HBM. RANCHO uses HBF and a smaller HBM cache. Both start empty before warm-up; cache-hit ratios and recomputation count only measured requests. Writes include warm-up and must fit one flash-capacity allowance.
+
+The model is trained locally on these synthetic requests. The CPU replay processes prompt caching in arrival order; the GPU runner also executes the model, schedules concurrent requests and applies elapsed-time write credits. [Serving code](../serving/README.md).
+
+To save the computed summary in a new file:
 
 ```bash
 python examples/serving_replay.py --output demo-summary.json
 ```
 
-The output must be a new file. Temporary request streams, predictions and replay logs are removed when the process exits.
-
 ## Three-request walkthrough
 
-Run `make demo`. `demo.py` trains on generated earlier sessions, checks the request reader and feature builder, then evaluates the three requests in `demo_requests.json`.
+Run `make demo` for a smaller example. It trains a predictor, checks the request reader and features, then processes the three requests in `demo_requests.json`.
 
-Expected synthetic totals are 4 flash hits, 0 HBM hits, and 2 blocks written.
+The first request writes two KV blocks. Two later requests reuse both. The result is **4 flash hits and 2 block writes**.
