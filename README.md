@@ -10,19 +10,24 @@ Language models use GPU memory both to process requests and to keep the **KV cac
 
 Flash provides more space, but wears out with writes. **RANCHO learns which KV is worth keeping and controls how quickly it spends the write budget.** Moving useful KV to flash frees GPU memory for more active requests while preserving reuse.
 
+The two flash configurations serve different purposes:
+
+- **High-bandwidth flash (HBF)** holds selected KV after prefill, replacing part of the GPU's KV cache and freeing memory for active requests.
+- **Solid-state drives (SSDs)** retain selected KV when it leaves memory. A later request can load it back, avoiding recomputation while keeping memory capacity fixed.
+
 I built this from prediction through to actual KV transfers in **vLLM**, an engine for serving language models. The aim is higher **throughput** (generated tokens per second) and lower **time to first token (TTFT)**.
 
 ```mermaid
 flowchart LR
-    A[Compute missing KV] --> B[RANCHO predicts reuse]
+    A[KV considered for flash] --> B[RANCHO predicts reuse]
     B --> C[Controller checks value and write budget]
     C --> D[Save selected KV in flash]
     D --> E[Later requests reuse it]
 ```
 
-## Selected result
+## Selected results
 
-**85% of the GPU memory used for prefix caching replaced with high-bandwidth flash (HBF)** while meeting a 95% cache-hit target (±1 percentage point).
+**HBF — 85% of the GPU memory used for prefix caching replaced with flash**, while meeting a 95% cache-hit target (±1 percentage point).
 
 | Policy | Prefix-cache GPU memory replaced |
 | --- | ---: |
@@ -31,6 +36,10 @@ flowchart LR
 | Access Count (K=3) | 40% |
 
 All three use the same 16:1 capacity exchange and one-drive-write-per-day allowance: each GB of GPU memory removed adds 16 GB of flash, and daily writes average at most the flash capacity. These are selected replay-study results.
+
+**SSD — 79.5% less repeated prefill after memory caching**, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. This replay result measures avoided recomputation within conversations.
+
+**vLLM — 6.4× output throughput and 89% lower p95 TTFT with 85% less KV-cache HBM**, compared with HBM-only serving at the same 95.12% cache-hit ratio. This is the bundled synthetic benchmark at 20 requests/s, with HBF emulated in GPU memory. p95 TTFT is the time within which 95% of requests receive their first token. [Serving results and setup](serving/README.md).
 
 ## Try it without a GPU
 
