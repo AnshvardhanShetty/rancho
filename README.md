@@ -10,10 +10,16 @@ The research is ongoing. This repository provides a limited public demo so those
 
 Language models use GPU memory to process requests and keep the **KV cache**, which stores information already computed about earlier tokens. Later requests can reuse that KV to skip prompt processing, called **prefill**. Keeping more KV saves computation but leaves less memory for active requests.
 
-RANCHO predicts which KV will be reused and decides what to save in flash. Flash provides more space, but wears out with writes, so RANCHO also controls how quickly it spends its write budget.
+HBF (High-bandwidth flash) stacks NAND flash near the processor for high-bandwidth reads. Sandisk and SK hynix target 8–16 times HBM’s capacity at comparable read bandwidth and similar cost. 
+
+A solid-state drive (SSD) uses NAND flash in a separate device accessed through the computer’s storage connection.
+
+Both forms of flash storage can store prefix-KV, freeing space in HBM to serve more active requests concurrently and improving TTFT and throughput, but write-allowance limits how much KV can be written to these systems. 
+
+RANCHO is an online KV admission algorithm that predicts which cached state will be most valuable to preserve and decides what to write to flash under a limited endurance budget. It combines a gradient-boosted tree that predicts future KV reuse with an adaptive write controller that adjusts admission thresholds based on expected write demand and the remaining budget.
 
 - **High-bandwidth flash (HBF)** stores selected KV after prefill, freeing GPU memory for active requests.
-- **Solid-state drives (SSDs)** save selected KV as it leaves memory, so later requests can load it back instead of computing it again.
+- **Solid-state drives (SSDs)** save selected KV as it gets evicted from memory (HBM or DRAM), so later requests can load it back instead of computing it again.
 
 ```mermaid
 flowchart LR
