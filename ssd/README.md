@@ -13,19 +13,19 @@ This code lets the server **save selected KV on a solid-state drive (SSD), then 
 
 The SSD engine integration is **under development**. The included small examples accept every write or reject every write to check that saving and restoring data works. They are not performance results or a replacement for RANCHO's learned decision rule.
 
-## Evidence from recorded requests
+## Replay results
 
-We also tested the SSD algorithm by replaying recorded requests and counting how much KV would otherwise have to be computed again. With a **48 GB GPU cache and a 3,456 GB SSD cache**, the saved results were:
+With **48 GB of memory and a 2,304 GB SSD cache**, the current RANCHO policy reduces **eligible prefill recomputation by 79.5%** at 1 drive write per day, compared with memory caching alone.
 
-| Write allowance | Eligible KV recomputation avoided after GPU lookup |
-| --- | ---: |
-| 0.3 drive writes per day | 79.52% |
-| 1 drive write per day | 85.05% |
-| 3 drive writes per day | 87.96% |
+![SSD recomputation reduced for RANCHO and the baselines](../results/ssd_recomputation.png)
 
-One drive write means writing an amount of data equal to the SSD's capacity. These percentages count repeated KV reads within the same conversation that SSD could serve after the GPU cache lookup. They come from days 4–7 of one recorded FreeInference workload, with models updated from earlier observations. They measure avoided KV computation, not elapsed serving time, and each replay stayed within its write allowance.
+All policies in this comparison receive the same memory capacity, SSD capacity and write allowance. Access Count saves more recomputation than RANCHO at some larger capacities and allowances. Eviction Count is also close to RANCHO at many settings.
 
-The trace evaluation and the engine examples serve different purposes: the trace evaluation tests which data the algorithm keeps; the examples in this folder check moving actual KV to and from SSD. The engine integration remains under development.
+One drive write means writing an amount of data equal to the SSD's capacity. The percentages measure how much eligible within-conversation recomputation SSD avoids after the memory-cache lookup. The allowance applies across the measurement period. These aggregate replay measurements replace the earlier SSD results shown here.
+
+The engine examples check moving actual KV to and from SSD. The replay results measure cache policy behavior. The engine integration remains under development.
+
+[Comparison details and baseline definitions](../results/README.md) · [Aggregate results](../results/ssd_recomputation.csv)
 
 ## Follow the code
 

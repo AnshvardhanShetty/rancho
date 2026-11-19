@@ -27,26 +27,38 @@ This public version differs from our private working version as development cont
 
 ## HBF cache results
 
-In offline replay, the following HBM replacement points kept the combined HBM + HBF hit rate above 94%, within the write allowance:
+RANCHO replaces **85% of the HBM prefix cache** at a 16:1 capacity exchange and 1 drive write per day, compared with **60% for Calibrated Random**. Each policy is measured at the largest tested replacement that meets the **95% cache-hit target (+/- 1 percentage point)**.
 
-| HBF capacity per unit of HBM removed | Write limit (DWPD) | HBM replaced | Hit rate |
-| --- | ---: | ---: | ---: |
-| 8:1 | 0.3 | 25% | 94.47% |
-| 8:1 | 1 | 66⅔% | 94.19% |
-| 8:1 | 3 | 95% | 96.52% |
-| 16:1 | 0.3 | 50% | 94.37% |
-| 16:1 | 1 | 85% | 96.75% |
-| 16:1 | 3 | 100% | 98.74% |
+![HBM prefix-cache replacement for RANCHO and four online baselines](results/hbf_replacement.png)
 
-DWPD means drive writes per day. Hit rate is the fraction of eligible within-session KV reads served by HBM or HBF. These results are pooled over three seeds on one FreeInference workload used during development; each row uses its recorded study configuration. They measure cache hits in offline replay, rather than serving throughput.
+| Capacity exchange | Write limit (DWPD) | RANCHO | Calibrated Random | Fixed Random | Access Count (K=3) | FCFA |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8:1 | 0.3 | 25% | 20% | 10% | 20% | 20% |
+| 8:1 | 1 | 66.7% | 40% | 10% | 20% | 20% |
+| 8:1 | 3 | 95% | 80% | 20% | 85% | 20% |
+| 16:1 | 0.3 | 50% | 30% | 10% | 20% | 20% |
+| 16:1 | 1 | 85% | 60% | 20% | 40% | 10% |
+| 16:1 | 3 | 100% | 100% | 100% | 100% | 30% |
 
-This public repository is a source snapshot and differs from our private working version, where the research and experiments are still being developed. The synthetic demo explains the pipeline; it does not reproduce the full evaluation above. Restricted trace data, trained production models, private experiment settings, and detailed run records are not distributed here.
+The exchange rate specifies the HBF capacity added per unit of HBM removed. At 16:1, removing 1 GB of prefix-cache HBM adds 16 GB of HBF. Model weights stay in HBM. One drive write per day (DWPD) allows an average daily write volume equal to the flash capacity.
+
+The cache-hit ratio counts eligible KV accesses served from the reusable prefix in HBM or HBF. An access is eligible when the previous request to access that block was in the same conversation. At a given replacement level, all policies receive the same cache capacities and write allowance. The table reports each policy's own replacement limit. These are aggregate replay measurements from a development workload; the rows retain the study configurations used to obtain them.
+
+[Baseline definitions and measurement details](results/README.md) · [Download the aggregate table](results/hbf_replacement.csv)
 
 ## SSD recomputation results
 
-Our recorded-trace evaluation also shows that SSD offloading can avoid computing KV again after it is no longer in GPU memory. In one tested setting, RANCHO avoided **88% of the eligible KV recomputation left after the GPU cache lookup**, by restoring saved KV from SSD.
+With **48 GB of memory and 2.304 TB of SSD**, the current RANCHO policy reduces **prefill recomputation by 79.5%** at 1 DWPD, compared with memory caching alone.
 
-This result uses a 48 GB GPU cache, an SSD cache 72 times that size, and a 3-DWPD write allowance. It counts repeated KV reads within the same conversation on one recorded workload; it is not an 88% reduction in response time. The [SSD overview](ssd/README.md) gives the results at different write allowances. **The SSD engine integration is still under development.**
+![Prefill recomputation reduced by RANCHO and five baselines at three write allowances](results/ssd_recomputation.png)
+
+All policies use the same 48 GB memory cache. The plot varies SSD capacity and the write allowance. It measures the reduction in eligible within-conversation prompt-block recomputation left after the memory-cache lookup. Larger values mean less recomputation. The write allowance is enforced over the measurement period.
+
+The comparison includes both **Access Count**, which uses a block's earlier accesses, and **Eviction Count**, which uses how often it has left memory. RANCHO and Eviction Count are very close at many settings. Access Count saves more recomputation at some larger capacities and write allowances. The current RANCHO policy replaces the earlier SSD results reported here.
+
+These are replay measurements. The public SSD engine integration remains under development. See the [SSD overview](ssd/README.md) for how saving and restoring KV works.
+
+[Baseline definitions and measurement details](results/README.md) · [Download the aggregate table](results/ssd_recomputation.csv)
 
 ## HBF vLLM serving results
 
