@@ -47,7 +47,7 @@ Access Count waits until the first missing block has been accessed three times b
 
 I also integrated RANCHO into **vLLM**, an engine for serving language models. The prototype uses a separate region of GPU memory to emulate HBF and limits writes to **8 GB/s**. We test it with synthetic conversations whose shared prefixes occupy most of the baseline's KV-cache memory, leaving little room for active requests.
 
-With **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token falls **89%**. **HBM** is the GPU's high-bandwidth memory; **throughput** is generated output tokens per second. [vLLM code and setup](hbf_serving/README.md).
+With **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token (TTFT) falls **89%**. [vLLM code and setup](hbf_serving/README.md).
 
 ### SSD
 
