@@ -4,7 +4,7 @@ LLM servers use key-value (KV) caches to avoid recomputing earlier tokens. These
 
 RANCHO decides which KV to write to flash. It learns from earlier requests to predict reuse, then combines that prediction with observed reuse, write cost, and the remaining write allowance to decide whether to save a block sequence.
 
-This repository contains the Python predictor, a C++ offline cache simulator, and a runnable synthetic demo. It shows how requests become training examples, predictions, and cache decisions. The headline study results are summarized below; production traces, trained production models, and detailed experiment outputs are not included.
+This repository contains the Python predictor, a C++ offline cache simulator, a runnable synthetic demo, and the HBF vLLM serving integration. It shows how requests become training examples, predictions, and cache decisions. The headline study results are summarized below; production traces, trained production models, and detailed experiment outputs are not included.
 
 ## Results so far
 
@@ -22,6 +22,10 @@ In offline replay, the following HBM replacement points kept the combined HBM + 
 DWPD means drive writes per day. Hit rate is the fraction of eligible within-session KV reads served by HBM or HBF. These results are pooled over three seeds on one FreeInference workload used during development; each row uses its recorded study configuration. They measure cache hits in offline replay, rather than serving throughput.
 
 This public repository is a source snapshot and differs from our private working version, where the research and experiments are still being developed. The synthetic demo explains the pipeline; it does not reproduce the full evaluation above. Restricted trace data, trained production models, private experiment settings, and detailed run records are not distributed here.
+
+## vLLM serving
+
+The [HBF serving integration](serving/README.md) connects RANCHO to vLLM and emulates HBF in a separate GPU-memory region, with writes capped at 8 GB/s. On a synthetic eight-context workload at **20 requests/s**, the 85%-replacement 16:1 arm served **429.9 output tokens/s**, versus **67.6** for the HBM-only baseline, with **95.12% KV hits** in both. These are one-repetition measurements; the baseline retains the shared prefixes, and HBF reads use GPU-memory speed. The serving README gives the full comparison and conditions. **The integration is still under development.**
 
 ## Read the code
 

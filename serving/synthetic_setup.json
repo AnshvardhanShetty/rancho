@@ -1,0 +1,18 @@
+{
+  "groups": 8,
+  "prefix_tokens": 1872,
+  "unique_suffix_tokens": 96,
+  "baseline_pages": 960,
+  "requests": 1200,
+  "measurement_seconds": 60,
+  "context_limit": 6144,
+  "max_num_seqs": 2048,
+  "native_page_bytes": 1572864,
+  "write_bandwidth_bytes_s": 8000000000,
+  "write_buffer_bytes": 40000000,
+  "calibration_requests": 128,
+  "max_reference_requests": 1200,
+  "logical_gap_seconds": 60,
+  "synthetic_user": 0,
+  "repetition": 17
+}
