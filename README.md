@@ -27,7 +27,9 @@ flowchart LR
 
 ## Selected results
 
-**HBF — 85% of the GPU memory used for prefix caching replaced with flash**, while meeting a 95% cache-hit target (±1 percentage point).
+### High-bandwidth flash (HBF)
+
+**85% of the GPU memory used for prefix caching replaced with flash**, while meeting a 95% cache-hit target (±1 percentage point).
 
 | Policy | Prefix-cache GPU memory replaced |
 | --- | ---: |
@@ -37,9 +39,11 @@ flowchart LR
 
 All three use the same 16:1 capacity exchange and one-drive-write-per-day allowance: each GB of GPU memory removed adds 16 GB of flash, and daily writes average at most the flash capacity. These are selected replay-study results.
 
-**SSD — 79.5% less repeated prefill after memory caching**, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. This replay result measures avoided recomputation within conversations.
+The **vLLM integration achieves 6.4× output throughput and 89% lower p95 TTFT with 85% less KV-cache HBM**, compared with HBM-only serving at the same 95.12% cache-hit ratio. This is the bundled synthetic benchmark at 20 requests/s, with HBF emulated in GPU memory. p95 TTFT is the time within which 95% of requests receive their first token. [Serving results and setup](serving/README.md).
 
-**vLLM — 6.4× output throughput and 89% lower p95 TTFT with 85% less KV-cache HBM**, compared with HBM-only serving at the same 95.12% cache-hit ratio. This is the bundled synthetic benchmark at 20 requests/s, with HBF emulated in GPU memory. p95 TTFT is the time within which 95% of requests receive their first token. [Serving results and setup](serving/README.md).
+### Solid-state drives (SSD)
+
+**79.5% less repeated prefill after memory caching**, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. This replay result measures avoided recomputation within conversations. [SSD implementation](ssd/README.md).
 
 ## Try it without a GPU
 
