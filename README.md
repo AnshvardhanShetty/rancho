@@ -25,6 +25,8 @@ flowchart LR
 
 ## Results
 
+The simulator results use a private FreeInference trace with **1.49 million requests over seven days**. The trace is not included in this repository.
+
 ### High-bandwidth flash
 
 In simulator experiments, RANCHO replaced **85% of the GPU memory used for prefix caching** while meeting a 95% cache-hit target (±1 percentage point).
@@ -39,11 +41,13 @@ Access Count waits until the first missing block has been accessed three times b
 
 I also integrated RANCHO into **vLLM**, an engine for serving language models. The prototype uses a separate region of GPU memory to emulate HBF and limits writes to **8 GB/s**. We test it with synthetic conversations whose shared prefixes occupy most of the baseline's KV-cache memory, leaving little room for active requests.
 
-With **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token falls **89%**. **HBM** is the GPU's high-bandwidth memory; **throughput** is generated output tokens per second. [vLLM code and setup](serving/README.md).
+With **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token falls **89%**. **HBM** is the GPU's high-bandwidth memory; **throughput** is generated output tokens per second. [vLLM code and setup](hbf_serving/README.md).
 
 ### SSD
 
-SSD caching avoids **79.5% of the repeated prefill left after memory caching** within conversations in our simulator experiments, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. The memory capacity stays fixed. [SSD code](ssd/README.md).
+SSD caching avoids **79.5% of the repeated prefill left after memory caching** within conversations in our simulator experiments, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. The memory capacity stays fixed. [SSD simulator](ssd_simulator/README.md).
+
+The HBF serving engine is still under development. We are also developing an SSD serving engine; its initial code is in [ssd_serving](ssd_serving/README.md).
 
 ## Try it without a GPU
 
@@ -60,17 +64,15 @@ make demo-serving
 
 The demo processes 1,200 requests across eight conversations. It prints cache-hit ratios, GPU memory savings, recomputation and flash writes. In this example, RANCHO maintains a **95.12% cache-hit ratio with 85% less KV-cache HBM**.
 
-For a three-request walkthrough, run `make demo`. [Example code](examples/README.md) · [Run with vLLM on a GPU](serving/RUNNING.md).
+For a three-request walkthrough, run `make demo`. [Example code](hbf_simulator/examples/README.md) · [Run with vLLM on a GPU](hbf_serving/RUNNING.md).
 
 ## Read the code
 
-| Component | Code |
+| Folder | What it contains |
 | --- | --- |
-| Reuse prediction | [Gradient-boosted model](model/model_training.py) |
-| Write-budget control | [Controller](simulator/write_controller.hpp) |
-| Cache simulation | [Request replay](simulator/rancho.cpp) · [Runnable demo](examples/serving_replay.py) |
-| vLLM integration | [HBF copy path](serving/code/direct_backend_hbf.py) |
-| SSD algorithm | [Training, replay and recomputation accounting](ssd/algorithm/README.md) |
-| SSD integration | [Saving and restoring KV](ssd/README.md) |
+| [hbf_simulator](hbf_simulator/README.md) | HBF cache simulation, reuse predictor and CPU examples. |
+| [ssd_simulator](ssd_simulator/README.md) | SSD cache simulation, model training and recomputation counts. |
+| [hbf_serving](hbf_serving/README.md) | HBF integration with vLLM. Under development. |
+| [ssd_serving](ssd_serving/README.md) | SSD integration with vLLM. Under development. |
 
 Run `make test-simulator` for the cache tests and `make test-demo` for the CPU example checks.
