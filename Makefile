@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := demo
 PYTHON ?= python3
-.PHONY: demo test-simulator
+.PHONY: demo demo-serving test-demo test-simulator
 
 build/rancho: simulator/write_controller.hpp simulator/simulation_io.hpp
 build/%: simulator/%.cpp simulator/cache.hpp
@@ -9,6 +9,12 @@ build/%: simulator/%.cpp simulator/cache.hpp
 
 demo: build/rancho build/hbm_only_readable_prefix
 	$(PYTHON) examples/demo.py
+
+demo-serving: build/rancho build/hbm_only_readable_prefix
+	$(PYTHON) examples/serving_replay.py
+
+test-demo: build/rancho build/hbm_only_readable_prefix
+	$(PYTHON) -m unittest discover -s tests -p 'test_serving_replay.py'
 
 test-simulator: build/rancho build/hbm_only_readable_prefix
 	$(PYTHON) tests/simulator_regression.py

@@ -19,8 +19,8 @@ sys.path.insert(0, str(ROOT / "model"))
 import model_training
 
 
-def run_demo():
-    """Fit on synthetic sessions, then check flash hits and writes on three later requests."""
+def prepare_example():
+    """Fit the bundled synthetic predictor and prepare the three-request fixture."""
     # Each independent training session requests its single block twice.
     history = []
     for i in range(240):
@@ -78,6 +78,12 @@ def run_demo():
     scores = [0.0] * len(history) + model_training.predict_reuse(
         model, feature_table[ix]
     ).tolist()
+    return requests, split, feature_table, scores, model
+
+
+def run_demo():
+    """Fit on synthetic sessions, then check flash hits and writes on three later requests."""
+    requests, split, feature_table, scores, model = prepare_example()
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         source = work / "requests.jsonl"

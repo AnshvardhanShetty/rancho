@@ -13,20 +13,6 @@ This code lets the server **save selected KV on a solid-state drive (SSD), then 
 
 The SSD engine integration is **under development**. The included small examples accept every write or reject every write to check that saving and restoring data works. They are not performance results or a replacement for RANCHO's learned decision rule.
 
-## Replay results
-
-With **48 GB of memory and a 2,304 GB SSD cache**, the current RANCHO policy reduces **eligible prefill recomputation by 79.5%** at 1 drive write per day, compared with memory caching alone.
-
-![SSD recomputation reduced for RANCHO and the baselines](../results/ssd_recomputation.png)
-
-All policies in this comparison receive the same memory capacity, SSD capacity and write allowance. Access Count saves more recomputation than RANCHO at some larger capacities and allowances. Eviction Count is also close to RANCHO at many settings.
-
-One drive write means writing an amount of data equal to the SSD's capacity. The percentages measure how much eligible within-conversation recomputation SSD avoids after the memory-cache lookup. The allowance applies across the measurement period. These aggregate replay measurements replace the earlier SSD results shown here.
-
-The engine examples check moving actual KV to and from SSD. The replay results measure cache policy behavior. The engine integration remains under development.
-
-[Comparison details and baseline definitions](../results/README.md) · [Aggregate results](../results/ssd_recomputation.csv)
-
 ## Follow the code
 
 | File | What it does |
