@@ -1,6 +1,6 @@
 # RANCHO
 
-I’m working as first author on RANCHO with Prof. Juncheng Yang at Harvard SEAS. RANCHO is an algorithm for reducing GPU memory use and prefill recomputation in LLM serving to increase throughput and lower time to first token (TTFT).
+I’m leading the development of RANCHO as first author with Prof. Juncheng Yang at Harvard SEAS. RANCHO is an algorithm for reducing GPU memory use and prefill recomputation in LLM serving to increase throughput and lower time to first token (TTFT).
 
 I carried out the system design, implementation, and experiments, including the reuse predictor, write-budget controller, cache simulator, and vLLM integration. The manuscript is in preparation, targeting OSDI '27.
 
