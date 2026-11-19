@@ -17,9 +17,11 @@ When a language model processes a conversation, it saves intermediate results ca
 ## What is in this repository
 
 - **A simulator:** read a recorded sequence of requests, simulate the caches, and count how much computation they avoid and how much data they write.
-- **A vLLM prototype:** run RANCHO alongside [vLLM](https://github.com/vllm-project/vllm), the software that runs the language model and schedules requests. When vLLM computes missing KV, RANCHO decides what to save for later requests. This lets us measure the effect on serving speed and response time.
+- **An HBF vLLM prototype:** run RANCHO alongside [vLLM](https://github.com/vllm-project/vllm), the software that runs the language model and schedules requests. When vLLM computes missing KV, RANCHO decides what to save for later requests. This lets us measure the effect on serving speed and response time.
 
-The prototype represents HBF using a separate region of GPU memory. Writes are limited to 8 GB/s, but reads use GPU-memory speed. **It does not test physical HBF hardware.**
+- **An SSD engine integration:** when GPU memory needs space, decide whether to save the KV being removed on a solid-state drive (SSD). If a later request needs it, load it back instead of recomputing it. The [SSD code](ssd/README.md) includes small examples that check saving and restoring data. **This engine integration is also under development.**
+
+The HBF prototype represents HBF using a separate region of GPU memory. Writes are limited to 8 GB/s, but reads use GPU-memory speed. **It does not test physical HBF hardware.**
 
 This public version differs from our private working version as development continues. Private traces, trained production models and raw run logs are not included.
 
@@ -40,7 +42,7 @@ DWPD means drive writes per day. Hit rate is the fraction of eligible within-ses
 
 This public repository is a source snapshot and differs from our private working version, where the research and experiments are still being developed. The synthetic demo explains the pipeline; it does not reproduce the full evaluation above. Restricted trace data, trained production models, private experiment settings, and detailed run records are not distributed here.
 
-## vLLM serving results
+## HBF vLLM serving results
 
 On a synthetic workload at **20 requests/s under high HBM capacity pressure**, RANCHO replaced **85% of the HBM used for KV caching**, with **536% higher output throughput** and **89% lower p95 time to first token** than the HBM-only baseline. Both served **95.12%** of eligible KV reads from cache.
 
