@@ -1,6 +1,8 @@
 """Save a JSON record without exposing a partly written file."""
+
 import json
 from pathlib import Path
+
 
 def save(path, obj):
     """Write JSON to a temporary file, then replace the destination."""

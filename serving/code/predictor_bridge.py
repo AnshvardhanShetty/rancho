@@ -1,5 +1,7 @@
 """Apply the training-time user category codes before tree prediction."""
+
 import numpy as np
+
 
 def encode(X, vocab):
     z = np.where(np.isfinite(X) & (X >= 0), X, np.nan)
@@ -10,6 +12,6 @@ def encode(X, vocab):
         if len(values):
             at = np.searchsorted(values, X[:, i])
             good = at < len(values)
-            good &= values[np.minimum(at, len(values)-1)] == X[:, i]
+            good &= values[np.minimum(at, len(values) - 1)] == X[:, i]
             z[good, i] = at[good]
     return z

@@ -7,6 +7,7 @@ causal history; those feature timestamps are not the endurance clock. Copies
 and the 8 GB/s service cap remain in the existing HBF connector. This extension
 does not force admissions, preload KV, or use later requests' outcomes.
 """
+
 import json
 import re
 import time
@@ -17,61 +18,87 @@ from physical_time import PhysicalBudget
 
 
 class PhysicalTimedPolicy:
+    """Limit writes using credits earned from real elapsed time."""
+
     def __init__(self, policy, config):
         self.policy = policy
         self.config = config
         self.origin = time.monotonic_ns()
-        self.ledger = PhysicalBudget(config['HBF_pages'], self.origin)
+        self.ledger = PhysicalBudget(config["HBF_pages"], self.origin)
         self.context = None
         self.begin = None
-        log_event(config,'worker.jsonl',dict(event='PHYSICAL_CONTROLLER_CLOCK_START',
-            origin_ns=self.origin,daily_capacity_pages=config['HBF_pages'],
-            steady_initial_credit_pages=0))
+        log_event(
+            config,
+            "worker.jsonl",
+            dict(
+                event="PHYSICAL_CONTROLLER_CLOCK_START",
+                origin_ns=self.origin,
+                daily_capacity_pages=config["HBF_pages"],
+                steady_initial_credit_pages=0,
+            ),
+        )
 
     def __getattr__(self, name):
-        return getattr(self.policy,name)
+        return getattr(self.policy, name)
 
     def set_request_context(self, request_id):
+        """Identify whether the next offer belongs to warm-up or measurement."""
         if self.context is not None:
-            raise ValueError('Unconsumed physical request context')
-        match = re.fullmatch(r'row(\d+)(?:-[0-9a-f]{8})?',request_id)
+            raise ValueError("Unconsumed physical request context")
+        match = re.fullmatch(r"row(\d+)(?:-[0-9a-f]{8})?", request_id)
         if not match:
-            raise ValueError('Unrecognized physical request identity')
+            raise ValueError("Unrecognized physical request identity")
         self.context = int(match[1])
 
-    def hbf_prefill_complete(self,row,logical_us,features,distinct,cost,**kwargs):
+    def hbf_prefill_complete(self, row, logical_us, features, distinct, cost, **kwargs):
+        """Apply the elapsed-time write limit before charging an accepted offer."""
         if self.context is None:
-            raise ValueError('Physical phase must be bound to actual request')
-        warmup = self.context < self.config['shared_groups']
+            raise ValueError("Physical phase must be bound to actual request")
+        warmup = self.context < self.config["shared_groups"]
         self.context = None
         if not warmup and self.begin is None:
-            receipt = json.loads((Path(self.config['output'])/'MEASUREMENT_CLOCK.json').read_text())
-            self.begin = receipt['measurement_start_ns']
+            receipt = json.loads(
+                (Path(self.config["output"]) / "MEASUREMENT_CLOCK.json").read_text()
+            )
+            self.begin = receipt["measurement_start_ns"]
         total_start = time.perf_counter_ns()
         now_ns = time.monotonic_ns()
-        allowance = self.ledger.limit(now_ns,warmup,self.begin)
-        physical_us = self.config['fit']['cut_us']+(now_ns-self.origin)//1000
+        allowance = self.ledger.limit(now_ns, warmup, self.begin)
+        physical_us = self.config["fit"]["cut_us"] + (now_ns - self.origin) // 1000
         start = time.perf_counter_ns()
-        result = self.policy.hbf_prefill_complete(row,physical_us,features,distinct,cost,
-            payment_limit=allowance,**kwargs)
-        cpu_ns = time.perf_counter_ns()-start
-        self.ledger.charge(result['paid_cost'],warmup,allowance)
+        result = self.policy.hbf_prefill_complete(
+            row,
+            physical_us,
+            features,
+            distinct,
+            cost,
+            payment_limit=allowance,
+            **kwargs
+        )
+        cpu_ns = time.perf_counter_ns() - start
+        self.ledger.charge(result["paid_cost"], warmup, allowance)
         assert self.policy.wallet.W == self.ledger.total
-        total_cpu_ns = time.perf_counter_ns()-total_start
-        result.update(decision_cpu_ns=cpu_ns,total_admission_cpu_ns=total_cpu_ns,
-            controller_time_us=physical_us,physical_decision_ns=now_ns,
-            physical_origin_ns=self.origin,measurement_start_ns=self.begin,
-            physical_write_limit_pages=allowance,physical_warmup=warmup)
+        total_cpu_ns = time.perf_counter_ns() - total_start
+        result.update(
+            decision_cpu_ns=cpu_ns,
+            total_admission_cpu_ns=total_cpu_ns,
+            controller_time_us=physical_us,
+            physical_decision_ns=now_ns,
+            physical_origin_ns=self.origin,
+            measurement_start_ns=self.begin,
+            physical_write_limit_pages=allowance,
+            physical_warmup=warmup,
+        )
         return result
 
 
 class HBFConnector(NativeHBFConnector):
-    def __init__(self,*args,**kwargs):
-        super().__init__(*args,**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         if self.policy is not None:
-            if self.config.get('physical_write_accounting') is not True:
-                raise ValueError('Physical-time benchmark requires physical accounting')
-            self.policy = PhysicalTimedPolicy(self.policy,self.config)
+            if self.config.get("physical_write_accounting") is not True:
+                raise ValueError("Physical-time benchmark requires physical accounting")
+            self.policy = PhysicalTimedPolicy(self.policy, self.config)
 
 
 class PhysicalCalibrationConnector(DirectConnector):
@@ -79,5 +106,13 @@ class PhysicalCalibrationConnector(DirectConnector):
         super().wait_for_save()
         if self.output is not None and self.output.events:
             now = time.monotonic_ns()
-            log_event(self.config,'worker.jsonl',dict(event='PHYSICAL_CALIBRATION_OFFERS',
-                completion_ns=now,offers=self.output.events,gpu_completed=True))
+            log_event(
+                self.config,
+                "worker.jsonl",
+                dict(
+                    event="PHYSICAL_CALIBRATION_OFFERS",
+                    completion_ns=now,
+                    offers=self.output.events,
+                    gpu_completed=True,
+                ),
+            )

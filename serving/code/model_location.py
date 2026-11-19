@@ -1,6 +1,8 @@
 """Use model weights supplied by the caller; no download is performed."""
+
 import os
 from pathlib import Path
+
 
 def model_path():
     """Return the local model directory from RANCHO_MODEL_PATH."""

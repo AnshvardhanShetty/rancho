@@ -2,6 +2,7 @@
 
 These fixtures test accounting and packaging, not benchmark performance.
 """
+
 import json
 from pathlib import Path
 import unittest
@@ -13,7 +14,9 @@ from reference_wallet_check import BandWallet as ReferenceWallet
 
 class PublicInputs(unittest.TestCase):
     def test_eight_context_workload(self):
-        setup = json.loads((Path(__file__).resolve().parents[1] / 'synthetic_setup.json').read_text())
+        setup = json.loads(
+            (Path(__file__).resolve().parents[1] / "synthetic_setup.json").read_text()
+        )
         payload = prompts(setup)
         earlier, requests = records(setup)
         bits = eligibility(setup)
@@ -27,20 +30,25 @@ class PublicInputs(unittest.TestCase):
 
     def test_history_updates_after_decision(self):
         history = FilteredHistory(1)
-        first = history.prepare('first', ['A', 'B'], 1, 0)
-        self.assertEqual(first['past_filtered_reuses'], 0)
+        first = history.prepare("first", ["A", "B"], 1, 0)
+        self.assertEqual(first["past_filtered_reuses"], 0)
         history.commit(first)
-        second = history.prepare('second', ['A', 'B'], 1, 0)
-        self.assertEqual(second['past_filtered_reuses'], 0)
-        self.assertEqual(second['pending'], ['A', 'B'])
+        second = history.prepare("second", ["A", "B"], 1, 0)
+        self.assertEqual(second["past_filtered_reuses"], 0)
+        self.assertEqual(second["pending"], ["A", "B"])
         history.commit(second)
-        self.assertEqual(history.prepare('third', ['A', 'B'], 1, 0)['past_filtered_reuses'], 2)
+        self.assertEqual(
+            history.prepare("third", ["A", "B"], 1, 0)["past_filtered_reuses"], 2
+        )
 
     def test_cutoffs_match_independent_reference(self):
         from controllers import Observation, DAY
         from controllers_reference import Observation as ReferenceObservation
-        live = BandWallet('hbf', 50000, 17, end_us=DAY, release_us=DAY, reserve=0.)
-        reference = ReferenceWallet('hbf', 50000, 17, end_us=DAY, release_us=DAY, reserve=0.)
+
+        live = BandWallet("hbf", 50000, 17, end_us=DAY, release_us=DAY, reserve=0.0)
+        reference = ReferenceWallet(
+            "hbf", 50000, 17, end_us=DAY, release_us=DAY, reserve=0.0
+        )
         for i in range(1200):
             values = (i, float(i % 37), 1 << (i % 4), i * 1000000, 1 << (i % 4))
             live._observe(Observation(*values))
@@ -48,8 +56,10 @@ class PublicInputs(unittest.TestCase):
         live.recompute(1200000000)
         reference.recompute(1200000000)
         self.assertEqual(live.bandcuts, reference.bandcuts)
-        self.assertEqual((live.threshold, live.tie), (reference.threshold, reference.tie))
+        self.assertEqual(
+            (live.threshold, live.tie), (reference.threshold, reference.tie)
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
