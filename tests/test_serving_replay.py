@@ -11,7 +11,11 @@ import sys
 import tempfile
 import unittest
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "experiments"))
+from synthetic_training import SyntheticTrainingData, model_training
 
 
 class ServingReplayTest(unittest.TestCase):
@@ -35,10 +39,33 @@ class ServingReplayTest(unittest.TestCase):
             self.assertEqual(rows[1]["hbm_blocks"], 320)
             self.assertEqual(rows[2]["hbm_blocks"], 144)
             self.assertEqual(rows[2]["hbm_replaced_percent"], 85)
+            for row in rows[1:]:
+                self.assertEqual(row["training"]["model_kind"], "expanded_tree")
+                self.assertGreater(row["training"]["unique_labels"], 1)
             before = output.read_bytes()
             repeated = subprocess.run(command, capture_output=True)
             self.assertNotEqual(repeated.returncode, 0)
             self.assertEqual(output.read_bytes(), before)
+
+    def test_research_labels_and_cutoff(self):
+        hour = model_training.H
+        blocks = [[10, 20, 10], [10], [20], [30], [10], [10]]
+        times = np.arange(len(blocks)) * hour
+        sessions = [1, 1, 1, 2, 2, 2]
+        features = np.zeros((len(blocks), 1))
+        initial = SyntheticTrainingData(blocks, times, sessions, features, ["user"])
+        rows, labels = initial.training_examples(6 * hour)
+        np.testing.assert_array_equal(rows, [0, 3, 4])
+        np.testing.assert_array_equal(labels, [1, 0, 1])
+        offered = SyntheticTrainingData(blocks, times, sessions, features, ["user"],
+                                         offered=blocks)
+        rows, labels = offered.training_examples(2 * hour)
+        np.testing.assert_array_equal(rows, [0, 1])
+        np.testing.assert_array_equal(labels, [0.5, 0])
+        _, later = offered.training_examples(6 * hour)
+        np.testing.assert_array_equal(later, [1.5, 1, 0, 0, 1, 0])
+        _, earlier_again = offered.training_examples(2 * hour)
+        np.testing.assert_array_equal(earlier_again, labels)
 
 
 if __name__ == "__main__":

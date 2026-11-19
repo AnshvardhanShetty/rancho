@@ -34,7 +34,7 @@ All three use the same 16:1 capacity exchange and one-drive-write-per-day allowa
 
 ## Try it without a GPU
 
-The CPU demo reuses the synthetic prompts from the vLLM example: eight conversations with shared beginnings, eight warm-up requests, and 1,200 measured requests. It trains the bundled example predictor and runs the C++ cache simulator.
+The CPU demo reuses the synthetic prompts from the vLLM example: eight conversations with shared beginnings, eight warm-up requests, and 1,200 measured requests. It runs the research training pipeline on earlier requests from that generator, then uses the fitted predictor with the RANCHO controller and C++ cache simulator.
 
 Requires Python 3.11+, Make and a C++17 compiler. On macOS, install `libomp` for LightGBM.
 
@@ -52,7 +52,7 @@ RANCHO 8:1               320       66.7%       95.12%         7200          5118
 RANCHO 16:1              144       85.0%       95.12%         7200          8184
 ```
 
-**HBM** is the GPU's high-bandwidth memory. The demo computes cache hits, recomputation and writes using a predictor trained on synthetic examples. Writes include warm-up; cache-hit ratios exclude it. [Demo details](examples/README.md).
+**HBM** is the GPU's high-bandwidth memory. The demo trains the research predictor locally and computes cache hits, recomputation and writes. Writes include warm-up; cache-hit ratios exclude it. [Demo details](examples/README.md).
 
 For a smaller walkthrough, `make demo` runs three requests through training, prediction, admission and reuse. For actual model execution, see the [GPU serving instructions](serving/RUNNING.md).
 

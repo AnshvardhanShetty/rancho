@@ -4,9 +4,9 @@
 
 Run `make demo-serving` from the repository root after installing the Python requirements. `serving_replay.py` uses the prompt generator and cache allocations in `serving/` to replay eight warm-up requests and 1,200 measured requests without a GPU.
 
-It trains the existing example predictor on synthetic history, then calls the C++ RANCHO simulator. The HBM-only comparison retains the shared beginnings as the serving baseline does. Output includes cache hits, HBM replacement, recomputation and flash writes. Writes include warm-up; measured cache metrics exclude it. The allowance is one flash-capacity equivalent across the replay.
+It uses the research training code to build an initial predictor, replay earlier requests to collect actual suffix offers, and fit the final predictor from the observed reuse of those suffixes. The fitted model supplies scores to the C++ RANCHO simulator. The HBM-only comparison retains the shared beginnings as the serving baseline does. Output includes cache hits, HBM replacement, recomputation and flash writes. Writes include warm-up; measured cache metrics exclude it. The allowance is one flash-capacity equivalent across the replay.
 
-The serving experiment's trained predictor is private. This example uses its own synthetic fit. It processes prompt-cache operations in arrival order, without GPU scheduling, output-token execution or the serving engine's elapsed-time write-credit guard. Matching hit ratios does not establish identical admission decisions or serving performance.
+The training recipe, label-selection code and admission controller are the research implementations. The model is fitted locally on the generator's earlier requests; it is not the saved model from the GPU benchmark. It processes prompt-cache operations in arrival order, without GPU scheduling, output-token execution or the serving engine's elapsed-time write-credit guard. Matching hit ratios does not establish identical admission decisions or serving performance.
 
 To save a computed summary:
 

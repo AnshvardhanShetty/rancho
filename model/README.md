@@ -7,3 +7,5 @@ Read `RequestData`, then `training_weights()`, `prepare_training_arrays()`, `fit
 `run_hourly_models()` in `experiments/run_experiment.py` supplies the outer loop. `tree_encoding.py` prepares categorical user IDs. `model_settings.json` is the four-feature tree recipe. `file_helpers.py` handles JSON and content fingerprints.
 
 Training data are supplied by the caller. The bundled demonstration uses only synthetic sessions. Production inputs, trained production models, per-request predictions, and detailed experiment outputs are not included.
+
+The CPU serving demo calls this same fitting code through [synthetic_training.py](../experiments/synthetic_training.py). That adapter builds causal reuse counts from the serving generator's earlier requests, then uses `RequestData.training_examples()` to select labels at each cutoff. An initial replay records actual offered suffixes before the final fit.
