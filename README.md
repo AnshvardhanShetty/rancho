@@ -25,7 +25,9 @@ This public repository is a source snapshot and differs from our private working
 
 ## vLLM serving
 
-The [HBF serving integration](serving/README.md) connects RANCHO to vLLM and emulates HBF in a separate GPU-memory region, with writes capped at 8 GB/s. On a synthetic eight-context workload at **20 requests/s**, the 85%-replacement 16:1 arm served **429.9 output tokens/s**, versus **67.6** for the HBM-only baseline, with **95.12% KV hits** in both. These are one-repetition measurements; the baseline retains the shared prefixes, and HBF reads use GPU-memory speed. The serving README gives the full comparison and conditions. **The integration is still under development.**
+We also connect RANCHO to [vLLM](https://github.com/vllm-project/vllm), which runs the language model and schedules requests. When vLLM computes missing KV, RANCHO decides which of it to keep in the flash tier so later requests can reuse it. This prototype emulates HBF in GPU memory, with a limit on write bandwidth.
+
+On a synthetic workload at **20 requests/s**, RANCHO replaced **85% of KV-cache HBM** and served **429.9 output tokens/s**, compared with **67.6** for the HBM-only baseline. Both served **95.12%** of eligible KV reads from cache. This was one repetition with a baseline that retains shared prefixes and emulated HBF reads at GPU-memory speed. The [serving README](serving/README.md) explains how it works and shows the comparison. **The integration is still under development.**
 
 ## Read the code
 

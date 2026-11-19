@@ -1,19 +1,26 @@
-# HBF serving with vLLM
+# RANCHO with vLLM
 
-The serving code lets vLLM keep KV in two regions: HBM and an emulated HBF tier. RANCHO decides which newly computed KV to save in HBF.
+When an LLM answers a request, it computes information about the input tokens. This information is called **key-value data (KV)**. Saving it lets the server reuse the computation when a later request starts with the same tokens—for example, the next message in a conversation.
 
-## What happens to a request
+KV normally occupies the GPU's **high-bandwidth memory (HBM)**. That memory is limited: storing old conversations leaves less room for requests being processed now. We study whether **high-bandwidth flash (HBF)** can hold some of that KV instead. Flash adds capacity, but repeated writes wear it out. We therefore need to choose what is worth saving.
 
-1. **Find cached KV.** The scheduler reads the available prefix from either tier. vLLM computes the missing KV in GPU memory.
-2. **Decide what to save.** Once that computation finishes, RANCHO predicts reuse from the four request features. It scores the remaining suffix using that prediction, earlier reuse and write cost. The controller checks its cutoff and remaining write allowance.
-3. **Copy admitted KV.** The worker copies accepted full pages to the HBF region. Copies share an 8 GB/s write limit. The scheduler publishes a copy only after it finishes, so later requests cannot read unfinished data.
-4. **Serve later requests.** Cached HBF pages participate in vLLM's native prefix lookup and attention. Pages already present need no new write. Both tiers track ownership so pages in use cannot be recycled.
+**RANCHO makes that choice.** It predicts how often KV will be reused and decides whether the expected benefit is worth the write, given the remaining write allowance.
 
-HBF is **emulated in GPU memory**. Reads therefore use GPU-memory speed; this does not measure physical HBF hardware. The integration uses vLLM scheduler and connector extensions, without editing the installed vLLM package.
+## How it works
 
-## Synthetic workload result
+[vLLM](https://github.com/vllm-project/vllm) runs the language model and schedules requests. This code adds RANCHO and a second place to store KV:
 
-At **20 requests/s**, we used eight shared contexts, 1,872 shared input tokens and 96 unique input tokens per request, with 64 output tokens. After eight serial warm-up requests, we sent 1,200 requests over 60 seconds and waited for the queue to finish.
+1. **Reuse what is already saved.** When a request arrives, vLLM looks for the beginning of its input in the cache. It computes the part that is missing.
+2. **Decide whether to keep the newly computed KV.** RANCHO uses user ID, turn number, conversation age and time since the previous request to predict reuse. It combines that prediction with earlier accesses, the amount to write and the remaining allowance.
+3. **Save the selected KV in HBF.** The worker copies the accepted data. A later request can use that copy instead of recomputing it. KV that is not saved in HBF stays subject to the ordinary HBM capacity and eviction limits.
+
+The predictor estimates reuse; the write controller decides how selective to be. As requests arrive, the controller uses recent write offers and spending to adjust its admission cutoff. This serving version uses a frozen trained predictor while updating the controller and reuse history during execution.
+
+**The prototype emulates HBF in a separate region of GPU memory.** Writes are limited to 8 GB/s, but reads run at GPU-memory speed. It lets us exercise the integration with real model execution; it is not a test of physical HBF hardware.
+
+## Results so far
+
+On a synthetic workload with eight shared contexts at **20 requests/s**:
 
 | Configuration | HBM replaced | Output tokens/s | p95 time to first token | KV hit rate |
 | --- | ---: | ---: | ---: | ---: |
@@ -21,52 +28,23 @@ At **20 requests/s**, we used eight shared contexts, 1,872 shared input tokens a
 | RANCHO, 8:1 | 66.7% | 923.1 | 20.0 s | 95.12% |
 | RANCHO, 16:1 | 85% | 429.9 | 109.6 s | 95.12% |
 
-These are **one repetition on a constructed workload**, using Qwen3-30B-A3B-Instruct-2507 in BF16 on one NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition. They do not establish performance across production workloads. The HBM-only baseline retains the declared shared prefixes after computing them; it is not stock vLLM eviction. Those prefixes occupy 936 of its 960 usable KV pages. The 8:1 arm has 320 HBM + 5,120 HBF pages; the 16:1 arm has 144 HBM + 13,056 HBF pages.
+“HBM replaced” is the reduction in KV-cache HBM relative to the baseline. At 16:1, each unit removed is replaced with sixteen units of HBF capacity. Output tokens/s measures how quickly the server finishes generating answers. Time to first token includes time spent waiting in the queue; p95 means 95% of requests received their first token within that time.
 
-Throughput includes the time needed to drain the queue. Time to first token includes queueing from scheduled arrival. Warm-up is excluded from these timings. Hit rate uses eligible within-session reads, with the same synthetic reference history across arms. The saved headline values are in [synthetic_results.json](synthetic_results.json).
+These are one-repetition measurements on a constructed workload. The baseline keeps the shared prefixes in HBM, where they occupy most of its cache; it does not use stock vLLM eviction. HBF reads are emulated as described above. See [run instructions and benchmark conditions](RUNNING.md) for details.
 
-Warm-up writes count against the same device-day allowance. Measured writes additionally require credits earned from real elapsed time, starting at zero. The startup burst is not a sustainable 1-DWPD write rate. This short test does not establish flash endurance.
+**The integration and research are still under development.** This public version differs from the private working version. Private traces, trained production predictors, model weights and raw run logs are not included.
 
-**This integration and the research are still under development.** The public source differs from the private working version. Traces, trained production predictors, model weights and private run logs are not included.
+## Follow the code
 
-## Read the code
-
-| File | Purpose |
+| Start here | What it does |
 | --- | --- |
-| [run.py](run.py) | Prepare a synthetic comparison arm, run it, then audit its output. |
-| [code/run_cell.py](code/run_cell.py) | Start vLLM, send requests, count native cache hits and measure timing. |
-| [code/controlled_workload.py](code/controlled_workload.py) | Generate synthetic token IDs and request features. |
-| [code/direct_backend.py](code/direct_backend.py) | Connect native vLLM scheduling and KV storage to the two tiers. |
-| [code/direct_backend_hbf.py](code/direct_backend_hbf.py) | Offer completed KV to RANCHO and copy admitted pages. |
-| [code/updated_policy.py](code/updated_policy.py) | Combine tree predictions, earlier reuse and the write controller. |
-| [code/updated_model.py](code/updated_model.py) | Read a supplied four-feature tree and predict reuse. |
-| [code/physical_hbf.py](code/physical_hbf.py) | Bind admission to the real clock and available write credit. |
-| [code/tier_pool.py](code/tier_pool.py) | Track page ownership and the free-page queues. |
+| [run.py](run.py) | Start a synthetic serving test and check its output. |
+| [code/run_cell.py](code/run_cell.py) | Send requests to vLLM and measure cache hits, throughput and latency. |
+| [code/direct_backend.py](code/direct_backend.py) | Connect vLLM's scheduler and KV storage to the two memory regions. |
+| [code/direct_backend_hbf.py](code/direct_backend_hbf.py) | Pass newly computed KV to RANCHO and copy accepted data. |
+| [code/updated_policy.py](code/updated_policy.py) | Predict reuse, add earlier reuse history and make the write decision. |
+| [code/physical_hbf.py](code/physical_hbf.py) | Enforce write credits earned from real elapsed time. |
 
-The remaining modules provide page layout checks, baseline prefix retention, metrics and independent decision checks. They use vLLM APIs; no vLLM source is vendored here. vLLM is a separate dependency under its upstream license.
+The other modules handle storage bookkeeping, synthetic inputs and result checks. vLLM is installed separately; its source is not copied into this repository.
 
-## Run CPU checks
-
-From the repository root, after installing its Python requirements:
-
-```bash
-PYTHONPATH=serving/code python -m unittest discover -s serving/tests
-```
-
-These checks cover page ownership, write budgets, metrics and synthetic request accounting. Native vLLM queue checks are skipped when vLLM is unavailable. They do not run a GPU benchmark.
-
-## Run a serving arm
-
-Use a compatible CUDA/vLLM environment and enough GPU memory for the BF16 model and both KV regions. The recorded environment used vLLM 0.27.1 and PyTorch 2.13.0. These extensions depend on vLLM internals and may need changes for other versions. The public packaging has been checked on CPU; it has not been rerun on a GPU.
-
-Choose an available GPU yourself. Set `RANCHO_MODEL_PATH` to local Qwen model weights. The runner does not download weights, reserve a device or stop other jobs.
-
-```bash
-export RANCHO_MODEL_PATH=/path/to/local/model
-python serving/run.py --arm hbm --output /path/to/new/baseline-output
-python serving/run.py --arm rancho16 --predictor /path/to/saved/predictor --output /path/to/new/rancho-output
-```
-
-Each output folder must be new. A RANCHO predictor folder contains `model.pkl` and `COMPLETE.json` from an hourly four-feature offered-suffix fit at the day-four cutoff. Its receipt must include the feature list, label cutoff, tree count and model digest checked in `updated_model.py`. That loader reads native tree text and numeric category values without executing the saved pickle. Use your own trusted files; an adjacent digest detects inconsistency, not who produced a file. The production predictors behind the table are not distributed. A different predictor is a different experiment; the synthetic setup alone cannot recreate the recorded scores.
-
-The public synthetic user value is a placeholder. Supply a correctly encoded user value for your predictor when preparing a new experiment. Predictor feature timestamps follow the constructed session history; write credits and controller observations use real elapsed time. The serving benchmark uses a frozen predictor; it does not retrain while handling requests.
+For setup, commands and checks, see [RUNNING.md](RUNNING.md).
