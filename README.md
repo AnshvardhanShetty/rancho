@@ -1,20 +1,25 @@
-# RANCHO: KV caching with high-bandwidth flash
+# RANCHO: write-budget-aware KV-cache admission
 
 **Research in progress · Targeting OSDI '27**
 
-When a language model processes a conversation, it saves intermediate results called **key-value data (KV)**. The next message can reuse that data instead of computing the whole conversation again. KV takes up the GPU's limited **high-bandwidth memory (HBM)**, leaving less room to serve other requests.
+RANCHO is an **online cache admission algorithm** for storing LLM key-value (KV) caches in **high-bandwidth flash (HBF)** under a write-endurance constraint. It combines a learned reuse predictor with an adaptive write-budget controller to decide which KV to admit to flash.
 
-We study whether **high-bandwidth flash (HBF)** can replace some of that KV-cache memory. Flash adds storage capacity, but writing everything to it would wear it out. **RANCHO decides which KV is worth saving, so we can reuse it while staying within a write budget.**
+LLM servers cache attention keys and values to avoid recomputing earlier input tokens. This KV occupies scarce GPU **high-bandwidth memory (HBM)**. HBF could provide more capacity and reduce the HBM needed for KV storage, but repeated writes wear out flash. The problem is to preserve cache hits while limiting the volume written.
 
-## How it works
+## Algorithm
 
-1. **Predict reuse.** A small tree model learns from earlier requests. It uses user ID, turn number, conversation age and time since the previous request to estimate how often the KV will be read again.
-2. **Choose what to write.** RANCHO combines that prediction with earlier reuse and the amount of data to write. Its controller adjusts the admission cutoff using recent write demand and the remaining budget.
-3. **Reuse the saved KV.** In our [vLLM integration](serving/README.md), vLLM first uses any cached beginning of the input and computes what is missing. RANCHO then decides which newly computed KV to copy to HBF. Later requests can use those copies instead of recomputing them.
+1. **Estimate reuse.** A gradient-boosted tree predictor estimates later reads per offered KV block from four request features: user ID, turn number, session age and time since the previous request. Training uses only reuse observed before each model update.
+2. **Score the admission candidate.** When a request misses in the cache, the server recomputes the missing suffix. RANCHO scores that suffix using predicted reuse, observed reuse history and its write cost.
+3. **Enforce the write budget.** An adaptive controller estimates future write demand from recent offers and sets a score cutoff based on the remaining allowance. Accepted KV is written to HBF; rejected candidates consume no flash-write budget.
 
-The repository includes two ways to study this: an **offline simulator** that replays request traces and counts hits and writes, and a **vLLM prototype** that runs an actual language model and measures throughput and latency. The prototype emulates HBF in a separate GPU-memory region, limits write bandwidth, and uses GPU-memory speed for reads. It does not measure physical HBF hardware.
+## Implementation
 
-This public version differs from our private working version as development continues. It includes source code and synthetic examples, without private traces, trained production models or raw run logs.
+- **Offline simulator:** replay timestamped requests through HBM and HBF caches, apply admission and eviction, and count cache hits and charged writes.
+- **vLLM integration:** run the algorithm during actual model serving. vLLM handles inference and scheduling; RANCHO decides whether to retain newly computed KV in HBF. Later requests reuse admitted KV through the cache lookup path.
+
+The vLLM prototype **emulates HBF in a separate GPU-memory region**, with writes capped at 8 GB/s. Reads use GPU-memory speed, so these measurements do not characterize physical HBF hardware. The [serving code](serving/README.md) explains the integration.
+
+This public version includes the predictor, simulator, serving integration and synthetic examples. It differs from the private working version as development continues. Private traces, trained production models and raw run logs are not included.
 
 ## Results so far
 
