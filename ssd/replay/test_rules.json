@@ -1,0 +1,72 @@
+{
+  "rules": [
+    {
+      "id": "random_calibrated",
+      "mode": "coin"
+    },
+    {
+      "id": "all_admit",
+      "mode": "all"
+    },
+    {
+      "id": "every_2_candidate",
+      "mode": "stride",
+      "threshold": 2
+    },
+    {
+      "id": "every_3_candidate",
+      "mode": "stride",
+      "threshold": 3
+    },
+    {
+      "id": "eviction_exact_1",
+      "mode": "eviction_exact",
+      "threshold": 1
+    },
+    {
+      "id": "eviction_exact_2",
+      "mode": "eviction_exact",
+      "threshold": 2
+    },
+    {
+      "id": "access_ge_2",
+      "mode": "access_min",
+      "threshold": 2
+    },
+    {
+      "id": "access_ge_3",
+      "mode": "access_min",
+      "threshold": 3
+    },
+    {
+      "id": "access_ge_4",
+      "mode": "access_min",
+      "threshold": 4
+    },
+    {
+      "id": "access_ge_5",
+      "mode": "access_min",
+      "threshold": 5
+    },
+    {
+      "id": "eviction_ge_2",
+      "mode": "eviction_min",
+      "threshold": 2
+    },
+    {
+      "id": "eviction_ge_3",
+      "mode": "eviction_min",
+      "threshold": 3
+    },
+    {
+      "id": "eviction_ge_4",
+      "mode": "eviction_min",
+      "threshold": 4
+    },
+    {
+      "id": "eviction_ge_5",
+      "mode": "eviction_min",
+      "threshold": 5
+    }
+  ]
+}

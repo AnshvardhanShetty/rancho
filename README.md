@@ -64,6 +64,7 @@ For a smaller walkthrough, `make demo` runs three requests through training, pre
 | Write-budget control | [Controller](simulator/write_controller.hpp) |
 | Cache simulation | [Request replay](simulator/rancho.cpp) · [Runnable demo](examples/serving_replay.py) |
 | vLLM integration | [HBF copy path](serving/code/direct_backend_hbf.py) · [Overview](serving/README.md) |
+| SSD cache replay | [Replay and independent checker](ssd/replay/README.md) |
 | SSD integration | [Saving and restoring KV](ssd/README.md) |
 
 Run `make test-simulator` for the synthetic cache regression cases.

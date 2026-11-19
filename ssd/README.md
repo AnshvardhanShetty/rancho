@@ -13,6 +13,10 @@ This code lets the server **save selected KV on a solid-state drive (SSD), then 
 
 The SSD engine integration is **under development**. The included small examples accept every write or reject every write to check that saving and restoring data works. They are not performance results or a replacement for RANCHO's learned decision rule.
 
+## Offline cache simulator
+
+The [SSD replay code](replay/README.md) simulates cache decisions without running the language model. It includes an independent checker and 112 synthetic test cases. This lets readers follow which blocks are kept, restored and written, separately from the engine integration below.
+
 ## Follow the code
 
 | File | What it does |
