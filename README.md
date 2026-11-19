@@ -1,8 +1,10 @@
-# RANCHO: HBF admission simulator and reuse predictor
+# RANCHO: public source code
 
-RANCHO decides which KV blocks to write to flash under a limited write allowance. A four-feature tree predicts later reuse. The simulator combines that prediction with observed reuse, write cost, and the remaining budget to make admission decisions.
+LLM servers use key-value (KV) caches to avoid recomputing earlier tokens. These caches occupy limited GPU memory, called high-bandwidth memory (HBM). High-bandwidth flash (HBF) could add capacity, but flash wears out with repeated writes. We study how to use it for KV caching while keeping writes within an endurance budget.
 
-This private sharing copy contains source code and synthetic examples. It contains no production trace, saved production models, archived predictions, or measured research results. Lab-specific reproduction settings and the original repository history are excluded.
+RANCHO decides which KV to write to flash. It learns from earlier requests to predict reuse, then combines that prediction with observed reuse, write cost, and the remaining write allowance to decide whether to save a block sequence.
+
+This repository contains the Python predictor, a C++ offline cache simulator, and a runnable synthetic demo. It shows how requests become training examples, predictions, and cache decisions. Production traces, trained production models, and measured research results are not included.
 
 ## Read the code
 
