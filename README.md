@@ -1,6 +1,6 @@
 # RANCHO
 
-Working as first author on RANCHO, an algorithm for reducing GPU memory use and prefill recomputation to improve throughput and TTFT in LLM serving, with Prof. Juncheng Yang at Harvard SEAS. I carried out the system design, implementation, and experiments, including the reuse predictor, write-budget controller, cache simulator, and vLLM integration. The manuscript is in preparation, targeting OSDI '27.
+I'm working on RANCHO as first author with Prof. Juncheng Yang at Harvard SEAS. I carried out the system design, implementation, and experiments, including the reuse predictor, write-budget controller, cache simulator, and vLLM integration. The manuscript is in preparation, targeting OSDI '27.
 
 The research is ongoing. This repository provides a limited public demo so those interested can explore my implementation and run selected components on synthetic workloads. The full research implementation and evaluation remain private and under development.
 
