@@ -43,4 +43,3 @@ Throughput includes the time needed to drain the queue. Time to first token incl
 Warm-up writes count against the same device-day allowance. Measured writes additionally require credits earned from real elapsed time, starting at zero. The startup burst is not a sustainable 1-DWPD write rate. This short test does not establish flash endurance.
 
 **This integration and the research are still under development.** The public source differs from the private working version. Traces, trained production predictors, model weights and private run logs are not included.
-

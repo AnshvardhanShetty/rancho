@@ -1,10 +1,20 @@
-# RANCHO: public source code
+# RANCHO: KV caching with high-bandwidth flash
 
-LLM servers use key-value (KV) caches to avoid recomputing earlier tokens. These caches occupy limited GPU memory, called high-bandwidth memory (HBM). High-bandwidth flash (HBF) could add capacity, but flash wears out with repeated writes. We study how to use it for KV caching while keeping writes within an endurance budget.
+**Research in progress · Targeting OSDI '27**
 
-RANCHO decides which KV to write to flash. It learns from earlier requests to predict reuse, then combines that prediction with observed reuse, write cost, and the remaining write allowance to decide whether to save a block sequence.
+When a language model processes a conversation, it saves intermediate results called **key-value data (KV)**. The next message can reuse that data instead of computing the whole conversation again. KV takes up the GPU's limited **high-bandwidth memory (HBM)**, leaving less room to serve other requests.
 
-This repository contains the Python predictor, a C++ offline cache simulator, a runnable synthetic demo, and the HBF vLLM serving integration. It shows how requests become training examples, predictions, and cache decisions. The headline study results are summarized below; production traces, trained production models, and detailed experiment outputs are not included.
+We study whether **high-bandwidth flash (HBF)** can replace some of that KV-cache memory. Flash adds storage capacity, but writing everything to it would wear it out. **RANCHO decides which KV is worth saving, so we can reuse it while staying within a write budget.**
+
+## How it works
+
+1. **Predict reuse.** A small tree model learns from earlier requests. It uses user ID, turn number, conversation age and time since the previous request to estimate how often the KV will be read again.
+2. **Choose what to write.** RANCHO combines that prediction with earlier reuse and the amount of data to write. Its controller adjusts the admission cutoff using recent write demand and the remaining budget.
+3. **Reuse the saved KV.** In our [vLLM integration](serving/README.md), vLLM first uses any cached beginning of the input and computes what is missing. RANCHO then decides which newly computed KV to copy to HBF. Later requests can use those copies instead of recomputing them.
+
+The repository includes two ways to study this: an **offline simulator** that replays request traces and counts hits and writes, and a **vLLM prototype** that runs an actual language model and measures throughput and latency. The prototype emulates HBF in a separate GPU-memory region, limits write bandwidth, and uses GPU-memory speed for reads. It does not measure physical HBF hardware.
+
+This public version differs from our private working version as development continues. It includes source code and synthetic examples, without private traces, trained production models or raw run logs.
 
 ## Results so far
 
