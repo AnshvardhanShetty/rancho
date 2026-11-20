@@ -16,7 +16,7 @@ A solid-state drive (SSD) uses NAND flash in a separate device accessed through 
 
 Both forms of flash storage can store prefix-KV, freeing space in HBM to serve more active requests concurrently and improving TTFT and throughput, but write-allowance limits how much KV can be written to these systems. 
 
-RANCHO is an online KV admission algorithm that predicts which cached state will be most valuable to preserve and decides what to write to flash under a limited endurance budget. It combines a gradient-boosted tree that predicts future KV reuse with an adaptive write controller that adjusts admission thresholds based on expected write demand and the remaining budget.
+RANCHO is an online KV admission algorithm that predicts which KV will be most valuable to preserve and decides what to write to flash under a limited endurance budget. It combines a gradient-boosted tree that predicts future KV reuse with an adaptive write controller that adjusts admission thresholds based on expected write demand and the remaining budget.
 
 - **High-bandwidth flash (HBF)** stores selected KV after prefill, freeing GPU memory for active requests.
 - **Solid-state drives (SSDs)** save selected KV as it gets evicted from memory (HBM or DRAM), so later requests can load it back instead of computing it again.
