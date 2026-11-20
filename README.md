@@ -43,7 +43,7 @@ In simulator experiments, RANCHO replaced **85% of the GPU memory used for prefi
 | Random: save each request with 50% probability | 20% |
 | Access Count: save after three accesses | 40% |
 
-Access Count waits until the first missing block has been accessed three times before saving the recomputed KV. Each GB of GPU memory removed adds 16 GB of flash. All policies have a write allowance averaging one full flash-capacity write per day.
+Each GB of GPU memory removed adds 16 GB of flash, matching SKHynix & Sandisk's proposed specification. All policies have a write allowance averaging one full flash-capacity write per day.
 
 I also integrated RANCHO into **vLLM**, an engine for serving language models. The prototype uses a separate region of GPU memory to emulate HBF and limits writes to **8 GB/s**. We test it with synthetic conversations whose shared prefixes occupy most of the baseline's KV-cache memory, leaving little room for active requests.
 
