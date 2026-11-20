@@ -77,20 +77,22 @@ struct TraceInputs {
     hbm_prefix = read_binary_array<int32_t>(settings.prefix_path);
     eligible = read_binary_array<uint8_t>(settings.eligible_path);
     predicted_reuse = read_binary_array<double>(settings.prediction_path);
-    auto before = read_binary_array<uint8_t>(settings.zero_before_path);
-    auto after = read_binary_array<uint8_t>(settings.zero_after_path);
-    size_t count = block_counts.size();
-    require_condition(count <= INT32_MAX && sessions.size() == count && times.size() == count &&
-                          before.size() == count && after.size() == count &&
-                          hbm_prefix.size() == count && eligible.size() == count &&
-                          predicted_reuse.size() == count,
-                      "metadata lengths");
+    auto pre_evaluation_flags = read_binary_array<uint8_t>(settings.zero_before_path);
+    auto evaluation_flags = read_binary_array<uint8_t>(settings.zero_after_path);
+    size_t request_count = block_counts.size();
+    require_condition(
+        request_count <= INT32_MAX && sessions.size() == request_count &&
+            times.size() == request_count && pre_evaluation_flags.size() == request_count &&
+            evaluation_flags.size() == request_count && hbm_prefix.size() == request_count &&
+            eligible.size() == request_count && predicted_reuse.size() == request_count,
+        "metadata lengths");
     require_condition(std::is_sorted(times.begin(), times.end()), "timestamp order");
     int64_t total_blocks = 0;
-    for (size_t row = 0; row < count; row++) {
-      require_condition(block_counts[row] >= 0 && sessions[row] >= 0 && before[row] == 0 &&
-                            after[row] == 0 && eligible[row] <= 1 &&
-                            std::isfinite(predicted_reuse[row]) && predicted_reuse[row] >= 0,
+    for (size_t row = 0; row < request_count; row++) {
+      require_condition(block_counts[row] >= 0 && sessions[row] >= 0 &&
+                            pre_evaluation_flags[row] == 0 && evaluation_flags[row] == 0 &&
+                            eligible[row] <= 1 && std::isfinite(predicted_reuse[row]) &&
+                            predicted_reuse[row] >= 0,
                         "invalid input: this recipe requires the two zero placeholder "
                         "arrays");
       total_blocks += block_counts[row];
@@ -108,14 +110,15 @@ struct Metrics {
   int64_t requested = 0, admitted = 0, budget_rejected = 0, no_offer = 0;
 
   // Write the counters in the existing results format.
-  void json(std::ostream &f) const {
-    f << "{\"requests\":" << requests << ",\"positions\":" << positions
-      << ",\"fetched_prefix_positions\":" << fetched << ",\"hbf_hits\":" << hbf_hits
-      << ",\"hbm_hits\":" << hbm_hits << ",\"credited_hits\":" << hbf_hits + hbm_hits
-      << ",\"eligible_first_distinct\":" << eligible << ",\"writes\":" << writes
-      << ",\"requested_admissions\":" << requested << ",\"admitted\":" << admitted
-      << ",\"budget_rejections\":" << budget_rejected << ",\"no_offer_requests\":" << no_offer
-      << "}";
+  void json(std::ostream &output_stream) const {
+    output_stream << "{\"requests\":" << requests << ",\"positions\":" << positions
+                  << ",\"fetched_prefix_positions\":" << fetched << ",\"hbf_hits\":" << hbf_hits
+                  << ",\"hbm_hits\":" << hbm_hits
+                  << ",\"credited_hits\":" << hbf_hits + hbm_hits
+                  << ",\"eligible_first_distinct\":" << eligible << ",\"writes\":" << writes
+                  << ",\"requested_admissions\":" << requested << ",\"admitted\":" << admitted
+                  << ",\"budget_rejections\":" << budget_rejected
+                  << ",\"no_offer_requests\":" << no_offer << "}";
   }
 };
 

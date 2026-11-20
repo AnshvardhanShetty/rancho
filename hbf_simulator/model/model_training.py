@@ -154,10 +154,10 @@ def check_condition(condition, message):
         raise ValueError(message)
 
 
-def training_weights(data, request_rows, cut):
+def training_weights(data, request_rows, cutoff_us):
     """Give requests half as much weight for each extra day since arrival"""
     weights = np.exp2(
-        -(cut - np.asarray(data.arrival_times_us[request_rows], dtype=float))
+        -(cutoff_us - np.asarray(data.arrival_times_us[request_rows], dtype=float))
         / (24 * HOUR)
     )
     check_condition(
@@ -169,10 +169,10 @@ def training_weights(data, request_rows, cut):
 
 
 # Load earlier examples and the matching features and weights.
-def prepare_training_arrays(data, cut, settings):
+def prepare_training_arrays(data, cutoff_us, settings):
     """Prepare the examples available before this hourly cutoff."""
     started = time.monotonic()
-    request_rows, reads_per_block = data.training_examples(cut)
+    request_rows, reads_per_block = data.training_examples(cutoff_us)
     check_condition(
         len(reads_per_block) > 0
         and np.all(np.isfinite(reads_per_block))
@@ -183,14 +183,14 @@ def prepare_training_arrays(data, cut, settings):
     feature_names = settings["features"]
     features = data.feature_table(request_rows, feature_names)
     category_columns = data.categorical_columns(feature_names)
-    weights = training_weights(data, request_rows, cut)
+    weights = training_weights(data, request_rows, cutoff_us)
     average_reuse = float(np.average(reads_per_block, weights=weights))
 
     # Record which examples, weights, and settings entered this fit.
     record = dict(
-        cut_us=cut,
+        cut_us=cutoff_us,
         train_rows=len(request_rows),
-        target_available_no_later_than_us=cut,
+        target_available_no_later_than_us=cutoff_us,
         label="OBS6H observed density",
         expanded_recipe=settings,
         sample_weight_sum=float(weights.sum()),
@@ -210,7 +210,7 @@ def prepare_training_arrays(data, cut, settings):
 
 
 # Choose the tree count on an earlier period, then refit at the current cutoff.
-def fit_tree_model(data, cut, settings):
+def fit_tree_model(data, cutoff_us, settings):
     """Fit the recorded tree recipe using only earlier observations."""
     check_condition(
         settings["model"] == "tree"
@@ -228,7 +228,7 @@ def fit_tree_model(data, cut, settings):
         weights,
         average_reuse,
         record,
-    ) = prepare_training_arrays(data, cut, settings)
+    ) = prepare_training_arrays(data, cutoff_us, settings)
     import lightgbm as lgb
 
     # Translate model_settings.json into LightGBM settings; keep training deterministic.
@@ -249,7 +249,7 @@ def fit_tree_model(data, cut, settings):
     )
 
     # The earlier fit sees only reads before earlier_cut. Validation uses reads before cut.
-    earlier_cut = cut - VALIDATION_HOURS
+    earlier_cut = cutoff_us - VALIDATION_HOURS
     earlier_rows, earlier_reuse = data.training_examples(earlier_cut)
     validation_rows = data.arrival_times_us[request_rows] >= earlier_cut
     tree_count, errors = settings["max_rounds"], []

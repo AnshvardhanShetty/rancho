@@ -6,12 +6,16 @@ The checker follows recorded ownership changes and verifies reference counts."""
 import json
 
 
-def audit_retention(root, cfg, result):
+def audit_retention(root, engine_settings, result):
     """Check which shared pages were kept and how many requests ran together"""
-    rows = [json.loads(x) for x in (root / "retention.jsonl").open()]
+    rows = [json.loads(line) for line in (root / "retention.jsonl").open()]
     assert rows[0]["event"] == "RETENTION_START" and rows[0]["retained_pages"] == 0
-    expected = cfg["shared_groups"] * cfg["shared_prefix_tokens"] // cfg["block_tokens"]
-    ids = set()
+    expected = (
+        engine_settings["shared_groups"]
+        * engine_settings["shared_prefix_tokens"]
+        // engine_settings["block_tokens"]
+    )
+    retained_page_ids = set()
     hashes = set()
     full_step = None
     for row in rows:
@@ -19,42 +23,47 @@ def audit_retention(root, cfg, result):
             assert row["gpu_completed"] is True
             for added in row["added"]:
                 assert (
-                    0 < added["block_id"] <= cfg["HBM_pages"]
-                    and added["block_id"] not in ids
+                    0 < added["block_id"] <= engine_settings["HBM_pages"]
+                    and added["block_id"] not in retained_page_ids
                 )
                 assert added["block_hash"] not in hashes
-                ids.add(added["block_id"])
+                retained_page_ids.add(added["block_id"])
                 hashes.add(added["block_hash"])
-            assert row["retained_pages"] == len(ids) <= expected
+            assert row["retained_pages"] == len(retained_page_ids) <= expected
             assert (
                 row["eviction_attempts"] == 0
                 and row["protected_pages_in_free_queue"] == 0
             )
-            if len(ids) == expected and full_step is None:
+            if len(retained_page_ids) == expected and full_step is None:
                 full_step = row["step"]
-    end = rows[-1]
+    final_retention_record = rows[-1]
     assert (
-        end["event"] == "RETENTION_COMPLETE"
-        and end["retained_pages"] == len(ids) == expected
+        final_retention_record["event"] == "RETENTION_COMPLETE"
+        and final_retention_record["retained_pages"]
+        == len(retained_page_ids)
+        == expected
     )
-    assert end["eviction_attempts"] == 0 and end["protected_pages_in_free_queue"] == 0
-    steps = [json.loads(x) for x in (root / "concurrency.jsonl").open()]
-    after = [x for x in steps if x["step"] > full_step]
+    assert (
+        final_retention_record["eviction_attempts"] == 0
+        and final_retention_record["protected_pages_in_free_queue"] == 0
+    )
+    steps = [json.loads(line) for line in (root / "concurrency.jsonl").open()]
+    after = [line for line in steps if line["step"] > full_step]
     return dict(
         policy="retain declared shared prefixes; native memory admission",
         retained_pages=expected,
-        retained_bytes=expected * cfg["native_block_bytes"],
+        retained_bytes=expected * engine_settings["native_block_bytes"],
         full_retention_step=full_step,
         eviction_attempts=0,
         after_fill_steps=len(after),
         after_fill_peak_resident_requests=max(
-            (x["resident_requests"] for x in after), default=0
+            (line["resident_requests"] for line in after), default=0
         ),
         after_fill_peak_scheduled_decode=max(
-            (x["scheduled_decode_requests"] for x in after), default=0
+            (line["scheduled_decode_requests"] for line in after), default=0
         ),
         after_fill_allocation_refusals=sum(
-            x["native_KV_allocation_refusals"] for x in after
+            line["native_KV_allocation_refusals"] for line in after
         ),
         actual_hit_ratio=result["hit_ratio"],
         native_occupancy_includes_retained_idle_prefixes=True,

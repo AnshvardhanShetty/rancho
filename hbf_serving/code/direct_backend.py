@@ -96,7 +96,7 @@ class DirectConnector(KVConnectorBase_V1):
         if len(self.pages.groups) != 1 or len(self.pages.pages) != 48:
             raise ValueError("Expected all 48 full-attention Qwen3-30B layers")
         if (
-            sum(v.shape[1] for v in self.pages.pages.values())
+            sum(layer_view.shape[1] for layer_view in self.pages.pages.values())
             != self.config["native_block_bytes"]
         ):
             raise ValueError("Native page byte count changed")
@@ -184,25 +184,29 @@ class DirectConnector(KVConnectorBase_V1):
                     continue
             targets = destinations[: len(sources)]
             del destinations[: len(sources)]
-            size = self.config["native_block_bytes"]
-            per_chunk = self.config["write_buffer_bytes"] // size
-            if per_chunk < 1:
+            page_bytes = self.config["native_block_bytes"]
+            pages_per_chunk = self.config["write_buffer_bytes"] // page_bytes
+            if pages_per_chunk < 1:
                 raise ValueError("Write buffer cannot hold one native page")
             started = time.monotonic_ns()
-            for offset in range(0, len(sources), per_chunk):
-                src = sources[offset : offset + per_chunk]
-                dst = targets[offset : offset + per_chunk]
+            for offset in range(0, len(sources), pages_per_chunk):
+                source_pages = sources[offset : offset + pages_per_chunk]
+                target_pages = targets[offset : offset + pages_per_chunk]
                 begin = time.monotonic_ns()
                 for view in self.pages.pages.values():
-                    source_ids = torch.tensor(src, device=view.device, dtype=torch.long)
-                    target_ids = torch.tensor(dst, device=view.device, dtype=torch.long)
+                    source_ids = torch.tensor(
+                        source_pages, device=view.device, dtype=torch.long
+                    )
+                    target_ids = torch.tensor(
+                        target_pages, device=view.device, dtype=torch.long
+                    )
                     payload = view.index_select(0, source_ids)
                     view.index_copy_(0, target_ids, payload)
                 torch.cuda.synchronize()
                 deadline = (
                     begin
                     + (
-                        len(src) * size * 1000000000
+                        len(source_pages) * page_bytes * 1000000000
                         + self.config["write_bandwidth_bytes_s"]
                         - 1
                     )
@@ -214,7 +218,7 @@ class DirectConnector(KVConnectorBase_V1):
             self.output.pairs.extend(zip(sources, targets))
             event.update(
                 action="COPIED",
-                native_bytes=len(sources) * size,
+                native_bytes=len(sources) * page_bytes,
                 copy_and_service_ns=time.monotonic_ns() - started,
             )
             self.output.events.append(event)
@@ -257,7 +261,8 @@ class DirectScheduler(Scheduler):
         output = super().schedule(*args, **kwargs)
         self.tiers.refresh_worker_tables(output)
         beginnings = {
-            r.req_id: r.num_computed_tokens for r in output.scheduled_new_reqs
+            scheduled_request.req_id: scheduled_request.num_computed_tokens
+            for scheduled_request in output.scheduled_new_reqs
         }
         cached = output.scheduled_cached_reqs
         beginnings.update(zip(cached.req_ids, cached.num_computed_tokens))
@@ -282,10 +287,12 @@ class DirectScheduler(Scheduler):
                         prompt_tokens=prompt_token_count,
                         cached_tokens=cached_tokens_before,
                         cached_HBF_full_pages=sum(
-                            self.tiers.is_hbf(b.block_id) for b in prefix
+                            self.tiers.is_hbf(cached_block.block_id)
+                            for cached_block in prefix
                         ),
                         cached_HBM_full_pages=sum(
-                            self.tiers.is_hbm(b.block_id) for b in prefix
+                            self.tiers.is_hbm(cached_block.block_id)
+                            for cached_block in prefix
                         ),
                     ),
                 )
@@ -310,19 +317,19 @@ class DirectScheduler(Scheduler):
                     trace_request_id = match[1]
                 info = self.engine_settings["requests"][trace_request_id]
                 sources = [
-                    b.block_id
-                    for b in tables[request_id][
+                    cached_block.block_id
+                    for cached_block in tables[request_id][
                         self.first_computed[request_id] // 16 : prompt_token_count // 16
                     ]
-                    if self.tiers.is_hbm(b.block_id)
+                    if self.tiers.is_hbm(cached_block.block_id)
                 ]
                 if len(set(sources)) != len(sources):
                     raise ValueError("Duplicate native suffix page")
                 feature_start = time.perf_counter_ns()
                 prompt_keys = (
                     [
-                        k.hex()
-                        for k in __import__("controlled_workload").block_keys(
+                        block_hash.hex()
+                        for block_hash in __import__("controlled_workload").block_keys(
                             request.prompt_token_ids
                         )
                     ]
@@ -361,14 +368,16 @@ class DirectScheduler(Scheduler):
 
     def update_from_output(self, scheduler_output, model_runner_output):
         """Apply the worker's completed moves to the cache tables"""
-        conn = model_runner_output.kv_connector_output
-        meta = conn.kv_connector_worker_meta if conn else None
-        if meta is not None:
-            if not isinstance(meta, Copied):
+        connector_output = model_runner_output.kv_connector_output
+        completed_copies = (
+            connector_output.kv_connector_worker_meta if connector_output else None
+        )
+        if completed_copies is not None:
+            if not isinstance(completed_copies, Copied):
                 raise ValueError("Unknown worker completion metadata")
-            if meta.pairs:
+            if completed_copies.pairs:
                 result = self.tiers.commit_completed_copies(
-                    meta.pairs, gpu_completed=meta.gpu_completed
+                    completed_copies.pairs, gpu_completed=completed_copies.gpu_completed
                 )
                 log_event(
                     self.engine_settings,

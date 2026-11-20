@@ -16,50 +16,68 @@ def vocab_fit(feature_values, category_columns):
         (
             np.unique(
                 feature_values[
-                    np.isfinite(feature_values[:, i]) & (feature_values[:, i] >= 0), i
+                    np.isfinite(feature_values[:, column])
+                    & (feature_values[:, column] >= 0),
+                    column,
                 ]
             )
-            if i in category_columns
+            if column in category_columns
             else None
         )
-        for i in range(feature_values.shape[1])
+        for column in range(feature_values.shape[1])
     ]
 
 
 def vocab_encode(feature_values, vocab):
     """Use the same category codes during fitting and prediction."""
-    z = np.where(
+    encoded_features = np.where(
         np.isfinite(feature_values) & (feature_values >= 0), feature_values, np.nan
     )
-    for i, v in enumerate(vocab):
-        if v is None:
+    for column, known_categories in enumerate(vocab):
+        if known_categories is None:
             continue
-        z[:, i] = -1
-        if len(v):
-            at = np.searchsorted(v, feature_values[:, i])
-            good = at < len(v)
-            good &= v[np.minimum(at, len(v) - 1)] == feature_values[:, i]
-            z[good, i] = at[good]
-    return z
+        encoded_features[:, column] = -1
+        if len(known_categories):
+            category_indices = np.searchsorted(
+                known_categories, feature_values[:, column]
+            )
+            known_category_mask = category_indices < len(known_categories)
+            known_category_mask &= (
+                known_categories[
+                    np.minimum(category_indices, len(known_categories) - 1)
+                ]
+                == feature_values[:, column]
+            )
+            encoded_features[known_category_mask, column] = category_indices[
+                known_category_mask
+            ]
+    return encoded_features
 
 
 def predict(model, feature_values):
     """Predict marginal reuse from the supplied feature rows."""
-    n, average_reuse, kind = (len(feature_values), model["mean"], model["kind"])
+    eviction_count, average_reuse, kind = (
+        len(feature_values),
+        model["mean"],
+        model["kind"],
+    )
     if kind == "global":
-        out = np.full(n, average_reuse)
+        predicted_reuse = np.full(eviction_count, average_reuse)
     elif kind == "tree":
-        out = model["fit"].predict(
+        predicted_reuse = model["fit"].predict(
             vocab_encode(feature_values, model["vocab"]), num_threads=1
         )
         if model["target"] == "log1p":
-            out = np.expm1(np.minimum(out, 700))
+            predicted_reuse = np.expm1(np.minimum(predicted_reuse, 700))
     else:
         raise ValueError(kind)
-    out = np.maximum(np.asarray(out, dtype=np.float64), 0)
-    if out.shape != (n,) or not np.isfinite(out).all():
+    predicted_reuse = np.maximum(np.asarray(predicted_reuse, dtype=np.float64), 0)
+    if (
+        predicted_reuse.shape != (eviction_count,)
+        or not np.isfinite(predicted_reuse).all()
+    ):
         raise ValueError("Invalid predictor output")
-    return out
+    return predicted_reuse
 
 
 def fit_model(data, cutoff, config):

@@ -14,18 +14,28 @@ class RetainedPrefixScheduler(DirectScheduler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cfg = self.engine_settings
-        assert cfg["baseline_prefix_retention"] is True and cfg["HBF_pages"] == 0
-        assert cfg["shared_prefix_tokens"] % cfg["block_tokens"] == 0
-        self.shared_pages = cfg["shared_prefix_tokens"] // cfg["block_tokens"]
+        engine_settings = self.engine_settings
+        assert (
+            engine_settings["baseline_prefix_retention"] is True
+            and engine_settings["HBF_pages"] == 0
+        )
+        assert (
+            engine_settings["shared_prefix_tokens"] % engine_settings["block_tokens"]
+            == 0
+        )
+        self.shared_pages = (
+            engine_settings["shared_prefix_tokens"] // engine_settings["block_tokens"]
+        )
         self.retention = PrefixRetention(
-            self.tiers.pool, cfg["HBM_pages"], self.shared_pages * cfg["shared_groups"]
+            self.tiers.pool,
+            engine_settings["HBM_pages"],
+            self.shared_pages * engine_settings["shared_groups"],
         )
         self.retention_seen = set()
         self.retention_steps = 0
         self.retention_completed = False
         log_event(
-            cfg,
+            engine_settings,
             "retention.jsonl",
             dict(
                 event="RETENTION_START",

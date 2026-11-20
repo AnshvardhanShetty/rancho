@@ -16,15 +16,15 @@ def read_json(path):
     return json.loads(path.read_text())
 
 
-def verify_file_hash(path, digest):
-    with path.open("rb") as f:
-        if hashlib.file_digest(f, "sha256").hexdigest() != digest:
+def verify_file_hash(path, expected_sha256):
+    with path.open("rb") as input_file:
+        if hashlib.file_digest(input_file, "sha256").hexdigest() != expected_sha256:
             raise ValueError(f"Input checksum mismatch: {path}")
 
 
-def run_program(name, *args):
+def run_program(program_name, *args):
     subprocess.run(
-        [str(ROOT / "build" / name), *map(str, args)],
+        [str(ROOT / "build" / program_name), *map(str, args)],
         check=True,
         stdout=subprocess.DEVNULL,
     )

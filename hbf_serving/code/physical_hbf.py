@@ -69,7 +69,7 @@ class PhysicalTimedPolicy:
         )
         cpu_ns = time.perf_counter_ns() - start
         self.ledger.charge(result["paid_cost"], warmup, allowance)
-        assert self.policy.wallet.W == self.ledger.total
+        assert self.policy.wallet.blocks_written == self.ledger.total
         total_cpu_ns = time.perf_counter_ns() - total_start
         result.update(
             decision_cpu_ns=cpu_ns,

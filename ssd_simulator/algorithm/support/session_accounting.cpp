@@ -123,32 +123,39 @@ struct Rank {
 
 void credit(int argc, char **argv) {
   ck(argc == 5, "credit PREFIX ID_COUNT OUT");
-  std::string p = argv[2];
-  I N = std::stoll(argv[3]);
+  std::string stream_prefix = argv[2];
+  I block_id_count = std::stoll(argv[3]);
   fs::path out = argv[4];
-  ck(N > 0 && N <= INT32_MAX, "ID range");
-  File nb(p + "_nb.i32"), ids(p + "_ids.i32"), sessions(p + "_sess.i32"), ts(p + "_ts.i64");
-  auto n = nb.as<int32_t>(), id = ids.as<int32_t>(), sid = sessions.as<int32_t>();
+  ck(block_id_count > 0 && block_id_count <= INT32_MAX, "ID range");
+  File nb(stream_prefix + "_nb.i32"), ids(stream_prefix + "_ids.i32"),
+      sessions(stream_prefix + "_sess.i32"), ts(stream_prefix + "_ts.i64");
+  auto block_counts = nb.as<int32_t>(), block_ids = ids.as<int32_t>(),
+       session_codes = sessions.as<int32_t>();
   auto times = ts.as<I>();
-  size_t R = nb.n<int32_t>();
-  ck(R <= INT32_MAX && sessions.n<int32_t>() == R && ts.n<I>() == R, "row shape");
-  std::vector<int32_t> stamp(size_t(N), -1), mark(size_t(N), -1);
-  std::vector<Q> bits((ids.n<int32_t>() + 63) / 64, 0), offset(R + 1, 0);
+  size_t request_count = nb.n<int32_t>();
+  ck(request_count <= INT32_MAX && sessions.n<int32_t>() == request_count &&
+         ts.n<I>() == request_count,
+     "row shape");
+  std::vector<int32_t> last_session_by_block(size_t(block_id_count), -1),
+      last_seen_request_by_block(size_t(block_id_count), -1);
+  std::vector<Q> bits((ids.n<int32_t>() + 63) / 64, 0), offset(request_count + 1, 0);
   Q total = 0;
-  for (size_t r = 0; r < R; r++) {
-    ck(n[r] >= 0 && sid[r] >= 0 && (r == 0 || times[r] >= times[r - 1]), "row metadata");
-    offset[r + 1] = offset[r] + Q(n[r]);
-    ck(offset[r + 1] <= ids.n<int32_t>(), "ID extent");
-    for (Q k = offset[r]; k < offset[r + 1]; k++) {
-      int b = id[k];
-      ck(b >= 0 && b < N, "raw block");
-      if (mark[size_t(b)] != int32_t(r)) {
-        if (stamp[size_t(b)] == sid[r]) {
+  for (size_t request_index = 0; request_index < request_count; request_index++) {
+    ck(block_counts[request_index] >= 0 && session_codes[request_index] >= 0 &&
+           (request_index == 0 || times[request_index] >= times[request_index - 1]),
+       "row metadata");
+    offset[request_index + 1] = offset[request_index] + Q(block_counts[request_index]);
+    ck(offset[request_index + 1] <= ids.n<int32_t>(), "ID extent");
+    for (Q k = offset[request_index]; k < offset[request_index + 1]; k++) {
+      int block_id = block_ids[k];
+      ck(block_id >= 0 && block_id < block_id_count, "raw block");
+      if (last_seen_request_by_block[size_t(block_id)] != int32_t(request_index)) {
+        if (last_session_by_block[size_t(block_id)] == session_codes[request_index]) {
           set(bits, k);
           total++;
         }
-        mark[size_t(b)] = int32_t(r);
-        stamp[size_t(b)] = sid[r];
+        last_seen_request_by_block[size_t(block_id)] = int32_t(request_index);
+        last_session_by_block[size_t(block_id)] = session_codes[request_index];
       }
     }
   }
@@ -158,10 +165,10 @@ void credit(int argc, char **argv) {
   fresh(out);
   write(out / "offsets.i64", offset);
   savebits(out, "credit", bits);
-  report(out / "RESULT.json",
-         "{\"status\":\"PASS_EXACT_RAW_SESSION_CREDIT\",\"rows\":" + std::to_string(R) +
-             ",\"positions\":" + std::to_string(offset.back()) +
-             ",\"qualified_positions\":" + std::to_string(total) + "}");
+  report(out / "RESULT.json", "{\"status\":\"PASS_EXACT_RAW_SESSION_CREDIT\",\"rows\":" +
+                                  std::to_string(request_count) +
+                                  ",\"positions\":" + std::to_string(offset.back()) +
+                                  ",\"qualified_positions\":" + std::to_string(total) + "}");
 }
 
 struct Calendar {
@@ -199,38 +206,44 @@ struct Calendar {
 
 void verify_credit(int argc, char **argv) {
   ck(argc == 5, "verify_credit PREFIX ID_COUNT CREDIT");
-  std::string p = argv[2];
-  I N = std::stoll(argv[3]);
-  fs::path cp = argv[4];
-  ck(N > 0 && N <= INT32_MAX, "ID range");
-  File nb(p + "_nb.i32"), ids(p + "_ids.i32"), sessions(p + "_sess.i32");
-  auto n = nb.as<int32_t>(), id = ids.as<int32_t>(), sid = sessions.as<int32_t>();
-  size_t R = nb.n<int32_t>();
-  ck(sessions.n<int32_t>() == R && R <= INT32_MAX, "verification shape");
-  Rank rank(cp, "credit", ids.n<int32_t>());
-  std::vector<int32_t> lastrow(size_t(N), -1);
+  std::string stream_prefix = argv[2];
+  I block_id_count = std::stoll(argv[3]);
+  fs::path credit_directory = argv[4];
+  ck(block_id_count > 0 && block_id_count <= INT32_MAX, "ID range");
+  File nb(stream_prefix + "_nb.i32"), ids(stream_prefix + "_ids.i32"),
+      sessions(stream_prefix + "_sess.i32");
+  auto block_counts = nb.as<int32_t>(), block_ids = ids.as<int32_t>(),
+       session_codes = sessions.as<int32_t>();
+  size_t request_count = nb.n<int32_t>();
+  ck(sessions.n<int32_t>() == request_count && request_count <= INT32_MAX,
+     "verification shape");
+  Rank rank(credit_directory, "credit", ids.n<int32_t>());
+  std::vector<int32_t> previous_request_by_block(size_t(block_id_count), -1);
   Q offset = 0, total = 0;
-  for (size_t r = 0; r < R; r++) {
-    ck(n[r] >= 0 && offset + Q(n[r]) <= ids.n<int32_t>(), "verification row");
+  for (size_t request_index = 0; request_index < request_count; request_index++) {
+    ck(block_counts[request_index] >= 0 &&
+           offset + Q(block_counts[request_index]) <= ids.n<int32_t>(),
+       "verification row");
     Q count = 0;
-    for (int32_t j = 0; j < n[r]; j++) {
-      int b = id[offset + Q(j)];
-      ck(b >= 0 && b < N, "verification ID");
-      int previous = lastrow[size_t(b)];
-      bool q = previous >= 0 && previous < int(r) && sid[size_t(previous)] == sid[r];
-      ck(q == bit(rank.b, offset + Q(j)),
+    for (int32_t j = 0; j < block_counts[request_index]; j++) {
+      int block_id = block_ids[offset + Q(j)];
+      ck(block_id >= 0 && block_id < block_id_count, "verification ID");
+      int previous = previous_request_by_block[size_t(block_id)];
+      bool is_session_repeat = previous >= 0 && previous < int(request_index) &&
+                               session_codes[size_t(previous)] == session_codes[request_index];
+      ck(is_session_repeat == bit(rank.b, offset + Q(j)),
          "credit predicate differs from independent previous-row implementation");
-      lastrow[size_t(b)] = int32_t(r);
-      count += Q(q);
+      previous_request_by_block[size_t(block_id)] = int32_t(request_index);
+      count += Q(is_session_repeat);
     }
-    ck(rank.count(offset, Q(n[r])) == count, "rank row count");
+    ck(rank.count(offset, Q(block_counts[request_index])) == count, "rank row count");
     total += count;
-    offset += Q(n[r]);
+    offset += Q(block_counts[request_index]);
   }
   ck(offset == ids.n<int32_t>() && rank.before(offset) == total, "verification complete");
   for (File *f : {&nb, &ids, &sessions})
     f->stable();
-  std::cout << "{\"status\":\"PASS_INDEPENDENT_PREVIOUS_ROW_CREDIT\",\"rows\":" << R
+  std::cout << "{\"status\":\"PASS_INDEPENDENT_PREVIOUS_ROW_CREDIT\",\"rows\":" << request_count
             << ",\"positions\":" << offset << ",\"qualified_positions\":" << total << "}\n";
 }
 
@@ -275,50 +288,62 @@ void misses(int argc, char **argv) {
 
 void rescore(int argc, char **argv) {
   ck(argc == 7, "rescore CREDIT GEOMETRY CAL ROWS OUT");
-  fs::path cp = argv[2], gp = argv[3], out = argv[6];
-  Calendar c(argv[4]);
-  File offsets(cp / "offsets.i64"), rows(argv[5]);
-  auto os = offsets.as<Q>();
-  ck(offsets.n<Q>() >= size_t(c.R + 1) && rows.n<I>() % 13 == 0, "rescore shape");
-  Q total = os[offsets.n<Q>() - 1];
-  Rank credit(cp, "credit", total), miss(gp, "all_misses", total),
-      cmiss(gp, "credited_misses", total);
+  fs::path credit_directory = argv[2], geometry_directory = argv[3], out = argv[6];
+  Calendar calendar(argv[4]);
+  File offsets(credit_directory / "offsets.i64"), rows(argv[5]);
+  auto request_offsets = offsets.as<Q>();
+  ck(offsets.n<Q>() >= size_t(calendar.R + 1) && rows.n<I>() % 13 == 0, "rescore shape");
+  Q total = request_offsets[offsets.n<Q>() - 1];
+  Rank credit(credit_directory, "credit", total), miss(geometry_directory, "all_misses", total),
+      cmiss(geometry_directory, "credited_misses", total);
   auto saved = rows.as<I>();
-  Q count = rows.n<I>() / 13, D = 0, h = 0, combined = 0, ssd = 0, ph = 0, pc = 0, ps = 0,
-    writes = 0;
+  Q count = rows.n<I>() / 13, total_requested_blocks = 0, total_hbm_hits = 0, combined = 0,
+    ssd = 0, raw_hbm_prefix_positions = 0, raw_combined_prefix_positions = 0,
+    raw_ssd_positions = 0, writes = 0;
   I previous = -1;
   std::vector<U> newrows;
   newrows.reserve(size_t(count) * 3);
   for (Q k = 0; k < count; k++) {
-    auto x = saved + k * 13;
-    I r = x[0];
-    ck(r >= 0 && r < c.R && r > previous, "saved row index");
-    previous = r;
-    auto cr = c.rr + r * 6;
-    ck(x[1] == cr[0] && x[1] >= c.m[5] && x[1] < c.m[6] && x[2] == cr[1] && x[3] == cr[5] &&
-           x[9] == cr[4] && x[10] == cr[1] - cr[3] && x[12] == cr[2],
+    auto saved_row = saved + k * 13;
+    I request_index = saved_row[0];
+    ck(request_index >= 0 && request_index < calendar.R && request_index > previous,
+       "saved row index");
+    previous = request_index;
+    auto calendar_row = calendar.rr + request_index * 6;
+    ck(saved_row[1] == calendar_row[0] && saved_row[1] >= calendar.m[5] &&
+           saved_row[1] < calendar.m[6] && saved_row[2] == calendar_row[1] &&
+           saved_row[3] == calendar_row[5] && saved_row[9] == calendar_row[4] &&
+           saved_row[10] == calendar_row[1] - calendar_row[3] &&
+           saved_row[12] == calendar_row[2],
        "saved row identity");
-    ck(x[3] >= 0 && x[3] <= x[4] && x[4] <= cr[3] && x[7] >= 0, "saved prefix");
-    ck((cr[4] == 0) || x[4] == 0, "bypass prefix");
-    Q base = os[r], p = Q(x[4]), hp = Q(x[3]);
-    ck(miss.count(base, p) == Q(x[5]), "original SSD count mismatch");
-    Q a = credit.count(base, hp), b = credit.count(base, p), d = cmiss.count(base, p);
-    ck(a <= b && d <= Q(x[5]) && d <= b - a, "weighted counts");
-    ck(b <= UINT32_MAX, "row credit range");
-    newrows.push_back(U(a));
-    newrows.push_back(U(b));
-    newrows.push_back(U(d));
-    h += a;
-    combined += b;
-    ssd += d;
-    D += Q(x[2]);
-    ph += hp;
-    pc += p;
-    ps += Q(x[5]);
-    writes += Q(x[7]);
+    ck(saved_row[3] >= 0 && saved_row[3] <= saved_row[4] && saved_row[4] <= calendar_row[3] &&
+           saved_row[7] >= 0,
+       "saved prefix");
+    ck((calendar_row[4] == 0) || saved_row[4] == 0, "bypass prefix");
+    Q base = request_offsets[request_index], combined_prefix = Q(saved_row[4]),
+      hbm_prefix = Q(saved_row[3]);
+    ck(miss.count(base, combined_prefix) == Q(saved_row[5]), "original SSD count mismatch");
+    Q eligible_hbm_hits = credit.count(base, hbm_prefix),
+      eligible_combined_hits = credit.count(base, combined_prefix),
+      eligible_ssd_hits = cmiss.count(base, combined_prefix);
+    ck(eligible_hbm_hits <= eligible_combined_hits && eligible_ssd_hits <= Q(saved_row[5]) &&
+           eligible_ssd_hits <= eligible_combined_hits - eligible_hbm_hits,
+       "weighted counts");
+    ck(eligible_combined_hits <= UINT32_MAX, "row credit range");
+    newrows.push_back(U(eligible_hbm_hits));
+    newrows.push_back(U(eligible_combined_hits));
+    newrows.push_back(U(eligible_ssd_hits));
+    total_hbm_hits += eligible_hbm_hits;
+    combined += eligible_combined_hits;
+    ssd += eligible_ssd_hits;
+    total_requested_blocks += Q(saved_row[2]);
+    raw_hbm_prefix_positions += hbm_prefix;
+    raw_combined_prefix_positions += combined_prefix;
+    raw_ssd_positions += Q(saved_row[5]);
+    writes += Q(saved_row[7]);
   }
-  ck(count == Q(c.R - c.m[12]), "evaluation coverage");
-  c.stable();
+  ck(count == Q(calendar.R - calendar.m[12]), "evaluation coverage");
+  calendar.stable();
   rows.stable();
   offsets.stable();
   fresh(out);
@@ -326,49 +351,53 @@ void rescore(int argc, char **argv) {
   report(
       out / "RESULT.json",
       "{\"status\":\"PASS_EXACT_SAVED_PREFIX_RESCORE\",\"requests\":" + std::to_string(count) +
-          ",\"denominator\":" + std::to_string(D) + ",\"credited_hbm\":" + std::to_string(h) +
-          ",\"credited_combined\":" + std::to_string(combined) + ",\"credited_ssd\":" +
-          std::to_string(ssd) + ",\"original_hbm\":" + std::to_string(ph) +
-          ",\"original_combined\":" + std::to_string(pc) + ",\"original_ssd\":" +
-          std::to_string(ps) + ",\"evaluation_writes\":" + std::to_string(writes) + "}");
+          ",\"denominator\":" + std::to_string(total_requested_blocks) +
+          ",\"credited_hbm\":" + std::to_string(total_hbm_hits) + ",\"credited_combined\":" +
+          std::to_string(combined) + ",\"credited_ssd\":" + std::to_string(ssd) +
+          ",\"original_hbm\":" + std::to_string(raw_hbm_prefix_positions) +
+          ",\"original_combined\":" + std::to_string(raw_combined_prefix_positions) +
+          ",\"original_ssd\":" + std::to_string(raw_ssd_positions) +
+          ",\"evaluation_writes\":" + std::to_string(writes) + "}");
 }
 
 void verify_rescore(int argc, char **argv) {
   ck(argc == 7, "verify_rescore CREDIT GEOMETRY CAL ROWS RESCORE_OUT");
-  fs::path cp = argv[2], out = argv[6];
-  Calendar c(argv[4]);
-  File offsets(cp / "offsets.i64"), rows(argv[5]), credited(out / "CREDITED_ROWS.u32");
-  auto os = offsets.as<Q>();
+  fs::path credit_directory = argv[2], out = argv[6];
+  Calendar calendar(argv[4]);
+  File offsets(credit_directory / "offsets.i64"), rows(argv[5]),
+      credited(out / "CREDITED_ROWS.u32");
+  auto request_offsets = offsets.as<Q>();
   auto saved = rows.as<I>();
   auto target = credited.as<U>();
   Q count = rows.n<I>() / 13;
-  Rank credit(cp, "credit", os[offsets.n<Q>() - 1]);
+  Rank credit(credit_directory, "credit", request_offsets[offsets.n<Q>() - 1]);
   ck(rows.n<I>() % 13 == 0 && credited.n<U>() == count * 3, "reference row shapes");
-  Q h = 0, combined = 0, ssd = 0;
+  Q total_hbm_hits = 0, combined = 0, ssd = 0;
   for (Q k = 0; k < count; k++) {
-    auto x = saved + k * 13;
-    I r = x[0];
-    ck(r >= 0 && r < c.R, "reference row");
-    Q a = 0, b = 0, d = 0;
-    for (I j = 0; j < x[4]; j++) {
-      bool q = bit(credit.b, os[r] + Q(j));
-      a += Q(q && j < x[3]);
-      b += Q(q);
+    auto saved_row = saved + k * 13;
+    I request_index = saved_row[0];
+    ck(request_index >= 0 && request_index < calendar.R, "reference row");
+    Q eligible_hbm_hits = 0, eligible_combined_hits = 0, eligible_ssd_hits = 0;
+    for (I j = 0; j < saved_row[4]; j++) {
+      bool is_session_repeat = bit(credit.b, request_offsets[request_index] + Q(j));
+      eligible_hbm_hits += Q(is_session_repeat && j < saved_row[3]);
+      eligible_combined_hits += Q(is_session_repeat);
     }
-    for (I j = c.off[r]; j < c.off[r + 1]; j++) {
-      I pos = c.mi[2 * j + 1];
-      if (pos >= x[4])
+    for (I j = calendar.off[request_index]; j < calendar.off[request_index + 1]; j++) {
+      I pos = calendar.mi[2 * j + 1];
+      if (pos >= saved_row[4])
         break;
-      d += Q(bit(credit.b, os[r] + Q(pos)));
+      eligible_ssd_hits += Q(bit(credit.b, request_offsets[request_index] + Q(pos)));
     }
-    ck(target[k * 3] == a && target[k * 3 + 1] == b && target[k * 3 + 2] == d,
+    ck(target[k * 3] == eligible_hbm_hits && target[k * 3 + 1] == eligible_combined_hits &&
+           target[k * 3 + 2] == eligible_ssd_hits,
        "literal prefix rescore differs");
-    h += a;
-    combined += b;
-    ssd += d;
+    total_hbm_hits += eligible_hbm_hits;
+    combined += eligible_combined_hits;
+    ssd += eligible_ssd_hits;
   }
   std::cout << "{\"status\":\"PASS_INDEPENDENT_LITERAL_PREFIX_RESCORE\",\"requests\":" << count
-            << ",\"credited_hbm\":" << h << ",\"credited_combined\":" << combined
+            << ",\"credited_hbm\":" << total_hbm_hits << ",\"credited_combined\":" << combined
             << ",\"credited_ssd\":" << ssd << "}\n";
 }
 

@@ -51,32 +51,32 @@ class Storage:
         self.buffer = torch.frombuffer(self.staging, dtype=torch.uint8)
         self.page_count = pages.num_blocks
 
-    def copy(self, local, buf, writing):
+    def copy(self, page_id, transfer_buffer, writing):
         """Copy one whole KV block between GPU memory and the CPU buffer."""
-        if not 0 < local < self.page_count:
+        if not 0 < page_id < self.page_count:
             raise ValueError("Invalid HBM slot")
         offset = 0
         for layer in self.views:
-            row = layer[local]
-            part = buf[offset : offset + row.numel()]
+            layer_page = layer[page_id]
+            buffer_slice = transfer_buffer[offset : offset + layer_page.numel()]
             if writing:
-                part.copy_(row)
+                buffer_slice.copy_(layer_page)
             else:
-                row.copy_(part)
-            offset += row.numel()
+                layer_page.copy_(buffer_slice)
+            offset += layer_page.numel()
         assert offset == self.page_bytes
 
-    def put(self, key, local):
+    def put(self, key, page_id):
         """Write a new block, replacing the oldest unused SSD copy if full."""
         if key in self.slots:
             raise ValueError("Paid duplicate SSD write")
         if len(self.slots) == self.capacity:
-            old, slot = self.slots.popitem(last=False)
-            self.digests.pop(old, None)
+            evicted_block_key, slot = self.slots.popitem(last=False)
+            self.digests.pop(evicted_block_key, None)
             self.replacements += 1
         else:
             slot = len(self.slots)
-        self.copy(local, self.buffer, True)
+        self.copy(page_id, self.buffer, True)
         if (
             os.pwritev(self.fd, [self.staging], slot * self.page_bytes)
             != self.page_bytes

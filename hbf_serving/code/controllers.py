@@ -8,15 +8,27 @@ import math
 DAY = 86_400_000_000
 MASK64 = (1 << 64) - 1
 
+# Keep the keys used by saved controller snapshots
+SNAPSHOT_KEYS = {
+    "blocks_written": "W",
+    "next_history_slot": "rp",
+    "cutoff_ready": "have",
+    "tie_probability": "tie",
+    "current_spending_limit": "cap",
+    "offer_history": "ring",
+    "history_capacity": "limit",
+    "cutoffs_by_cost_band": "bandcuts",
+}
+
 
 def hash01(event_id, seed):
-    x = ((event_id * 0x9E3779B97F4A7C15) & MASK64) ^ seed
-    x ^= x >> 33
-    x = (x * 0xFF51AFD7ED558CCD) & MASK64
-    x ^= x >> 33
-    x = (x * 0xC4CEB9FE1A85EC53) & MASK64
-    x ^= x >> 33
-    return (x >> 11) / 9007199254740992.0
+    hashed_value = ((event_id * 0x9E3779B97F4A7C15) & MASK64) ^ seed
+    hashed_value ^= hashed_value >> 33
+    hashed_value = (hashed_value * 0xFF51AFD7ED558CCD) & MASK64
+    hashed_value ^= hashed_value >> 33
+    hashed_value = (hashed_value * 0xC4CEB9FE1A85EC53) & MASK64
+    hashed_value ^= hashed_value >> 33
+    return (hashed_value >> 11) / 9007199254740992.0
 
 
 @dataclass(frozen=True)
@@ -70,23 +82,30 @@ class Wallet:
             and history >= 100
         ):
             raise ValueError("Invalid controller geometry")
-        self.update, self.limit = update, history
-        self.cap = math.floor((1 - self.reserve) * budget)
-        self.W = self.observations = self.rp = 0
-        self.released = self.have = False
-        self.threshold, self.tie = -math.inf, 1.0
-        self.ring = []
+        self.update, self.history_capacity = update, history
+        self.current_spending_limit = math.floor((1 - self.reserve) * budget)
+        self.blocks_written = self.observations = self.next_history_slot = 0
+        self.released = self.cutoff_ready = False
+        self.threshold, self.tie_probability = -math.inf, 1.0
+        self.offer_history = []
         self.last_id, self.last_us = -1, -(1 << 63)
         self.warm_provenance = None
 
     def phase(self, now_us):
         if not self.released and now_us >= self.release_us:
-            self.cap, self.released, self.have = self.budget, True, False
+            self.current_spending_limit, self.released, self.cutoff_ready = (
+                self.budget,
+                True,
+                False,
+            )
 
     def chronological(self):
-        if len(self.ring) < self.limit:
-            return list(self.ring)
-        return self.ring[self.rp :] + self.ring[: self.rp]
+        if len(self.offer_history) < self.history_capacity:
+            return list(self.offer_history)
+        return (
+            self.offer_history[self.next_history_slot :]
+            + self.offer_history[: self.next_history_slot]
+        )
 
     def recompute(self, now_us):
         """Estimate future writes and recalculate the score cutoff"""
@@ -94,7 +113,11 @@ class Wallet:
             self.phase(now_us)
             values = self.chronological()
             if len(values) < 100:
-                self.threshold, self.tie, self.have = -math.inf, 1.0, False
+                self.threshold, self.tie_probability, self.cutoff_ready = (
+                    -math.inf,
+                    1.0,
+                    False,
+                )
                 return
             span = max((values[-1].time_us - values[0].time_us) / 1e6, 1.0)
             horizon = max(
@@ -105,31 +128,40 @@ class Wallet:
             fraction = max(
                 0.0,
                 min(
-                    1.0, max(float(self.cap - self.W), 0.0) / max(rate * horizon, 1e-9)
+                    1.0,
+                    max(float(self.current_spending_limit - self.blocks_written), 0.0)
+                    / max(rate * horizon, 1e-9),
                 ),
             )
-            scores = sorted(v.score for v in values)
+            scores = sorted(offer.score for offer in values)
             if fraction <= 0:
-                self.threshold, self.tie = math.inf, 0.0
+                self.threshold, self.tie_probability = math.inf, 0.0
             elif fraction >= 1:
-                self.threshold, self.tie = -math.inf, 1.0
+                self.threshold, self.tie_probability = -math.inf, 1.0
             else:
                 wanted = fraction * len(values)
-                k = min(len(values) - 1, math.floor(len(values) - wanted))
-                self.threshold = scores[k]
-                above = sum(s > self.threshold for s in scores)
-                equal = sum(s == self.threshold for s in scores)
-                self.tie = max(0.0, min(1.0, (wanted - above) / equal))
+                cutoff_index = min(len(values) - 1, math.floor(len(values) - wanted))
+                self.threshold = scores[cutoff_index]
+                above = sum(score > self.threshold for score in scores)
+                equal = sum(score == self.threshold for score in scores)
+                self.tie_probability = max(0.0, min(1.0, (wanted - above) / equal))
         else:
-            if not self.ring:
+            if not self.offer_history:
                 return
             # Native HBF sums the physical ring slots, not chronological order.
-            values = [v for v in self.ring if v.cost > 0 and math.isfinite(v.score)]
+            values = [
+                offer
+                for offer in self.offer_history
+                if offer.cost > 0 and math.isfinite(offer.score)
+            ]
             if len(values) < 100:
                 return
-            total = sum(float(v.cost) for v in values)
+            total = sum(float(offer.cost) for offer in values)
             span = max(
-                (max(v.time_us for v in self.ring) - min(v.time_us for v in self.ring))
+                (
+                    max(offer.time_us for offer in self.offer_history)
+                    - min(offer.time_us for offer in self.offer_history)
+                )
                 / 1e6,
                 1.0,
             )
@@ -142,16 +174,16 @@ class Wallet:
                 0.0,
                 min(
                     1.0,
-                    max(float(self.cap - self.W), 0.0)
+                    max(float(self.current_spending_limit - self.blocks_written), 0.0)
                     / max(rate * horizon * mean, 1e-9),
                 ),
             )
             if fraction <= 0:
-                self.threshold, self.tie = math.inf, 0.0
+                self.threshold, self.tie_probability = math.inf, 0.0
             elif fraction >= 1:
-                self.threshold, self.tie = -math.inf, 1.0
+                self.threshold, self.tie_probability = -math.inf, 1.0
             else:
-                values = sorted(values, key=lambda v: -v.score)
+                values = sorted(values, key=lambda offer: -offer.score)
                 wanted, above = fraction * total, 0.0
                 self.threshold = values[-1].score
                 i = 0
@@ -165,18 +197,18 @@ class Wallet:
                         break
                     above += equal
                     i = j
-                self.tie = max(
+                self.tie_probability = max(
                     0.0, min(1.0, (wanted - above) / equal if equal > 0 else 0.0)
                 )
-        self.have = True
+        self.cutoff_ready = True
 
     def _observe(self, v):
         """Save this offer and record what the policy decided"""
-        if len(self.ring) < self.limit:
-            self.ring.append(v)
+        if len(self.offer_history) < self.history_capacity:
+            self.offer_history.append(v)
         else:
-            self.ring[self.rp] = v
-        self.rp = (self.rp + 1) % self.limit
+            self.offer_history[self.next_history_slot] = v
+        self.next_history_slot = (self.next_history_slot + 1) % self.history_capacity
         self.observations += 1
         if self.observations % self.update == 0:
             self.recompute(v.time_us)
@@ -235,22 +267,26 @@ class Wallet:
         if forced_warm is not None:
             admit = forced_warm
             if admit and (
-                cost > self.budget - self.W
-                or (self.design == "hbf" and cost > self.cap - self.W)
+                cost > self.budget - self.blocks_written
+                or (
+                    self.design == "hbf"
+                    and cost > self.current_spending_limit - self.blocks_written
+                )
             ):
                 raise ValueError("Saved warm decision exceeds the original wallet")
         else:
             admit = distinct > 0 and (
                 cost == 0
                 or (
-                    cost <= self.budget - self.W
-                    and cost <= self.cap - self.W
+                    cost <= self.budget - self.blocks_written
+                    and cost <= self.current_spending_limit - self.blocks_written
                     and (
-                        not self.have
+                        not self.cutoff_ready
                         or score > self.threshold
                         or (
                             score == self.threshold
-                            and hash01(event_id, self.seed ^ 0x5BF03635) < self.tie
+                            and hash01(event_id, self.seed ^ 0x5BF03635)
+                            < self.tie_probability
                         )
                     )
                 )
@@ -263,10 +299,10 @@ class Wallet:
         if self.design == "hbf":
             self._observe(observation)
             if admit:
-                self.W += cost
+                self.blocks_written += cost
         else:
             if admit:
-                self.W += 1
+                self.blocks_written += 1
             self._observe(observation)
         return admit
 
@@ -284,7 +320,7 @@ class Wallet:
         if any(not math.isfinite(p) or p < 0 for p in predictions):
             raise ValueError("Invalid reprice prediction")
         by_id = dict(zip(event_ids, predictions))
-        self.ring = [
+        self.offer_history = [
             Observation(
                 v.event_id,
                 (
@@ -300,15 +336,19 @@ class Wallet:
                 v.time_us,
                 v.distinct,
             )
-            for v in self.ring
+            for v in self.offer_history
         ]
-        self.have, self.threshold, self.tie = False, -math.inf, 1.0
+        self.cutoff_ready, self.threshold, self.tie_probability = False, -math.inf, 1.0
         self.recompute(cut_us)
 
     def snapshot(self):
         """Full state including physical ring position; provenance is external."""
-        state = {k: v for k, v in vars(self).items() if k != "ring"}
-        state["ring"] = [asdict(v) for v in self.ring]
+        state = {
+            SNAPSHOT_KEYS.get(field, field): value
+            for field, value in vars(self).items()
+            if field != "offer_history"
+        }
+        state["ring"] = [asdict(v) for v in self.offer_history]
 
         def encode(x):
             if isinstance(x, float) and math.isinf(x):
@@ -341,27 +381,37 @@ class Wallet:
                 return [decode(v) for v in x]
             return x
 
-        s = decode(state)
-        w = cls(
-            s["design"],
-            s["budget"],
-            s["seed"],
-            end_us=s["end_us"],
-            release_us=s["release_us"],
-            reserve=s["reserve"],
-            update=s["update"],
-            history=s["limit"],
+        saved_fields = decode(state)
+        controller = cls(
+            saved_fields["design"],
+            saved_fields["budget"],
+            saved_fields["seed"],
+            end_us=saved_fields["end_us"],
+            release_us=saved_fields["release_us"],
+            reserve=saved_fields["reserve"],
+            update=saved_fields["update"],
+            history=saved_fields["limit"],
         )
-        if set(s) != set(vars(w)):
+        expected_keys = {SNAPSHOT_KEYS.get(field, field) for field in vars(controller)}
+        if set(saved_fields) != expected_keys:
             raise ValueError("Incomplete controller snapshot")
-        w.__dict__.update(s)
-        w.ring = [Observation(**v) for v in s["ring"]]
+        fields_by_key = {key: field for field, key in SNAPSHOT_KEYS.items()}
+        restored_fields = {
+            fields_by_key.get(key, key): value for key, value in saved_fields.items()
+        }
+        controller.__dict__.update(restored_fields)
+        controller.offer_history = [
+            Observation(**offer) for offer in saved_fields["ring"]
+        ]
+        history_count = len(controller.offer_history)
         if not (
-            0 <= w.W <= w.budget
-            and 0 <= len(w.ring) <= w.limit
-            and w.observations >= len(w.ring)
-            and w.rp == w.observations % w.limit
-            and len(w.ring) == min(w.observations, w.limit)
+            0 <= controller.blocks_written <= controller.budget
+            and 0 <= history_count <= controller.history_capacity
+            and controller.observations >= history_count
+            and controller.next_history_slot
+            == controller.observations % controller.history_capacity
+            and history_count
+            == min(controller.observations, controller.history_capacity)
         ):
             raise ValueError("Controller snapshot geometry mismatch")
-        return w
+        return controller

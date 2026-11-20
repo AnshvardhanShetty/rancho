@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-using I = int64_t;
 namespace fs = std::filesystem;
 
 static void require_condition(bool b, const std::string &s) {
@@ -141,10 +140,10 @@ struct Cache {
     return true;
   }
 
-  I dry_cost(const std::vector<int32_t> &row, size_t first) {
+  int64_t dry_cost(const std::vector<int32_t> &row, size_t first) {
     require_condition(!logging && journal.empty(), "nested transaction");
     logging = true;
-    I w = 0;
+    int64_t w = 0;
     for (size_t j = first; j < row.size(); j++)
       w += put(row[j]);
     logging = false;
@@ -173,9 +172,9 @@ struct Cache {
 
 // REPLAY COUNTERS: requests, eligible hits, writes, and admission outcomes.
 struct Metrics {
-  I requests = 0, positions = 0, fetched = 0, hbf_hits = 0, hbm_hits = 0, eligible = 0,
-    writes = 0;
-  I requested = 0, admitted = 0, budget_rejected = 0, no_offer = 0;
+  int64_t requests = 0, positions = 0, fetched = 0, hbf_hits = 0, hbm_hits = 0, eligible = 0,
+          writes = 0;
+  int64_t requested = 0, admitted = 0, budget_rejected = 0, no_offer = 0;
 
   void json(std::ostream &f) const {
     f << "{\"requests\":" << requests << ",\"positions\":" << positions
@@ -483,13 +482,13 @@ struct Wallet {
 
 // SAVED RECORDS: binary layouts consumed by the reuse-count builder.
 struct History {
-  I row = -1, distinct = 0, cost = 0, time = 0;
+  int64_t row = -1, distinct = 0, cost = 0, time = 0;
 };
 
 struct Decision {
-  I row, time, distinct, cost, W;
+  int64_t row, time, distinct, cost, W;
   double density, score, threshold, tie;
-  I have, reason, admit;
+  int64_t have, reason, admit;
 };
 
 static_assert(sizeof(Decision) == 96, "decision record layout");
@@ -518,118 +517,126 @@ int main(int argc, char **argv) {
                       "history flag");
     uint64_t seed = live ? std::stoull(argv[13]) : 0;
     auto policy_eligible = live ? read_binary_array<uint8_t>(argv[14]) : std::vector<uint8_t>{};
-    auto density = live ? read_binary_array<double>(argv[15]) : std::vector<double>{};
+    auto predicted_reuse = live ? read_binary_array<double>(argv[15]) : std::vector<double>{};
     std::string stream = argv[1];
-    I ni = std::stoll(argv[2]), cfi = std::stoll(argv[3]), chi = std::stoll(argv[4]);
-    I B = std::stoll(argv[7]), split = std::stoll(argv[8]), end = std::stoll(argv[9]);
+    int64_t block_id_count = std::stoll(argv[2]), flash_capacity = std::stoll(argv[3]),
+            hbm_capacity = std::stoll(argv[4]);
+    int64_t write_budget = std::stoll(argv[7]), split = std::stoll(argv[8]),
+            end = std::stoll(argv[9]);
     // argv[10] is a reserved format version, so an old invocation fails closed.
     require_condition(std::string(argv[10]) == "v1", "format version");
-    fs::path out = argv[11];
-    require_condition(ni > 0 && ni <= INT32_MAX && cfi >= 0 && cfi <= INT32_MAX && chi >= 0 &&
-                          chi <= INT32_MAX,
+    fs::path output_directory = argv[11];
+    require_condition(block_id_count > 0 && block_id_count <= INT32_MAX &&
+                          flash_capacity >= 0 && flash_capacity <= INT32_MAX &&
+                          hbm_capacity >= 0 && hbm_capacity <= INT32_MAX,
                       "geometry");
-    require_condition(B >= 0 && split > 0 && end > split, "time or budget");
+    require_condition(write_budget >= 0 && split > 0 && end > split, "time or budget");
     auto counts = read_binary_array<int32_t>(stream + "_nb.i32"),
          sessions = read_binary_array<int32_t>(stream + "_sess.i32");
-    auto times = read_binary_array<I>(stream + "_ts.i64");
+    auto times = read_binary_array<int64_t>(stream + "_ts.i64");
     auto warm_mask = read_binary_array<uint8_t>(argv[5]),
          eval_mask = read_binary_array<uint8_t>(argv[6]);
-    size_t n = counts.size();
-    require_condition(n <= INT32_MAX && sessions.size() == n && times.size() == n &&
-                          warm_mask.size() == n && eval_mask.size() == n,
+    size_t request_count = counts.size();
+    require_condition(request_count <= INT32_MAX && sessions.size() == request_count &&
+                          times.size() == request_count && warm_mask.size() == request_count &&
+                          eval_mask.size() == request_count,
                       "metadata lengths");
 
     require_condition(std::is_sorted(times.begin(), times.end()), "timestamp order");
     if (live) {
-      require_condition(policy_eligible.size() == n && density.size() == n,
+      require_condition(policy_eligible.size() == request_count &&
+                            predicted_reuse.size() == request_count,
                         "policy input length");
-      for (size_t r = 0; r < n; r++)
-        require_condition(policy_eligible[r] <= 1 && std::isfinite(density[r]) &&
-                              density[r] >= 0,
+      for (size_t request_index = 0; request_index < request_count; request_index++)
+        require_condition(policy_eligible[request_index] <= 1 &&
+                              std::isfinite(predicted_reuse[request_index]) &&
+                              predicted_reuse[request_index] >= 0,
                           "policy input value");
     }
     require_condition(!reuse_bonus || (live && !initial_history),
                       "history bonus requires cold live C7");
-    std::vector<uint32_t> reuse_count(reuse_bonus ? size_t(ni) : 0, 0);
+    std::vector<uint32_t> reuse_count(reuse_bonus ? size_t(block_id_count) : 0, 0);
     std::vector<int32_t> pending_reuse;
-    Wallet wallet(B, 0, 1, 1000, 20000, split, end);
+    Wallet wallet(write_budget, 0, 1, 1000, 20000, split, end);
     std::vector<History> history(20000);
-    std::vector<int32_t> suffix_mark(live ? size_t(ni) : 0, -1);
-    std::array<I, 8> reasons{};
-    I offered_cost = 0, threshold_cost = 0;
+    std::vector<int32_t> suffix_mark(live ? size_t(block_id_count) : 0, -1);
+    std::array<int64_t, 8> reasons{};
+    int64_t offered_cost = 0, threshold_cost = 0;
     // Reasons:0 ineligible,1 no suffix,2 free,3 budget,4 reserve,5 threshold,6
     // startup admit,7 threshold admit.
 
-    I total_ids = 0;
-    for (size_t r = 0; r < n; r++) {
-      require_condition(counts[r] >= 0 && sessions[r] >= 0 && warm_mask[r] <= 1 &&
-                            eval_mask[r] <= 1,
+    int64_t total_ids = 0;
+    for (size_t request_index = 0; request_index < request_count; request_index++) {
+      require_condition(counts[request_index] >= 0 && sessions[request_index] >= 0 &&
+                            warm_mask[request_index] <= 1 && eval_mask[request_index] <= 1,
                         "invalid metadata");
-      total_ids += counts[r];
+      total_ids += counts[request_index];
       require_condition(total_ids >= 0, "count overflow");
     }
     require_condition(fs::file_size(stream + "_ids.i32") == uint64_t(total_ids) * 4,
                       "full block stream length");
-    require_condition(!fs::exists(out), "output already exists");
-    require_condition(fs::create_directory(out), "create output");
-    Cache F{int32_t(cfi), int32_t(ni)}, H{int32_t(chi), int32_t(ni)};
-    std::vector<int32_t> stamp(size_t(ni), -1), mark(size_t(ni), -1), row;
-    std::vector<uint8_t> effective(n, 0), requested_bits(n, 0), sources;
+    require_condition(!fs::exists(output_directory), "output already exists");
+    require_condition(fs::create_directory(output_directory), "create output");
+    Cache flash{int32_t(flash_capacity), int32_t(block_id_count)},
+        hbm{int32_t(hbm_capacity), int32_t(block_id_count)};
+    std::vector<int32_t> stamp(size_t(block_id_count), -1), mark(size_t(block_id_count), -1),
+        row;
+    std::vector<uint8_t> effective(request_count, 0), requested_bits(request_count, 0), sources;
     Metrics warm, eval;
-    I W = 0, Wpre = -1, cursor = 0;
+    int64_t blocks_written = 0, blocks_written_before_evaluation = -1, block_cursor = 0;
     size_t next = 0;
     bool boundary = false;
     std::ifstream ids(stream + "_ids.i32", std::ios::binary);
     require_condition(bool(ids), "block stream open");
-    std::ofstream rows(out / "rows.i64", std::ios::binary);
+    std::ofstream rows(output_directory / "rows.i64", std::ios::binary);
     require_condition(bool(rows), "rows open");
 
     std::ofstream decisions;
     if (live) {
-      decisions.open(out / "decisions.bin", std::ios::binary);
+      decisions.open(output_directory / "decisions.bin", std::ios::binary);
       require_condition(bool(decisions), "decision log");
     }
     std::ofstream debug;
     if (debug_mode) {
-      debug.open(out / "debug.jsonl");
+      debug.open(output_directory / "debug.jsonl");
       require_condition(bool(debug), "debug open");
     }
-    auto snapshot = [&](const std::string &name, size_t next_row, I id_cursor) {
-      auto f = F.order(), h = H.order();
-      for (int32_t b : h)
-        require_condition(!F.has(b), "duplicate retained tier copy");
-      write_binary_array(out / (name + ".hbf.i32"), f);
-      write_binary_array(out / (name + ".hbm.i32"), h);
-      std::ofstream meta(out / (name + ".json"));
+    auto snapshot = [&](const std::string &name, size_t next_row, int64_t id_cursor) {
+      auto f = flash.order(), h = hbm.order();
+      for (int32_t block_id : h)
+        require_condition(!flash.has(block_id), "duplicate retained tier copy");
+      write_binary_array(output_directory / (name + ".hbf.i32"), f);
+      write_binary_array(output_directory / (name + ".hbm.i32"), h);
+      std::ofstream meta(output_directory / (name + ".json"));
       meta << "{\"next_row\":" << next_row << ",\"id_cursor\":" << id_cursor
-           << ",\"writes\":" << W << ",\"hbf_used\":" << f.size()
+           << ",\"writes\":" << blocks_written << ",\"hbf_used\":" << f.size()
            << ",\"hbm_used\":" << h.size()
            << ",\"history\":\"previous-reference stamps reconstructed from the "
               "immutable raw stream through this cursor\"}\n";
       meta.close();
       require_condition(bool(meta), "snapshot metadata");
     };
-    for (size_t r = 0; r < n; r++) {
-      if (times[r] >= end) {
-        next = r;
+    for (size_t request_index = 0; request_index < request_count; request_index++) {
+      if (times[request_index] >= end) {
+        next = request_index;
         break;
       }
 
-      if (!boundary && times[r] >= split) {
-        snapshot("warm", r, cursor);
-        Wpre = W;
+      if (!boundary && times[request_index] >= split) {
+        snapshot("warm", request_index, block_cursor);
+        blocks_written_before_evaluation = blocks_written;
         boundary = true;
         if (live) {
-          wallet.W = W;
+          wallet.W = blocks_written;
           if (initial_history) {
             auto loaded = read_binary_array<History>(argv[17]);
             require_condition(!loaded.empty() && loaded.size() <= history.size(),
                               "initial history length");
-            I prior = -1, prior_time = -1;
+            int64_t prior = -1, prior_time = -1;
             for (size_t k = 0; k < loaded.size(); k++) {
               auto v = loaded[k];
-              require_condition(v.row > prior && v.row < I(r) && v.time >= 0 &&
-                                    v.time < split && v.time >= prior_time,
+              require_condition(v.row > prior && v.row < int64_t(request_index) &&
+                                    v.time >= 0 && v.time < split && v.time >= prior_time,
                                 "initial history chronology");
               require_condition(times[v.row] == v.time && policy_eligible[v.row] &&
                                     v.distinct >= 0 && v.cost >= 0,
@@ -641,122 +648,135 @@ int main(int argc, char **argv) {
               prior = v.row;
               prior_time = v.time;
             }
-            wallet.rn = I(loaded.size());
+            wallet.rn = int64_t(loaded.size());
             wallet.rp = wallet.rn % wallet.ring_size;
             wallet.decisions = 0; // Same measured 1000-observation update phase as cold arm.
           }
-          std::ofstream hist(out / "warm_history.bin", std::ios::binary);
-          for (I k = 0; k < wallet.rn; k++) {
+          std::ofstream hist(output_directory / "warm_history.bin", std::ios::binary);
+          for (int64_t k = 0; k < wallet.rn; k++) {
             const auto &v = history[k];
             require_condition(v.row >= 0 && v.time < split, "warm history chronology");
             wallet.ring[k].score =
-                v.cost > 0 ? density[v.row] * double(v.distinct) / double(v.cost) : INFINITY;
+                v.cost > 0 ? predicted_reuse[v.row] * double(v.distinct) / double(v.cost)
+                           : INFINITY;
             hist.write(reinterpret_cast<const char *>(&v), sizeof(v));
           }
           hist.close();
           require_condition(bool(hist), "warm history write");
-          std::ofstream meta(out / "warm_controller.json");
+          std::ofstream meta(output_directory / "warm_controller.json");
           meta << "{\"rn\":" << wallet.rn << ",\"rp\":" << wallet.rp
-               << ",\"decisions\":" << wallet.decisions << ",\"W\":" << W << "}\n";
+               << ",\"decisions\":" << wallet.decisions << ",\"W\":" << blocks_written << "}\n";
           wallet.have_threshold = false;
           wallet.threshold = -INFINITY;
           wallet.tie = 1;
           wallet.recompute(split);
         }
       }
-      row.resize(size_t(counts[r]));
+      row.resize(size_t(counts[request_index]));
       ids.read(reinterpret_cast<char *>(row.data()), std::streamsize(row.size() * 4));
       require_condition(bool(ids), "short row");
-      for (int32_t b : row)
-        require_condition(b >= 0 && b < ni, "invalid block identity");
-      if (live && times[r] < split) {
+      for (int32_t block_id : row)
+        require_condition(block_id >= 0 && block_id < block_id_count, "invalid block identity");
+      if (live && times[request_index] < split) {
         // History is observed for the metric/predictor, but storage starts
         // empty.
         if (reuse_bonus) {
-          for (int32_t b : row) {
-            if (mark[b] == int32_t(r))
+          for (int32_t block_id : row) {
+            if (mark[block_id] == int32_t(request_index))
               continue;
-            if (times[r] >= 0 && stamp[b] == sessions[r]) {
-              require_condition(reuse_count[b] < UINT32_MAX, "reuse overflow");
-              ++reuse_count[b];
+            if (times[request_index] >= 0 && stamp[block_id] == sessions[request_index]) {
+              require_condition(reuse_count[block_id] < UINT32_MAX, "reuse overflow");
+              ++reuse_count[block_id];
             }
-            mark[b] = int32_t(r);
-            stamp[b] = sessions[r];
+            mark[block_id] = int32_t(request_index);
+            stamp[block_id] = sessions[request_index];
           }
         } else
-          for (int32_t b : row)
-            stamp[b] = sessions[r];
-        I record[10] = {I(r), times[r], I(row.size()), 0, 0, 0, 0, 0, 0, 0};
+          for (int32_t block_id : row)
+            stamp[block_id] = sessions[request_index];
+        int64_t record[10] = {int64_t(request_index),
+                              times[request_index],
+                              int64_t(row.size()),
+                              0,
+                              0,
+                              0,
+                              0,
+                              0,
+                              0,
+                              0};
         rows.write(reinterpret_cast<const char *>(record), sizeof(record));
         require_condition(bool(rows), "pre-cut record");
-        cursor += row.size();
-        next = r + 1;
+        block_cursor += row.size();
+        next = request_index + 1;
         continue;
       }
       sources.assign(row.size(), 0);
       size_t first = 0;
-      if (times[r] >= 0) {
+      if (times[request_index] >= 0) {
         for (; first < row.size(); first++) {
-          int32_t b = row[first];
-          if (F.has(b)) {
+          int32_t block_id = row[first];
+          if (flash.has(block_id)) {
             sources[first] = 1;
-            F.touch(b);
-          } else if (H.has(b)) {
+            flash.touch(block_id);
+          } else if (hbm.has(block_id)) {
             sources[first] = 2;
-            H.touch(b);
+            hbm.touch(block_id);
           } else
             break;
         }
       }
-      I fh = 0, hh = 0, eligible = 0;
+      int64_t flash_hits = 0, hbm_hits = 0, eligible = 0;
       pending_reuse.clear();
       for (size_t j = 0; j < row.size(); j++) {
-        int32_t b = row[j];
-        if (mark[b] == int32_t(r))
+        int32_t block_id = row[j];
+        if (mark[block_id] == int32_t(request_index))
           continue;
-        bool repeat = stamp[b] == sessions[r];
+        bool repeat = stamp[block_id] == sessions[request_index];
         eligible += repeat;
         if (reuse_bonus && repeat)
-          pending_reuse.push_back(b);
+          pending_reuse.push_back(block_id);
         if (repeat && j < first) {
-          fh += sources[j] == 1;
-          hh += sources[j] == 2;
+          flash_hits += sources[j] == 1;
+          hbm_hits += sources[j] == 2;
         }
-        mark[b] = int32_t(r);
-        stamp[b] = sessions[r];
+        mark[block_id] = int32_t(request_index);
+        stamp[block_id] = sessions[request_index];
       }
-      bool inwarm = times[r] >= 0 && times[r] < split,
-           requested = times[r] >= 0 && (inwarm ? warm_mask[r] : eval_mask[r]);
+      bool inwarm = times[request_index] >= 0 && times[request_index] < split,
+           requested = times[request_index] >= 0 &&
+                       (inwarm ? warm_mask[request_index] : eval_mask[request_index]);
       bool admit = false, guard = false;
-      I actual = 0, cost = 0;
-      I distinct = 0, reason = 0, past_reuses = 0;
+      int64_t actual = 0, cost = 0;
+      int64_t distinct = 0, reason = 0, past_reuses = 0;
       double score = INFINITY, used_threshold = -INFINITY, used_tie = 1;
       bool used_have = false;
-      bool observe = live && times[r] >= 0 && policy_eligible[r];
+      bool observe = live && times[request_index] >= 0 && policy_eligible[request_index];
       if (observe) {
-        require_condition(F.cap > 0, "live controller requires HBF");
+        require_condition(flash.cap > 0, "live controller requires HBF");
         for (size_t j = first; j < row.size(); j++)
-          if (suffix_mark[row[j]] != int32_t(r)) {
-            suffix_mark[row[j]] = int32_t(r);
+          if (suffix_mark[row[j]] != int32_t(request_index)) {
+            suffix_mark[row[j]] = int32_t(request_index);
             distinct++;
             if (reuse_bonus)
               past_reuses += reuse_count[row[j]];
           }
-        cost = first < row.size() ? F.dry_cost(row, first) : 0;
+        cost = first < row.size() ? flash.dry_cost(row, first) : 0;
         if (inwarm) {
-          history[wallet.rp] = {I(r), distinct, cost, times[r]};
-          wallet.observe(0, cost, times[r]);
+          history[wallet.rp] = {int64_t(request_index), distinct, cost, times[request_index]};
+          wallet.observe(0, cost, times[request_index]);
         } else {
-          require_condition(wallet.W == W, "wallet/cache spending mismatch");
-          wallet.refresh_release(times[r]);
-          score = cost > 0 ? density[r] * double(distinct) / double(cost) : INFINITY;
+          require_condition(wallet.W == blocks_written, "wallet/cache spending mismatch");
+          wallet.refresh_release(times[request_index]);
+          score = cost > 0 ? predicted_reuse[request_index] * double(distinct) / double(cost)
+                           : INFINITY;
           if (reuse_bonus && cost > 0 && distinct > 0)
             score *= 1.0 + double(past_reuses) / double(distinct);
           used_threshold = wallet.threshold;
           used_tie = wallet.tie;
           used_have = wallet.have_threshold;
           if (early_half && wallet.have_threshold &&
-              __int128(W) * __int128(end - split) < __int128(B) * __int128(times[r] - split))
+              __int128(blocks_written) * __int128(end - split) <
+                  __int128(write_budget) * __int128(times[request_index] - split))
             used_threshold /= 2.0;
           requested = false;
           if (distinct == 0)
@@ -764,17 +784,18 @@ int main(int argc, char **argv) {
           else if (cost == 0) {
             reason = 2;
             admit = true;
-          } else if (cost > B - W) {
+          } else if (cost > write_budget - blocks_written) {
             reason = 3;
             guard = true;
-          } else if (cost > wallet.cap - W)
+          } else if (cost > wallet.cap - blocks_written)
             reason = 4;
           else if (!wallet.have_threshold) {
             reason = 6;
             admit = true;
           } else if (score > used_threshold ||
                      (score == used_threshold &&
-                      random_value_for_request(r, seed ^ 0x5bf03635ULL) < wallet.tie)) {
+                      random_value_for_request(request_index, seed ^ 0x5bf03635ULL) <
+                          wallet.tie)) {
             reason = 7;
             admit = true;
           } else
@@ -785,55 +806,65 @@ int main(int argc, char **argv) {
           if (reason == 5)
             threshold_cost += cost;
           // Save the offered suffix even when it is declined so both choices get training labels.
-          Decision d{I(r),  times[r],       distinct, cost,         W,      density[r],
-                     score, used_threshold, used_tie, I(used_have), reason, I(admit)};
+          Decision d{int64_t(request_index),
+                     times[request_index],
+                     distinct,
+                     cost,
+                     blocks_written,
+                     predicted_reuse[request_index],
+                     score,
+                     used_threshold,
+                     used_tie,
+                     int64_t(used_have),
+                     reason,
+                     int64_t(admit)};
           decisions.write(reinterpret_cast<const char *>(&d), sizeof(d));
-          history[wallet.rp] = {I(r), distinct, cost, times[r]};
-          wallet.observe(score, cost, times[r]);
+          history[wallet.rp] = {int64_t(request_index), distinct, cost, times[request_index]};
+          wallet.observe(score, cost, times[request_index]);
         }
-      } else if (live && !inwarm && times[r] >= 0) {
+      } else if (live && !inwarm && times[request_index] >= 0) {
         requested = false;
         reasons[0]++;
       }
-      if ((!live || inwarm) && requested && first < row.size() && F.cap) {
-        cost = F.dry_cost(row, first);
-        if (cost > B - W) {
+      if ((!live || inwarm) && requested && first < row.size() && flash.cap) {
+        cost = flash.dry_cost(row, first);
+        if (cost > write_budget - blocks_written) {
           require_condition(!inwarm, "saved warm admission cannot be honoured within "
                                      "seven-day budget");
           guard = true;
         } else
           admit = true;
       }
-      requested_bits[r] = requested;
-      if (times[r] >= 0) {
+      requested_bits[request_index] = requested;
+      if (times[request_index] >= 0) {
         for (size_t j = first; j < row.size(); j++) {
-          int32_t b = row[j];
+          int32_t block_id = row[j];
           if (admit) {
-            actual += F.put(b);
-            H.erase(b);
+            actual += flash.put(block_id);
+            hbm.erase(block_id);
           }
-          if (!F.has(b))
-            H.put(b);
+          if (!flash.has(block_id))
+            hbm.put(block_id);
         }
       }
       require_condition(actual == (admit ? cost : 0), "dry/commit write mismatch");
-      W += actual;
-      require_condition(W <= B, "hard wallet exceeded");
+      blocks_written += actual;
+      require_condition(blocks_written <= write_budget, "hard wallet exceeded");
       if (live)
-        wallet.W = W;
+        wallet.W = blocks_written;
       if (reuse_bonus)
-        for (int32_t b : pending_reuse) {
-          require_condition(reuse_count[b] < UINT32_MAX, "reuse overflow");
-          ++reuse_count[b];
+        for (int32_t block_id : pending_reuse) {
+          require_condition(reuse_count[block_id] < UINT32_MAX, "reuse overflow");
+          ++reuse_count[block_id];
         }
-      effective[r] = admit;
-      Metrics *m = times[r] < 0 ? nullptr : (inwarm ? &warm : &eval);
+      effective[request_index] = admit;
+      Metrics *m = times[request_index] < 0 ? nullptr : (inwarm ? &warm : &eval);
       if (m) {
         m->requests++;
         m->positions += row.size();
         m->fetched += first;
-        m->hbf_hits += fh;
-        m->hbm_hits += hh;
+        m->hbf_hits += flash_hits;
+        m->hbm_hits += hbm_hits;
         m->eligible += eligible;
         m->writes += actual;
         m->requested += requested;
@@ -841,15 +872,25 @@ int main(int argc, char **argv) {
         m->budget_rejected += guard;
         m->no_offer += first == row.size();
       }
-      I record[10] = {I(r), times[r], I(row.size()), I(first), fh,
-                      hh,   actual,   I(requested),  I(admit), W};
+      int64_t record[10] = {int64_t(request_index),
+                            times[request_index],
+                            int64_t(row.size()),
+                            int64_t(first),
+                            flash_hits,
+                            hbm_hits,
+                            actual,
+                            int64_t(requested),
+                            int64_t(admit),
+                            blocks_written};
       rows.write(reinterpret_cast<char *>(record), sizeof(record));
       require_condition(bool(rows), "row output");
       if (debug.is_open()) {
-        debug << "{\"row\":" << r << ",\"first\":" << first << ",\"hbf_hits\":" << fh
-              << ",\"hbm_hits\":" << hh << ",\"writes\":" << actual << ",\"W\":" << W
+        debug << "{\"row\":" << request_index << ",\"first\":" << first
+              << ",\"hbf_hits\":" << flash_hits << ",\"hbm_hits\":" << hbm_hits
+              << ",\"writes\":" << actual << ",\"W\":" << blocks_written
               << ",\"requested\":" << requested << ",\"admitted\":" << admit;
-        for (auto item : {std::make_pair("hbf", F.order()), std::make_pair("hbm", H.order())}) {
+        for (auto item :
+             {std::make_pair("hbf", flash.order()), std::make_pair("hbm", hbm.order())}) {
           debug << ",\"" << item.first << "\":[";
           for (size_t j = 0; j < item.second.size(); j++)
             debug << (j ? "," : "") << item.second[j];
@@ -857,26 +898,26 @@ int main(int argc, char **argv) {
         }
         debug << "}\n";
       }
-      cursor += row.size();
-      next = r + 1;
+      block_cursor += row.size();
+      next = request_index + 1;
     }
     if (!boundary) {
-      snapshot("warm", next, cursor);
-      Wpre = W;
+      snapshot("warm", next, block_cursor);
+      blocks_written_before_evaluation = blocks_written;
     }
 
-    snapshot("final", next, cursor);
-    write_binary_array(out / "effective_mask.u8", effective);
+    snapshot("final", next, block_cursor);
+    write_binary_array(output_directory / "effective_mask.u8", effective);
     if (live) {
       std::vector<History> final_history;
-      for (I j = 0; j < wallet.rn; j++)
+      for (int64_t j = 0; j < wallet.rn; j++)
         final_history.push_back(
             history[(wallet.rp + wallet.ring_size - wallet.rn + j) % wallet.ring_size]);
-      write_binary_array(out / "final_history.bin", final_history);
-      write_binary_array(out / "requested_mask.u8", requested_bits);
+      write_binary_array(output_directory / "final_history.bin", final_history);
+      write_binary_array(output_directory / "requested_mask.u8", requested_bits);
       decisions.close();
       require_condition(bool(decisions), "decision log close");
-      std::ofstream diag(out / "diagnostic.json");
+      std::ofstream diag(output_directory / "diagnostic.json");
       diag << std::setprecision(17);
       diag << "{\"reason_counts\":[";
       for (size_t j = 0; j < reasons.size(); j++)
@@ -884,7 +925,7 @@ int main(int argc, char **argv) {
       diag << "],\"offered_write_cost\":" << offered_cost
            << ",\"threshold_rejected_write_cost\":" << threshold_cost
            << ",\"wallet_W\":" << wallet.W << ",\"wallet_observations\":" << wallet.decisions
-           << ",\"remaining_budget\":" << B - W << "}\n";
+           << ",\"remaining_budget\":" << write_budget - blocks_written << "}\n";
     }
     rows.close();
     require_condition(bool(rows), "close rows");
@@ -892,19 +933,22 @@ int main(int argc, char **argv) {
       debug.close();
       require_condition(bool(debug), "close debug");
     }
-    require_condition(Wpre == warm.writes && W == warm.writes + eval.writes,
+    require_condition(blocks_written_before_evaluation == warm.writes &&
+                          blocks_written == warm.writes + eval.writes,
                       "warm/eval write identity");
     require_condition(eval.hbf_hits + eval.hbm_hits <= eval.eligible &&
                           eval.eligible <= eval.positions,
                       "credit conservation");
-    std::ofstream result(out / "metrics.json");
+    std::ofstream result(output_directory / "metrics.json");
     result << "{\"schema\":\"hbf_replacement_replay_v1\",\"status\":\"PASS\","
               "\"N\":"
-           << ni << ",\"hbf_capacity\":" << cfi << ",\"hbm_capacity\":" << chi
-           << ",\"budget\":" << B << ",\"split_us\":" << split << ",\"end_us\":" << end
-           << ",\"W_pre\":" << Wpre << ",\"W_test\":" << eval.writes << ",\"writes\":" << W
-           << ",\"remaining_after_warm\":" << B - Wpre << ",\"next_row\":" << next
-           << ",\"id_cursor\":" << cursor << ",\"warm\":";
+           << block_id_count << ",\"hbf_capacity\":" << flash_capacity
+           << ",\"hbm_capacity\":" << hbm_capacity << ",\"budget\":" << write_budget
+           << ",\"split_us\":" << split << ",\"end_us\":" << end
+           << ",\"W_pre\":" << blocks_written_before_evaluation << ",\"W_test\":" << eval.writes
+           << ",\"writes\":" << blocks_written
+           << ",\"remaining_after_warm\":" << write_budget - blocks_written_before_evaluation
+           << ",\"next_row\":" << next << ",\"id_cursor\":" << block_cursor << ",\"warm\":";
     warm.json(result);
     result << ",\"evaluation\":";
     eval.json(result);
@@ -912,7 +956,8 @@ int main(int argc, char **argv) {
     result.close();
     require_condition(bool(result), "close metrics");
     std::cout << "{\"status\":\"PASS\",\"evaluation_hits\":" << eval.hbf_hits + eval.hbm_hits
-              << ",\"W_pre\":" << Wpre << ",\"writes\":" << W << "}\n";
+              << ",\"W_pre\":" << blocks_written_before_evaluation
+              << ",\"writes\":" << blocks_written << "}\n";
   } catch (const std::exception &e) {
     std::cerr << e.what() << "\n";
     return 1;

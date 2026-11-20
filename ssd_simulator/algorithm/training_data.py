@@ -51,9 +51,9 @@ class TrainingData:
     def __init__(self, manifest_path, cold=False):
         """Load the eviction records and reuse counts used by the hourly models"""
         manifest_path = Path(manifest_path).resolve()
-        raw = manifest_path.read_bytes()
-        self.identity = hashlib.sha256(raw).hexdigest()
-        self.manifest = json.loads(raw)
+        manifest_bytes = manifest_path.read_bytes()
+        self.identity = hashlib.sha256(manifest_bytes).hexdigest()
+        self.manifest = json.loads(manifest_bytes)
         manifest = self.manifest
         self.schema = manifest["feature_schema"]
         files = manifest["files"]
@@ -88,8 +88,10 @@ class TrainingData:
 
     def first_eviction_at(self, cutoff):
         """Find the first eviction whose request arrived at or after this time."""
-        row = int(np.searchsorted(self.arrival_times_us, cutoff, side="left"))
-        return int(np.searchsorted(self.eviction_records["row"], row, side="left"))
+        request_row = int(np.searchsorted(self.arrival_times_us, cutoff, side="left"))
+        return int(
+            np.searchsorted(self.eviction_records["row"], request_row, side="left")
+        )
 
     def decision_times(self, indices):
         return np.asarray(self.arrival_times_us[self.eviction_records["row"][indices]])
@@ -99,7 +101,13 @@ class TrainingData:
 
     def training_examples(self, cutoff, config):
         """Return earlier eviction IDs, observed marginal gains and sample weights."""
-        profile = next((x for x in TRAINING if x["id"] == config["training"]))
+        profile = next(
+            (
+                training_profile
+                for training_profile in TRAINING
+                if training_profile["id"] == config["training"]
+            )
+        )
         if config["target_mode"] != "cumulative":
             raise ValueError("Expected recorded cumulative marginal labels")
         first_sample = int(

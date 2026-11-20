@@ -4,9 +4,9 @@ import array, math, struct
 from pathlib import Path
 from controllers_reference import Wallet, Observation, hash01
 
-D = struct.Struct("<qqqqqddddqqq")
-V = struct.Struct("<qq")
-H = struct.Struct("<qqqq")
+DECISION_RECORD_LAYOUT = struct.Struct("<qqqqqddddqqq")
+REUSE_HISTORY_RECORD_LAYOUT = struct.Struct("<qq")
+OFFER_HISTORY_RECORD_LAYOUT = struct.Struct("<qqqq")
 
 
 def eq(a, b):
@@ -32,37 +32,55 @@ class BandWallet(Wallet):
     def recompute(self, now):
         """Rebuild the score cutoff for each group of similar write sizes"""
         super().recompute(now)
-        priced = [v for v in self.ring if v.cost > 0 and math.isfinite(v.score)]
+        priced = [
+            offer
+            for offer in self.offer_history
+            if offer.cost > 0 and math.isfinite(offer.score)
+        ]
         if len(priced) < 100:
             return
         span = max(
             1.0,
-            (max(v.time_us for v in self.ring) - min(v.time_us for v in self.ring))
+            (
+                max(offer.time_us for offer in self.offer_history)
+                - min(offer.time_us for offer in self.offer_history)
+            )
             / 1e6,
         )
         horizon = max(1.0, (self.end_us - now) / 1e6)
-        total = sum(v.cost for v in priced)
+        total = sum(offer.cost for offer in priced)
         demand = (len(priced) / span) * horizon * (total / len(priced))
-        p = min(1.0, max(0.0, float(self.cap - self.W) / max(1e-9, demand)))
+        affordable_fraction = min(
+            1.0,
+            max(
+                0.0,
+                float(self.current_spending_limit - self.blocks_written)
+                / max(1e-9, demand),
+            ),
+        )
         groups = {}
-        for v in priced:
-            groups.setdefault(v.cost.bit_length() - 1, []).append(v)
-        self.bandcuts = {}
-        for k, group in groups.items():
+        for offer in priced:
+            groups.setdefault(offer.cost.bit_length() - 1, []).append(offer)
+        self.cutoffs_by_cost_band = {}
+        for cost_band, group in groups.items():
             if len(group) < 100:
                 continue
-            if p in (0.0, 1.0):
-                self.bandcuts[k] = (math.inf, 0.0) if p == 0 else (-math.inf, 1.0)
+            if affordable_fraction in (0.0, 1.0):
+                self.cutoffs_by_cost_band[cost_band] = (
+                    (math.inf, 0.0) if affordable_fraction == 0 else (-math.inf, 1.0)
+                )
                 continue
-            masses = {}
-            for v in group:
-                masses[v.score] = masses.get(v.score, 0) + v.cost
-            wanted = p * sum(masses.values())
+            write_cost_by_score = {}
+            for offer in group:
+                write_cost_by_score[offer.score] = (
+                    write_cost_by_score.get(offer.score, 0) + offer.cost
+                )
+            wanted = affordable_fraction * sum(write_cost_by_score.values())
             above = 0
-            for rank in sorted(masses, reverse=True):
-                weight = masses[rank]
+            for rank in sorted(write_cost_by_score, reverse=True):
+                weight = write_cost_by_score[rank]
                 if above + weight >= wanted:
-                    self.bandcuts[k] = (
+                    self.cutoffs_by_cost_band[cost_band] = (
                         rank,
                         max(0.0, min(1.0, (wanted - above) / weight)),
                     )
@@ -87,14 +105,14 @@ def audit(
     native = Path(native)
     density = array.array("d")
     density.frombytes(Path(density_path).read_bytes())
-    w = (BandWallet if banded else Wallet)(
+    reference_controller = (BandWallet if banded else Wallet)(
         "hbf", budget, seed, end_us=end, release_us=end, reserve=0
     )
     reasons = [0] * 8
     count = 0
     startup = first1000 = 0
-    lastrow = -1
-    lasttime = split
+    previous_request_row = -1
+    previous_arrival_us = split
     boost_sum = 0
     boost_max = 1
     boosted = 0
@@ -114,29 +132,33 @@ def audit(
     )
     by_day = [dict(trials=0, paid=0, blocks=0, blocked_regular=0) for _ in range(4)]
     assert (native / "warm_history.bin").stat().st_size == 0
-    with (native / "decisions.bin").open("rb") as f, open(values, "rb") as vf:
-        while chunk := f.read(D.size):
-            assert len(chunk) == D.size
+    with (native / "decisions.bin").open("rb") as decision_file, open(
+        values, "rb"
+    ) as reuse_history_file:
+        while chunk := decision_file.read(DECISION_RECORD_LAYOUT.size):
+            assert len(chunk) == DECISION_RECORD_LAYOUT.size
             (
                 row,
                 time,
                 distinct,
                 cost,
                 before,
-                pred,
+                predicted_reuse,
                 score,
                 threshold,
                 tie,
                 have,
                 reason,
                 admitted,
-            ) = D.unpack(chunk)
-            past, vd = V.unpack(vf.read(V.size))
-            assert vd == distinct and past >= 0
-            assert lastrow < row and lasttime <= time < end
-            lastrow, lasttime = row, time
-            w.phase(time)
-            assert pred == density[row]
+            ) = DECISION_RECORD_LAYOUT.unpack(chunk)
+            past, history_distinct_blocks = REUSE_HISTORY_RECORD_LAYOUT.unpack(
+                reuse_history_file.read(REUSE_HISTORY_RECORD_LAYOUT.size)
+            )
+            assert history_distinct_blocks == distinct and past >= 0
+            assert previous_request_row < row and previous_arrival_us <= time < end
+            previous_request_row, previous_arrival_us = row, time
+            reference_controller.phase(time)
+            assert predicted_reuse == density[row]
             expected = (
                 density[row] * float(distinct) / float(cost) if cost else math.inf
             )
@@ -148,25 +170,40 @@ def audit(
                 expected *= boost
             assert eq(score, expected), (row, "score", score, expected)
             cutoff, coin = (
-                getattr(w, "bandcuts", {}).get(
-                    cost.bit_length() - 1, (w.threshold, w.tie)
+                getattr(reference_controller, "cutoffs_by_cost_band", {}).get(
+                    cost.bit_length() - 1,
+                    (
+                        reference_controller.threshold,
+                        reference_controller.tie_probability,
+                    ),
                 )
-                if banded and w.have and cost
-                else (w.threshold, w.tie)
+                if banded and reference_controller.cutoff_ready and cost
+                else (
+                    reference_controller.threshold,
+                    reference_controller.tie_probability,
+                )
             )
             if (
                 cost
-                and w.have
+                and reference_controller.cutoff_ready
                 and half_behind
-                and w.W * (end - split) < budget * (time - split)
+                and reference_controller.blocks_written * (end - split)
+                < budget * (time - split)
             ):
                 discounted_offers += 1
                 cutoff = effective_cutoff(
-                    cutoff, w.have, w.W, budget, time, split, end, True
+                    cutoff,
+                    reference_controller.cutoff_ready,
+                    reference_controller.blocks_written,
+                    budget,
+                    time,
+                    split,
+                    end,
+                    True,
                 )
             assert (
-                before == w.W
-                and bool(have) == w.have
+                before == reference_controller.blocks_written
+                and bool(have) == reference_controller.cutoff_ready
                 and eq(threshold, cutoff)
                 and eq(tie, coin)
             ), (row, "controller")
@@ -178,13 +215,15 @@ def audit(
                     if not cost
                     else (
                         3
-                        if cost > budget - w.W
+                        if cost > budget - reference_controller.blocks_written
                         else (
                             4
-                            if cost > w.cap - w.W
+                            if cost
+                            > reference_controller.current_spending_limit
+                            - reference_controller.blocks_written
                             else (
                                 6
-                                if not w.have
+                                if not reference_controller.cutoff_ready
                                 else (
                                     7
                                     if expected > cutoff
@@ -243,20 +282,27 @@ def audit(
             boost_sum += boost
             boost_max = max(boost_max, boost)
             boosted += boost > 1
-            w._observe(Observation(row, expected, cost, time, distinct))
+            reference_controller._observe(
+                Observation(row, expected, cost, time, distinct)
+            )
             if accept:
-                w.W += cost
+                reference_controller.blocks_written += cost
                 if count <= 1000:
                     first1000 += cost
                 if why == 6:
                     startup += cost
-            assert w.W <= budget
-        assert not vf.read(1)
-    history = list(H.iter_unpack((native / "final_history.bin").read_bytes()))
+            assert reference_controller.blocks_written <= budget
+        assert not reuse_history_file.read(1)
+    history = list(
+        OFFER_HISTORY_RECORD_LAYOUT.iter_unpack(
+            (native / "final_history.bin").read_bytes()
+        )
+    )
     assert history == [
-        (v.event_id, v.distinct, v.cost, v.time_us) for v in w.chronological()
+        (v.event_id, v.distinct, v.cost, v.time_us)
+        for v in reference_controller.chronological()
     ]
-    assert regular_spend + random_spend == w.W
+    assert regular_spend + random_spend == reference_controller.blocks_written
     counts.update(regular_blocks=regular_spend, rescue_blocks=random_spend)
     return dict(
         experiment=mode,
@@ -264,7 +310,7 @@ def audit(
         mechanism_daily=by_day,
         status="PASS_INDEPENDENT_HISTORY_BONUS_C7_AUDIT",
         observations=count,
-        writes=w.W,
+        writes=reference_controller.blocks_written,
         bonus=bonus,
         reason_counts=reasons,
         startup_write_blocks=startup,

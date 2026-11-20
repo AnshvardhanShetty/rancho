@@ -44,7 +44,7 @@ class NativeCachePages:
             raise ValueError(
                 "Registration must contain every native layer exactly once"
             )
-        for gid, group in enumerate(config.kv_cache_groups):
+        for group_index, group in enumerate(config.kv_cache_groups):
             per_layer = (
                 group.kv_cache_spec.kv_cache_specs
                 if isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs)
@@ -58,9 +58,9 @@ class NativeCachePages:
                         "Use registered raw page tensors, not partial state views"
                     )
                 page = spec.page_size_bytes
-                raw = torch.empty(0, dtype=torch.uint8, device=tensor.device).set_(
-                    tensor.untyped_storage()
-                )
+                raw_page_view = torch.empty(
+                    0, dtype=torch.uint8, device=tensor.device
+                ).set_(tensor.untyped_storage())
                 offset = tensor.storage_offset() * tensor.element_size()
                 if isinstance(spec, AttentionSpec):
                     stride = (
@@ -79,17 +79,18 @@ class NativeCachePages:
                 if (
                     stride < page
                     or offset < 0
-                    or offset + (self.num_blocks - 1) * stride + page > raw.numel()
+                    or offset + (self.num_blocks - 1) * stride + page
+                    > raw_page_view.numel()
                 ):
                     raise ValueError("Page layout exceeds registered allocation")
                 self.pages[name] = torch.as_strided(
-                    raw, (self.num_blocks, page), (stride, 1), offset
+                    raw_page_view, (self.num_blocks, page), (stride, 1), offset
                 )
-                self.layer_groups[name] = gid
+                self.layer_groups[name] = group_index
                 self.layout.append(
                     {
                         "name": name,
-                        "group": gid,
+                        "group": group_index,
                         "kind": type(spec).__name__,
                         "native_block_tokens": spec.block_size,
                         "page_bytes": page,
@@ -107,15 +108,15 @@ class NativeCachePages:
         if set(blocks) != self.groups:
             raise ValueError("Every hybrid cache group must be included")
         selected = {}
-        for group, ids in blocks.items():
-            ids = list(ids)
-            if not ids or any(
-                type(i) is not int or not 0 <= i < self.num_blocks for i in ids
+        for group, page_ids in blocks.items():
+            page_ids = list(page_ids)
+            if not page_ids or any(
+                type(i) is not int or not 0 <= i < self.num_blocks for i in page_ids
             ):
                 raise ValueError("Invalid native page index")
-            if len(set(ids)) != len(ids):
+            if len(set(page_ids)) != len(page_ids):
                 raise ValueError("Duplicate page index")
-            selected[group] = ids
+            selected[group] = page_ids
         return selected
 
     def capture(self, blocks):

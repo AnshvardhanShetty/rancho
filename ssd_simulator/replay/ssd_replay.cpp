@@ -433,33 +433,34 @@ struct WriteBudgetController {
 
 // The driver emits this restricted JSON shape. Parse numeric arrays exactly;
 // do not accept a different ID order or infer scores from missing entries.
-static string field(const string &s, const string &k) {
-  string key = '"' + k + '"';
-  auto p = s.find(key);
-  require_condition(p != string::npos, "missing response " + k);
-  p = s.find(':', p + key.size());
-  require_condition(p != string::npos, "response colon");
-  return s.substr(p + 1);
+static string field(const string &response_json, const string &field_name) {
+  string key = '"' + field_name + '"';
+  auto field_position = response_json.find(key);
+  require_condition(field_position != string::npos, "missing response " + field_name);
+  field_position = response_json.find(':', field_position + key.size());
+  require_condition(field_position != string::npos, "response colon");
+  return response_json.substr(field_position + 1);
 }
 
-static vector<double> numeric_array(const string &s, const string &k) {
-  auto t = field(s, k);
-  auto p = t.find('[');
-  require_condition(p != string::npos, "response array");
-  vector<double> a;
-  const char *x = t.c_str() + p + 1;
+static vector<double> numeric_array(const string &response_json, const string &field_name) {
+  auto field_text = field(response_json, field_name);
+  auto array_start = field_text.find('[');
+  require_condition(array_start != string::npos, "response array");
+  vector<double> values;
+  const char *cursor = field_text.c_str() + array_start + 1;
   while (true) {
-    while (isspace(*x) || *x == ',')
-      x++;
-    if (*x == ']')
+    while (isspace(*cursor) || *cursor == ',')
+      cursor++;
+    if (*cursor == ']')
       break;
-    char *z = nullptr;
-    double y = strtod(x, &z);
-    require_condition(z != x && isfinite(y), "invalid response number");
-    a.push_back(y);
-    x = z;
+    char *number_end = nullptr;
+    double parsed_value = strtod(cursor, &number_end);
+    require_condition(number_end != cursor && isfinite(parsed_value),
+                      "invalid response number");
+    values.push_back(parsed_value);
+    cursor = number_end;
   }
-  return a;
+  return values;
 }
 
 // Ask the Python driver to rescore retained history using its current model.
@@ -549,46 +550,54 @@ int main(int argc, char **argv) {
                                  "--evictions-out",
                                  "--events-out",
                                  "--debug-jsonl"};
-    map<string, string> a;
+    map<string, string> options;
     set<string> flags;
     for (int j = 1; j < argc; j++) {
-      string k = argv[j];
-      require_condition(k.rfind("--", 0) == 0, "expected option");
-      if (k == "--reprice-stdio") {
-        require_condition(!flags.count(k), "duplicate flag");
-        flags.insert(k);
+      string option_name = argv[j];
+      require_condition(option_name.rfind("--", 0) == 0, "expected option");
+      if (option_name == "--reprice-stdio") {
+        require_condition(!flags.count(option_name), "duplicate flag");
+        flags.insert(option_name);
       } else {
-        require_condition(allowed.count(k), "unknown option " + k);
+        require_condition(allowed.count(option_name), "unknown option " + option_name);
         require_condition(j + 1 < argc, "option value");
-        require_condition(!a.count(k), "duplicate option");
-        a[k] = argv[++j];
+        require_condition(!options.count(option_name), "duplicate option");
+        options[option_name] = argv[++j];
       }
     }
-    auto req = [&](string k) {
-      require_condition(a.count(k), "missing " + k);
-      return a[k];
+    auto required_option = [&](string option_name) {
+      require_condition(options.count(option_name), "missing " + option_name);
+      return options[option_name];
     };
-    auto val = [&](string k, string d) { return a.count(k) ? a[k] : d; };
-    string p = req("--prefix"), out = req("--out-prefix"), mode = val("--mode", "quantile");
-    int block_id_count = stoi(req("--nb")), hbm_capacity = stoi(req("--hbm"));
-    int64_t ssd_capacity = stoll(req("--ssd")), write_budget = stoll(req("--budget")),
-            split = stoll(req("--eval-start-us")), end = stoll(val("--end-us", "604800000000")),
-            stop = stoll(val("--stop-us", to_string(end)));
-    uint64_t seed = stoull(val("--seed", "17"));
-    int64_t update = stoll(val("--update-every", "1000")),
-            history = stoll(val("--history-size", "20000")),
-            release = stoll(val("--release-us", to_string(end)));
-    double reserve = stod(val("--reserve", "0")),
-           demand = stod(val("--demand-multiplier", "1")),
-           coin = stod(val("--coin-probability", "0.5"));
-    int threshold = stoi(val("--threshold", "0"));
+    auto option_or_default = [&](string option_name, string default_value) {
+      return options.count(option_name) ? options[option_name] : default_value;
+    };
+    string stream_prefix = required_option("--prefix"),
+           output_prefix = required_option("--out-prefix"),
+           mode = option_or_default("--mode", "quantile");
+    int block_id_count = stoi(required_option("--nb")),
+        hbm_capacity = stoi(required_option("--hbm"));
+    int64_t ssd_capacity = stoll(required_option("--ssd")),
+            write_budget = stoll(required_option("--budget")),
+            split = stoll(required_option("--eval-start-us")),
+            end = stoll(option_or_default("--end-us", "604800000000")),
+            stop = stoll(option_or_default("--stop-us", to_string(end)));
+    uint64_t seed = stoull(option_or_default("--seed", "17"));
+    int64_t update = stoll(option_or_default("--update-every", "1000")),
+            history = stoll(option_or_default("--history-size", "20000")),
+            release = stoll(option_or_default("--release-us", to_string(end)));
+    double reserve = stod(option_or_default("--reserve", "0")),
+           demand = stod(option_or_default("--demand-multiplier", "1")),
+           coin = stod(option_or_default("--coin-probability", "0.5"));
+    int threshold = stoi(option_or_default("--threshold", "0"));
     bool gate_mode = mode == "stride" || mode == "access_min" || mode == "eviction_min" ||
                      mode == "eviction_exact";
     if (gate_mode)
       require_condition(threshold > 0, "threshold required");
-    int64_t numerator = stoll(val("--probability-numerator", "-1")),
-            denominator = stoll(val("--probability-denominator", "-1"));
-    bool exact = a.count("--probability-numerator") || a.count("--probability-denominator");
+    int64_t numerator = stoll(option_or_default("--probability-numerator", "-1")),
+            denominator = stoll(option_or_default("--probability-denominator", "-1"));
+    bool exact =
+        options.count("--probability-numerator") || options.count("--probability-denominator");
     if (exact)
       require_condition(mode == "coin" && numerator >= 0 && denominator > 0 &&
                             numerator <= denominator,
@@ -610,27 +619,29 @@ int main(int argc, char **argv) {
     require_condition(mode == "quantile" || mode == "all" || mode == "coin" || mode == "bits" ||
                           gate_mode,
                       "policy mode");
-    MappedArray<int32_t> block_counts(p + "_nb.i32"), block_ids(p + "_ids.i32");
-    MappedArray<int64_t> arrival_times(p + "_ts.i64"), token_counts(req("--tokens"));
+    MappedArray<int32_t> block_counts(stream_prefix + "_nb.i32"),
+        block_ids(stream_prefix + "_ids.i32");
+    MappedArray<int64_t> arrival_times(stream_prefix + "_ts.i64"),
+        token_counts(required_option("--tokens"));
     require_condition(block_counts.n == arrival_times.n && block_counts.n == token_counts.n &&
                           block_counts.n <= INT_MAX,
                       "request shapes");
     unique_ptr<MappedArray<double>> scores;
-    if (a.count("--scores"))
-      scores = make_unique<MappedArray<double>>(a["--scores"]);
+    if (options.count("--scores"))
+      scores = make_unique<MappedArray<double>>(options["--scores"]);
     require_condition(mode != "quantile" || scores, "quantile scores required");
     unique_ptr<MappedArray<uint8_t>> warmbits, fixedbits;
-    if (a.count("--warm-program-bits"))
-      warmbits = make_unique<MappedArray<uint8_t>>(a["--warm-program-bits"]);
-    if (a.count("--fixed-program-bits"))
-      fixedbits = make_unique<MappedArray<uint8_t>>(a["--fixed-program-bits"]);
+    if (options.count("--warm-program-bits"))
+      warmbits = make_unique<MappedArray<uint8_t>>(options["--warm-program-bits"]);
+    if (options.count("--fixed-program-bits"))
+      fixedbits = make_unique<MappedArray<uint8_t>>(options["--fixed-program-bits"]);
     require_condition(mode != "bits" || fixedbits, "fixed bits required");
     unique_ptr<MappedArray<EvictionRecord>> expected;
-    if (a.count("--expected-evictions"))
-      expected = make_unique<MappedArray<EvictionRecord>>(a["--expected-evictions"]);
+    if (options.count("--expected-evictions"))
+      expected = make_unique<MappedArray<EvictionRecord>>(options["--expected-evictions"]);
     unique_ptr<MappedArray<int64_t>> cuts;
-    if (a.count("--cuts-i64")) {
-      cuts = make_unique<MappedArray<int64_t>>(a["--cuts-i64"]);
+    if (options.count("--cuts-i64")) {
+      cuts = make_unique<MappedArray<int64_t>>(options["--cuts-i64"]);
       require_condition(cuts->n > 0 && (*cuts)[0] == split,
                         "initial candidate calibration cut required");
       for (size_t j = 0; j < cuts->n; j++)
@@ -641,12 +652,13 @@ int main(int argc, char **argv) {
     require_condition(!flags.count("--reprice-stdio") || cuts, "repricing cuts required");
     require_condition(!cuts || flags.count("--reprice-stdio"), "cuts without repricing");
     require_condition(!cuts || mode == "quantile", "only quantile reprices");
-    require_condition(access((out + ".rows.i64").c_str(), F_OK) != 0 &&
-                          access((out + ".programs.bits").c_str(), F_OK) != 0,
+    require_condition(access((output_prefix + ".rows.i64").c_str(), F_OK) != 0 &&
+                          access((output_prefix + ".programs.bits").c_str(), F_OK) != 0,
                       "output already exists");
-    for (string k : {"--evictions-out", "--events-out", "--debug-jsonl"})
-      if (a.count(k))
-        require_condition(access(a[k].c_str(), F_OK) != 0, "output already exists " + k);
+    for (string option_name : {"--evictions-out", "--events-out", "--debug-jsonl"})
+      if (options.count(option_name))
+        require_condition(access(options[option_name].c_str(), F_OK) != 0,
+                          "output already exists " + option_name);
     LruCache hbm_cache(block_id_count, min(block_id_count, hbm_capacity)),
         ssd_cache(block_id_count, int(min<int64_t>(block_id_count, ssd_capacity)));
     vector<int32_t> mark(block_id_count, -1), fetched(block_id_count, -1),
@@ -654,24 +666,24 @@ int main(int argc, char **argv) {
         born(block_id_count, -1);
     vector<uint8_t> ever(block_id_count), programs;
     WriteBudgetController wallet(write_budget, end, release, update, history, reserve, demand);
-    ofstream rows(out + ".rows.i64", ios::binary), evout, eventsout, debug;
+    ofstream rows(output_prefix + ".rows.i64", ios::binary), evout, eventsout, debug;
     require_condition(bool(rows), "rows output");
-    if (a.count("--evictions-out")) {
-      evout.open(a["--evictions-out"], ios::binary);
+    if (options.count("--evictions-out")) {
+      evout.open(options["--evictions-out"], ios::binary);
       require_condition(bool(evout), "eviction output");
     }
-    if (a.count("--events-out")) {
-      eventsout.open(a["--events-out"], ios::binary);
+    if (options.count("--events-out")) {
+      eventsout.open(options["--events-out"], ios::binary);
       require_condition(bool(eventsout), "event output");
     }
-    if (a.count("--debug-jsonl")) {
-      debug.open(a["--debug-jsonl"]);
+    if (options.count("--debug-jsonl")) {
+      debug.open(options["--debug-jsonl"]);
       require_condition(bool(debug), "debug output");
     }
     BlockDigest evhash, eventhash;
     ReplayMetrics total, eval;
-    int64_t eviction_count = 0, Wpre = 0, positive_offers = 0;
-    size_t block_offset = 0, nextcut = 0;
+    int64_t eviction_count = 0, writes_before_evaluation = 0, positive_offers = 0;
+    size_t block_offset = 0, next_model_cutoff = 0;
     bool snapped = false, initialized = false;
     string warmh, warms;
     int64_t warmE = 0;
@@ -704,7 +716,7 @@ int main(int argc, char **argv) {
       if (now >= split && !snapped) {
         require_condition(hbm_cache.n == 0 && ssd_cache.n == 0 && wallet.written_blocks == 0,
                           "cold day4");
-        Wpre = wallet.written_blocks;
+        writes_before_evaluation = wallet.written_blocks;
         warmE = eviction_count;
         warmh = hbm_cache.hash();
         warms = ssd_cache.hash();
@@ -716,9 +728,9 @@ int main(int argc, char **argv) {
         wallet.recompute(split);
         initialized = true;
       }
-      while (cuts && nextcut < cuts->n && (*cuts)[nextcut] <= now) {
-        refresh_scores(wallet, (*cuts)[nextcut]);
-        nextcut++;
+      while (cuts && next_model_cutoff < cuts->n && (*cuts)[next_model_cutoff] <= now) {
+        refresh_scores(wallet, (*cuts)[next_model_cutoff]);
+        next_model_cutoff++;
       }
       ReplayMetrics row;
       row.requests = 1;
@@ -946,13 +958,13 @@ int main(int argc, char **argv) {
       block_offset += block_counts[request_index];
     }
     if (!snapped) {
-      Wpre = wallet.written_blocks;
+      writes_before_evaluation = wallet.written_blocks;
       warmE = eviction_count;
       warmh = hbm_cache.hash();
       warms = ssd_cache.hash();
     }
     require_condition(wallet.written_blocks <= write_budget &&
-                          eval.writes == wallet.written_blocks - Wpre,
+                          eval.writes == wallet.written_blocks - writes_before_evaluation,
                       "final wallet identity");
     rows.close();
     require_condition(bool(rows), "row output flush");
@@ -964,7 +976,7 @@ int main(int argc, char **argv) {
       eventsout.close();
       require_condition(bool(eventsout), "events flush");
     }
-    ofstream bitsout(out + ".programs.bits", ios::binary);
+    ofstream bitsout(output_prefix + ".programs.bits", ios::binary);
     bitsout.write((char *)programs.data(), programs.size());
     bitsout.close();
     require_condition(bool(bitsout), "program bit output");
@@ -972,15 +984,16 @@ int main(int argc, char **argv) {
             "atomic_v1\",\"physical_scope\":\"request_atomic_hash_deduplicated_HBM_not_"
             "vLLM_slots\",\"primary_metric\":\"ssd_fetched_prefix_positions\","
             "\"session_filter\":false,\"budget\":"
-         << write_budget << ",\"writes\":" << wallet.written_blocks << ",\"W_pre\":" << Wpre
-         << ",\"W_test\":" << wallet.written_blocks - Wpre
+         << write_budget << ",\"writes\":" << wallet.written_blocks
+         << ",\"W_pre\":" << writes_before_evaluation
+         << ",\"W_test\":" << wallet.written_blocks - writes_before_evaluation
          << ",\"processed_evictions\":" << eviction_count << ",\"warm_evictions\":" << warmE
          << ",\"controller_observations\":" << wallet.observations
-         << ",\"repricing_snapshots\":" << nextcut << ",\"peak_hbm\":" << hbm_cache.peak
-         << ",\"peak_ssd\":" << ssd_cache.peak << ",\"warm_hbm_sha256\":\"" << warmh
-         << "\",\"warm_ssd_sha256\":\"" << warms << "\",\"final_hbm_sha256\":\""
-         << hbm_cache.hash() << "\",\"final_ssd_sha256\":\"" << ssd_cache.hash()
-         << "\",\"eviction_records_sha256\":\"" << evhash.finish()
+         << ",\"repricing_snapshots\":" << next_model_cutoff
+         << ",\"peak_hbm\":" << hbm_cache.peak << ",\"peak_ssd\":" << ssd_cache.peak
+         << ",\"warm_hbm_sha256\":\"" << warmh << "\",\"warm_ssd_sha256\":\"" << warms
+         << "\",\"final_hbm_sha256\":\"" << hbm_cache.hash() << "\",\"final_ssd_sha256\":\""
+         << ssd_cache.hash() << "\",\"eviction_records_sha256\":\"" << evhash.finish()
          << "\",\"hbm_signed_event_sha256\":\"" << eventhash.finish()
          << "\",\"total\":" << metrics_json(total) << ",\"evaluation\":" << metrics_json(eval)
          << "}" << endl;

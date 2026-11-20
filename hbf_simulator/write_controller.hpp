@@ -121,23 +121,26 @@ struct WriteController {
       tie_probability = 1;
     } else {
       std::sort(priced_offers.begin(), priced_offers.end(),
-                [](const PricedOffer &a, const PricedOffer &b) { return a.score > b.score; });
+                [](const PricedOffer &left_offer, const PricedOffer &right_offer) {
+                  return left_offer.score > right_offer.score;
+                });
       double desired_write_cost = affordable_fraction * total_write_cost, cost_above = 0,
              cost_at_cutoff = 0;
       threshold = priced_offers.back().score;
-      for (size_t i = 0; i < priced_offers.size();) {
-        size_t j = i;
+      for (size_t score_index = 0; score_index < priced_offers.size();) {
+        size_t next_score_index = score_index;
         cost_at_cutoff = 0;
-        while (j < priced_offers.size() && priced_offers[j].score == priced_offers[i].score) {
-          cost_at_cutoff += priced_offers[j].cost;
-          j++;
+        while (next_score_index < priced_offers.size() &&
+               priced_offers[next_score_index].score == priced_offers[score_index].score) {
+          cost_at_cutoff += priced_offers[next_score_index].cost;
+          next_score_index++;
         }
         if (cost_above + cost_at_cutoff >= desired_write_cost) {
-          threshold = priced_offers[i].score;
+          threshold = priced_offers[score_index].score;
           break;
         }
         cost_above += cost_at_cutoff;
-        i = j;
+        score_index = next_score_index;
       }
       tie_probability =
           cost_at_cutoff > 0 ? (desired_write_cost - cost_above) / cost_at_cutoff : 0;
@@ -194,26 +197,29 @@ WriteController::update_cost_band_cutoffs(const std::vector<PricedOffer> &priced
       continue;
     }
     std::sort(group.begin(), group.end(),
-              [](const PricedOffer &a, const PricedOffer &b) { return a.score > b.score; });
+              [](const PricedOffer &left_offer, const PricedOffer &right_offer) {
+                return left_offer.score > right_offer.score;
+              });
     int64_t band_write_cost = 0, cost_above = 0;
     for (const auto &v : group)
       band_write_cost += v.cost;
     double desired_write_cost = affordable_fraction * band_write_cost;
-    for (size_t i = 0; i < group.size();) {
-      size_t j = i;
+    for (size_t score_index = 0; score_index < group.size();) {
+      size_t next_score_index = score_index;
       int64_t cost_at_cutoff = 0;
-      while (j < group.size() && group[j].score == group[i].score) {
-        cost_at_cutoff += group[j].cost;
-        ++j;
+      while (next_score_index < group.size() &&
+             group[next_score_index].score == group[score_index].score) {
+        cost_at_cutoff += group[next_score_index].cost;
+        ++next_score_index;
       }
       if (cost_above + cost_at_cutoff >= desired_write_cost) {
-        cut.score = group[i].score;
+        cut.score = group[score_index].score;
         cut.tie_probability =
             std::clamp((desired_write_cost - cost_above) / cost_at_cutoff, 0.0, 1.0);
         break;
       }
       cost_above += cost_at_cutoff;
-      i = j;
+      score_index = next_score_index;
     }
   }
 }

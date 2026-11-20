@@ -61,42 +61,53 @@ def compute(run_directory, workload_settings):
     mask = eligibility(workload_settings)
     measured = [v for v in request_records if not v["warmup"]]
     assert len(measured) == workload_settings["requests"]
-    hit = total = hbf = hbm = 0
+    measured_hits = total = measured_hbf_hits = measured_hbm_hits = 0
     allhit = alltotal = 0
-    for i, bits in enumerate(mask):
-        e = lookup_by_request_row[i]
-        k = e["cached_tokens"] // 16
+    for request_index, bits in enumerate(mask):
+        first_lookup = lookup_by_request_row[request_index]
+        cached_prefix_blocks = first_lookup["cached_tokens"] // 16
         assert (
-            e["cached_tokens"]
-            == 16 * k
-            == 16 * (e["cached_HBF_full_pages"] + e["cached_HBM_full_pages"])
+            first_lookup["cached_tokens"]
+            == 16 * cached_prefix_blocks
+            == 16
+            * (
+                first_lookup["cached_HBF_full_pages"]
+                + first_lookup["cached_HBM_full_pages"]
+            )
         )
-        assert 0 <= k <= len(bits) and all(
-            bits[:k]
+        assert 0 <= cached_prefix_blocks <= len(bits) and all(
+            bits[:cached_prefix_blocks]
         ), "Cached prefix eligibility differs from declared synthetic history"
-        got = sum(bits[:k])
-        den = sum(bits)
-        allhit += got
-        alltotal += den
-        if i >= workload_settings["groups"]:
-            hit += got
-            total += den
-            hbf += e["cached_HBF_full_pages"]
-            hbm += e["cached_HBM_full_pages"]
-    assert hit == hbf + hbm and 0 <= hit <= total
+        credited_hits = sum(bits[:cached_prefix_blocks])
+        eligible_blocks = sum(bits)
+        allhit += credited_hits
+        alltotal += eligible_blocks
+        if request_index >= workload_settings["groups"]:
+            measured_hits += credited_hits
+            total += eligible_blocks
+            measured_hbf_hits += first_lookup["cached_HBF_full_pages"]
+            measured_hbm_hits += first_lookup["cached_HBM_full_pages"]
+    assert (
+        measured_hits == measured_hbf_hits + measured_hbm_hits
+        and 0 <= measured_hits <= total
+    )
     # Measure output rate and delays, including time spent draining the queue.
-    m = summarise(measured)
-    allm = summarise(request_records)
+    measured_metrics = summarise(measured)
+    all_request_metrics = summarise(request_records)
     begin = measured[0]["measurement_start_ns"]
-    end = max(v["finish_ns"] for v in measured)
-    interval = max(workload_settings["measurement_seconds"], (end - begin) / 1e9)
-    m.update(
-        output_tokens_per_second=m["output_tokens"] / interval,
+    last_completion_ns = max(v["finish_ns"] for v in measured)
+    interval = max(
+        workload_settings["measurement_seconds"], (last_completion_ns - begin) / 1e9
+    )
+    measured_metrics.update(
+        output_tokens_per_second=measured_metrics["output_tokens"] / interval,
         completed_requests_per_second=len(measured) / interval,
         arrival_window_seconds=workload_settings["measurement_seconds"],
         window_and_drain_seconds=interval,
         drain_seconds=max(
-            0, (end - begin) / 1e9 - workload_settings["measurement_seconds"]
+            0,
+            (last_completion_ns - begin) / 1e9
+            - workload_settings["measurement_seconds"],
         ),
     )
     # Summarize concurrent requests and the cost of admission decisions.
@@ -124,15 +135,15 @@ def compute(run_directory, workload_settings):
     result = dict(
         status="COMPLETE_PENDING_AUDIT",
         job=read_run_json(run_directory, "comparison_settings.json", "JOB.json"),
-        metrics=m,
-        cold_start_inclusive_metrics=allm,
-        offline_hit_percent=100 * hit / total,
+        metrics=measured_metrics,
+        cold_start_inclusive_metrics=all_request_metrics,
+        offline_hit_percent=100 * measured_hits / total,
         eligible_accesses=total,
-        eligible_hits=hit,
-        HBF_hit_pp=100 * hbf / total,
-        HBM_hit_pp=100 * hbm / total,
+        eligible_hits=measured_hits,
+        HBF_hit_pp=100 * measured_hbf_hits / total,
+        HBM_hit_pp=100 * measured_hbm_hits / total,
         cold_start_inclusive_offline_hit_percent=100 * allhit / alltotal,
-        hit_ratio=hit / total,
+        hit_ratio=measured_hits / total,
         admission=admission,
         concurrency=dict(
             peak_active=max((v["resident_requests"] for v in active), default=0),
@@ -168,24 +179,24 @@ def compute(run_directory, workload_settings):
         for offer in offers:
             if "decision" not in offer:
                 continue
-            d = offer["decision"]
+            decision = offer["decision"]
             warm = index(offer["request_id"]) < workload_settings["groups"]
             allowance = ledger.limit(
-                d["physical_decision_ns"], warm, None if warm else begin
+                decision["physical_decision_ns"], warm, None if warm else begin
             )
             assert (
-                d["physical_write_limit_pages"] == allowance
-                and d["physical_warmup"] == warm
+                decision["physical_write_limit_pages"] == allowance
+                and decision["physical_warmup"] == warm
             )
-            assert d["physical_origin_ns"] == origin
+            assert decision["physical_origin_ns"] == origin
             assert (
-                d["controller_time_us"]
+                decision["controller_time_us"]
                 == engine_settings["fit"]["cut_us"]
-                + (d["physical_decision_ns"] - origin) // 1000
+                + (decision["physical_decision_ns"] - origin) // 1000
             )
-            ledger.charge(d["paid_cost"], warm, allowance)
+            ledger.charge(decision["paid_cost"], warm, allowance)
         assert ledger.total == admission["paid_pages"]
-        result["physical_writes"] = ledger.summary(end, begin, interval)
+        result["physical_writes"] = ledger.summary(last_completion_ns, begin, interval)
         assert (
             result["physical_writes"]["steady_rate_respected"]
             and result["physical_writes"]["daily_allowance_respected"]
@@ -240,14 +251,17 @@ def compute(run_directory, workload_settings):
         )
         decisions = [o["decision"] for o in offers if "decision" in o]
         admission["mechanisms"] = dict(
-            threshold_active=sum(d["have_threshold"] for d in decisions),
-            history_boosted=sum(d["history_multiplier"] > 1 for d in decisions),
-            half_behind=sum(d["half_behind"] for d in decisions),
+            threshold_active=sum(decision["have_threshold"] for decision in decisions),
+            history_boosted=sum(
+                decision["history_multiplier"] > 1 for decision in decisions
+            ),
+            half_behind=sum(decision["half_behind"] for decision in decisions),
             score_rejections=sum(
-                not d["score_admit_before_physical_guard"] for d in decisions
+                not decision["score_admit_before_physical_guard"]
+                for decision in decisions
             ),
             physical_guard_rejections=sum(
-                d["physical_guard_rejected"] for d in decisions
+                decision["physical_guard_rejected"] for decision in decisions
             ),
         )
     return result
@@ -268,12 +282,16 @@ def audit(run_directory):
     ), "Independent timestamp/eligibility/metric recomputation mismatch"
     # Check first lookup hits against the earlier synthetic requests
     # Count each eligible block once even if a request was paused and resumed
-    actual = [v for v in rows(run_directory / "requests.jsonl") if not v["warmup"]]
+    actual = [
+        request_record
+        for request_record in rows(run_directory / "requests.jsonl")
+        if not request_record["warmup"]
+    ]
     measured_lookups = {
-        index(v["request_id"]): v
-        for v in rows(run_directory / "scheduler.jsonl")
-        if v["event"] == "INITIAL_PREFIX_LOOKUP"
-        and index(v["request_id"]) >= workload_settings["groups"]
+        index(request_record["request_id"]): request_record
+        for request_record in rows(run_directory / "scheduler.jsonl")
+        if request_record["event"] == "INITIAL_PREFIX_LOOKUP"
+        and index(request_record["request_id"]) >= workload_settings["groups"]
     }
     expected_eligible_reads = (
         len(actual)
@@ -284,13 +302,16 @@ def audit(run_directory):
         // 16
     )
     independent_hits = 0
-    for v in actual:
-        first_lookup = measured_lookups[v["row"]]
+    for request_record in actual:
+        first_lookup = measured_lookups[request_record["row"]]
         assert (
             0 <= first_lookup["cached_tokens"] <= workload_settings["prefix_tokens"]
             and first_lookup["cached_tokens"] % 16 == 0
         )
-        assert v["cached_tokens"] is not None and v["cached_tokens"] >= 0
+        assert (
+            request_record["cached_tokens"] is not None
+            and request_record["cached_tokens"] >= 0
+        )
         independent_hits += first_lookup["cached_tokens"] // 16
     assert (
         saved_results["eligible_accesses"] == expected_eligible_reads
@@ -508,9 +529,9 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
 
         # Fill each shared context, then start the timed arrival stream.
         with (run_directory / "requests.jsonl").open("x", buffering=1) as handle:
-            for g in range(workload_settings["groups"]):
+            for conversation_index in range(workload_settings["groups"]):
                 now = time.monotonic_ns()
-                submit(g, now, now)
+                submit(conversation_index, now, now)
                 while pending:
                     step(handle)
             begin = time.monotonic_ns()

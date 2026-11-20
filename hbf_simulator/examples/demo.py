@@ -32,12 +32,12 @@ def prepare_example():
     split = requests[len(history)]["time"]
     features, sessions, offered, labels = [], {}, [], []
     last = {}
-    for i, req in enumerate(requests):
-        session, now = req["session"], req["time"]
+    for i, request in enumerate(requests):
+        session, now = request["session"], request["time"]
         count, start, previous = sessions.get(session, (0, now, now))
         features.append(
             [
-                req["user"],
+                request["user"],
                 count,
                 (now - start) / 1e6,
                 (now - previous) / 1e6 if count else -1,
@@ -46,7 +46,7 @@ def prepare_example():
         sessions[session] = count + 1, start, now
         if now < split:
             # The first request offers the block. Its second request supplies one label.
-            for block in set(req["blocks"]):
+            for block in set(request["blocks"]):
                 key = session, block
                 if key in last:
                     labels[last[key]] += 1
@@ -58,19 +58,19 @@ def prepare_example():
     train_rows = np.array(offered)
     arrival_times_us = np.array([request["time"] for request in requests])
 
-    def training_examples(cut):
+    def training_examples(cutoff_us):
         # Second requests arrive exactly one microsecond after the first.
-        keep = arrival_times_us[train_rows] < cut
+        keep = arrival_times_us[train_rows] < cutoff_us
         selected_rows = train_rows[keep]
         observed_reads = np.array(labels)[keep] * (
-            arrival_times_us[selected_rows] + 1 < cut
+            arrival_times_us[selected_rows] + 1 < cutoff_us
         )
         return selected_rows, observed_reads
 
     data = SimpleNamespace(
         training_examples=training_examples,
         arrival_times_us=arrival_times_us,
-        feature_table=lambda ix, names: feature_table[ix],
+        feature_table=lambda prediction_rows, names: feature_table[prediction_rows],
         categorical_columns=lambda names: [0],
     )
     model, _ = model_training.fit_tree_model(
@@ -78,9 +78,9 @@ def prepare_example():
     )
     if model["kind"] != "expanded_tree":
         raise RuntimeError("Expected a fitted tree in the demo")
-    ix = np.arange(len(history), len(requests))
+    prediction_rows = np.arange(len(history), len(requests))
     scores = [0.0] * len(history) + model_training.predict_reuse(
-        model, feature_table[ix]
+        model, feature_table[prediction_rows]
     ).tolist()
     return requests, split, feature_table, scores, model
 
@@ -88,17 +88,17 @@ def prepare_example():
 def run_demo():
     """Fit on synthetic sessions, then check flash hits and writes on three later requests."""
     requests, split, feature_table, scores, model = prepare_example()
-    with tempfile.TemporaryDirectory() as tmp:
-        work = Path(tmp)
+    with tempfile.TemporaryDirectory() as temp_directory:
+        work = Path(temp_directory)
         source = work / "requests.jsonl"
         with source.open("w") as f:
-            for req in requests:
+            for request in requests:
                 row = dict(
                     model_id="deepseek-v4-flash",
-                    session_id=str(req["session"]),
-                    user_id=str(req["user"]),
-                    timestamp_arrival=req["time"] / 1e6,
-                    hash_ids=req["blocks"],
+                    session_id=str(request["session"]),
+                    user_id=str(request["user"]),
+                    timestamp_arrival=request["time"] / 1e6,
+                    hash_ids=request["blocks"],
                 )
                 f.write(json.dumps(row) + "\n")
         prepare_trace(source, work / "prepared")
@@ -112,12 +112,14 @@ def run_demo():
                 "Feature preparation differs from the synthetic examples"
             )
         stream = work / "prepared/dst"
-        for name, typ, values in [
+        for name, array_type, values in [
             ("zero", "B", [0] * len(requests)),
             ("eligible", "B", [1] * len(requests)),
             ("scores", "d", scores),
         ]:
-            (work / ("stream" + name)).write_bytes(array.array(typ, values).tobytes())
+            (work / ("stream" + name)).write_bytes(
+                array.array(array_type, values).tobytes()
+            )
         run_program(
             "hbm_only_readable_prefix",
             stream,

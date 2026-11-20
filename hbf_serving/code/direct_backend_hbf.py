@@ -36,7 +36,7 @@ class HBFConnector(DirectConnector):
         copied_hashes = {}
         for candidate in metadata.candidates:
             history_start = time.perf_counter_ns()
-            hist = self.history.prepare(
+            reuse_history = self.history.prepare(
                 candidate["request_id"],
                 candidate["prompt_keys"],
                 candidate["session"],
@@ -47,13 +47,17 @@ class HBFConnector(DirectConnector):
                 # Reuse any pages already copied so only new pages cost a write
                 all_sources = list(candidate["sources"])
                 reuse = list(candidate["reuse"])
-                reused_sources = {src for src, dst in reuse}
-                for src in all_sources:
-                    key = candidate["source_hashes"][src]
-                    if src not in reused_sources and key in copied_hashes:
-                        reuse.append((src, copied_hashes[key]))
-                        reused_sources.add(src)
-                sources = [src for src in all_sources if src not in reused_sources]
+                reused_sources = {source_page for source_page, target_page in reuse}
+                for source_page in all_sources:
+                    key = candidate["source_hashes"][source_page]
+                    if source_page not in reused_sources and key in copied_hashes:
+                        reuse.append((source_page, copied_hashes[key]))
+                        reused_sources.add(source_page)
+                sources = [
+                    source_page
+                    for source_page in all_sources
+                    if source_page not in reused_sources
+                ]
                 distinct, cost = len(all_sources), len(sources)
                 assert distinct == len(
                     set(candidate["prompt_keys"][candidate["suffix_begin"] :])
@@ -69,9 +73,9 @@ class HBFConnector(DirectConnector):
                     policy_us=candidate["policy_us"],
                     scheduler_feature_cpu_ns=candidate["feature_cpu_ns"],
                     history=dict(
-                        shadow_cached_pages=hist["shadow_cached_pages"],
-                        past_filtered_reuses=hist["past_filtered_reuses"],
-                        suffix_begin=hist["suffix_begin"],
+                        shadow_cached_pages=reuse_history["shadow_cached_pages"],
+                        past_filtered_reuses=reuse_history["past_filtered_reuses"],
+                        suffix_begin=reuse_history["suffix_begin"],
                     ),
                 )
                 if not all_sources:
@@ -86,7 +90,7 @@ class HBFConnector(DirectConnector):
                 if self.config.get("physical_write_accounting"):
                     self.policy.set_request_context(candidate["request_id"])
                 # Score using only reuse from before this request
-                self.policy.set_past(hist["past_filtered_reuses"])
+                self.policy.set_past(reuse_history["past_filtered_reuses"])
                 decision = self.policy.hbf_prefill_complete(
                     self.event_id,
                     self.now_us,
@@ -109,26 +113,28 @@ class HBFConnector(DirectConnector):
                 # Copy in chunks that fit the buffer and wait for the write time
                 targets = destinations[:cost]
                 del destinations[:cost]
-                size = self.config["native_block_bytes"]
-                per_chunk = self.config["write_buffer_bytes"] // size
-                if per_chunk < 1:
+                page_bytes = self.config["native_block_bytes"]
+                pages_per_chunk = self.config["write_buffer_bytes"] // page_bytes
+                if pages_per_chunk < 1:
                     raise ValueError("Write buffer cannot hold a native page")
                 started = time.monotonic_ns()
-                for offset in range(0, cost, per_chunk):
-                    src = sources[offset : offset + per_chunk]
-                    dst = targets[offset : offset + per_chunk]
+                for offset in range(0, cost, pages_per_chunk):
+                    source_page = sources[offset : offset + pages_per_chunk]
+                    target_page = targets[offset : offset + pages_per_chunk]
                     begin = time.monotonic_ns()
                     for view in self.pages.pages.values():
                         indices = torch.tensor(
-                            src, device=view.device, dtype=torch.long
+                            source_page, device=view.device, dtype=torch.long
                         )
-                        target = torch.tensor(dst, device=view.device, dtype=torch.long)
+                        target = torch.tensor(
+                            target_page, device=view.device, dtype=torch.long
+                        )
                         view.index_copy_(0, target, view.index_select(0, indices))
                     torch.cuda.synchronize()
                     deadline = (
                         begin
                         + (
-                            len(src) * size * 1000000000
+                            len(source_page) * page_bytes * 1000000000
                             + self.config["write_bandwidth_bytes_s"]
                             - 1
                         )
@@ -138,19 +144,19 @@ class HBFConnector(DirectConnector):
                     if delay > 0:
                         time.sleep(delay)
                 self.output.pairs.extend(zip(sources, targets))
-                for src, dst in zip(sources, targets):
-                    copied_hashes[candidate["source_hashes"][src]] = dst
+                for source_page, target_page in zip(sources, targets):
+                    copied_hashes[candidate["source_hashes"][source_page]] = target_page
                 event.update(
                     action="COPIED" if cost else "REUSED_EXISTING_ONLY",
                     reuse_pairs=reuse,
-                    native_bytes=cost * size,
+                    native_bytes=cost * page_bytes,
                     copy_and_service_ns=time.monotonic_ns() - started,
                 )
                 self.output.events.append(event)
             finally:
                 # Record this request for future offers even if the write was declined
                 history_start = time.perf_counter_ns()
-                self.history.commit(hist)
+                self.history.commit(reuse_history)
                 event["history_cpu_ns"] = (
                     history_prepare_ns + time.perf_counter_ns() - history_start
                 )

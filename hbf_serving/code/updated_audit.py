@@ -55,11 +55,13 @@ def audit_policy(root, engine_settings, saved):
     event = 0
     boosted = half = threshold = 0
     for offer in offers:
-        i = int(re.fullmatch(r"row(\d+)(?:-[0-9a-f]{8})?", offer["request_id"])[1])
-        assert i not in seen_requests
-        seen_requests.add(i)
-        keys = [b.hex() for b in block_keys(payload[i])]
-        session = info[i]["session"]
+        request_index = int(
+            re.fullmatch(r"row(\d+)(?:-[0-9a-f]{8})?", offer["request_id"])[1]
+        )
+        assert request_index not in seen_requests
+        seen_requests.add(request_index)
+        keys = [b.hex() for b in block_keys(payload[request_index])]
+        session = info[request_index]["session"]
         reuse_history = offer["history"]
         first = reuse_history["suffix_begin"]
         readable = 0
@@ -79,74 +81,96 @@ def audit_policy(root, engine_settings, saved):
             if key not in keys[:j] and j >= readable and stamps.get(key) == session
         ]
         if "decision" in offer:
-            d = offer["decision"]
-            now = d["controller_time_us"]
-            n, c = offer["source_pages"], offer["write_cost_pages"]
+            decision = offer["decision"]
+            arrival_us = decision["controller_time_us"]
+            n, write_cost = offer["source_pages"], offer["write_cost_pages"]
             assert n == len(set(keys[first:]))
-            prediction = float(model.predict([offer["features"]], now)[0])
-            assert prediction == d["prediction"]
-            assert d["model_sha256"] == model.model_sha256 and d["fit_cut_us"] == CUT
-            score = prediction * float(n) / float(c) * (1 + past / n) if c else math.inf
-            reference_controller.phase(now)
-            cut, coin = (
-                getattr(reference_controller, "bandcuts", {}).get(
-                    c.bit_length() - 1,
-                    (reference_controller.threshold, reference_controller.tie),
+            prediction = float(model.predict([offer["features"]], arrival_us)[0])
+            assert prediction == decision["prediction"]
+            assert (
+                decision["model_sha256"] == model.model_sha256
+                and decision["fit_cut_us"] == CUT
+            )
+            score = (
+                prediction * float(n) / float(write_cost) * (1 + past / n)
+                if write_cost
+                else math.inf
+            )
+            reference_controller.phase(arrival_us)
+            cutoff_score, coin = (
+                getattr(reference_controller, "cutoffs_by_cost_band", {}).get(
+                    write_cost.bit_length() - 1,
+                    (
+                        reference_controller.threshold,
+                        reference_controller.tie_probability,
+                    ),
                 )
-                if c and reference_controller.have
-                else (reference_controller.threshold, reference_controller.tie)
+                if write_cost and reference_controller.cutoff_ready
+                else (
+                    reference_controller.threshold,
+                    reference_controller.tie_probability,
+                )
             )
             behind = bool(
-                c
-                and reference_controller.have
-                and reference_controller.W * (reference_controller.end_us - CUT)
-                < reference_controller.budget * (now - CUT)
+                write_cost
+                and reference_controller.cutoff_ready
+                and reference_controller.blocks_written
+                * (reference_controller.end_us - CUT)
+                < reference_controller.budget * (arrival_us - CUT)
             )
             if behind:
-                cut /= 2
+                cutoff_score /= 2
             before = bool(
                 n
                 and (
-                    not c
-                    or c <= reference_controller.budget - reference_controller.W
-                    and c <= reference_controller.cap - reference_controller.W
+                    not write_cost
+                    or write_cost
+                    <= reference_controller.budget - reference_controller.blocks_written
+                    and write_cost
+                    <= reference_controller.current_spending_limit
+                    - reference_controller.blocks_written
                     and (
-                        not reference_controller.have
-                        or score > cut
-                        or score == cut
+                        not reference_controller.cutoff_ready
+                        or score > cutoff_score
+                        or score == cutoff_score
                         and hash01(event, reference_controller.seed ^ 0x5BF03635) < coin
                     )
                 )
             )
-            admit = before and c <= d["physical_write_limit_pages"]
+            admit = before and write_cost <= decision["physical_write_limit_pages"]
             safe = lambda v: v if math.isfinite(v) else str(v)
             assert (
-                d["score"] == safe(score)
-                and d["cutoff"] == safe(cut)
-                and d["tie"] == coin
+                decision["score"] == safe(score)
+                and decision["cutoff"] == safe(cutoff_score)
+                and decision["tie"] == coin
             )
             assert (
-                d["admit"] == admit
-                and d["have_threshold"] == reference_controller.have
-                and d["half_behind"] == behind
-                and d["history_multiplier"] == 1 + past / n
-                and d["past_filtered_reuses"] == past
+                decision["admit"] == admit
+                and decision["have_threshold"] == reference_controller.cutoff_ready
+                and decision["half_behind"] == behind
+                and decision["history_multiplier"] == 1 + past / n
+                and decision["past_filtered_reuses"] == past
             )
-            assert d["score_admit_before_physical_guard"] == before and d[
+            assert decision["score_admit_before_physical_guard"] == before and decision[
                 "physical_guard_rejected"
             ] == (before and not admit)
-            reference_controller._observe(Observation(event, score, c, now, n))
+            reference_controller._observe(
+                Observation(event, score, write_cost, arrival_us, n)
+            )
             if admit:
-                reference_controller.W += c
-            assert d["total_paid_writes"] == reference_controller.W and d[
-                "paid_cost"
-            ] == (c if admit else 0)
+                reference_controller.blocks_written += write_cost
+            assert decision[
+                "total_paid_writes"
+            ] == reference_controller.blocks_written and decision["paid_cost"] == (
+                write_cost if admit else 0
+            )
             assert offer["action"] in (
                 ["COPIED", "REUSED_EXISTING_ONLY"] if admit else ["POLICY_REJECT"]
             )
             if admit:
                 assert (
-                    offer["native_bytes"] == c * engine_settings["native_block_bytes"]
+                    offer["native_bytes"]
+                    == write_cost * engine_settings["native_block_bytes"]
                     and offer["copy_and_service_ns"]
                     >= offer["native_bytes"]
                     * 1e9
@@ -154,7 +178,7 @@ def audit_policy(root, engine_settings, saved):
                 )
             boosted += past > 0
             half += behind
-            threshold += reference_controller.have
+            threshold += reference_controller.cutoff_ready
             event += 1
         else:
             assert offer["action"] in [
@@ -172,7 +196,7 @@ def audit_policy(root, engine_settings, saved):
         for key in keys:
             stamps[key] = session
     assert (
-        reference_controller.W
+        reference_controller.blocks_written
         == saved["admission"]["paid_pages"]
         <= reference_controller.budget
         and len(seen_requests) == engine_settings["n_requests"]
@@ -181,7 +205,7 @@ def audit_policy(root, engine_settings, saved):
         status="PASS_ARCHIVED_UPDATED_POLICY_AND_INDEPENDENT_HISTORY",
         model_sha256=model.model_sha256,
         decisions=event,
-        paid_pages=reference_controller.W,
+        paid_pages=reference_controller.blocks_written,
         history_boosted=boosted,
         half_behind=half,
         threshold_active=threshold,

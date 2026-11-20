@@ -55,9 +55,10 @@ class PublicInputs(unittest.TestCase):
             reference._observe(ReferenceObservation(*values))
         live.recompute(1200000000)
         reference.recompute(1200000000)
-        self.assertEqual(live.bandcuts, reference.bandcuts)
+        self.assertEqual(live.cutoffs_by_cost_band, reference.cutoffs_by_cost_band)
         self.assertEqual(
-            (live.threshold, live.tie), (reference.threshold, reference.tie)
+            (live.threshold, live.tie_probability),
+            (reference.threshold, reference.tie_probability),
         )
 
 

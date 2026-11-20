@@ -14,8 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
-using I = int64_t;
-constexpr I H = 3600000000LL;
+constexpr int64_t H = 3600000000LL;
 
 void require_condition(bool b, const char *s) {
   if (!b)
@@ -73,148 +72,177 @@ static_assert(sizeof(Hour) == 8);
 int main(int argc, char **argv) {
   try {
     require_condition(argc == 6, "mode prefix N end outdir");
-    std::string mode = argv[1], pre = argv[2], out = argv[5];
-    I N = std::stoll(argv[3]), end = std::stoll(argv[4]);
-    require_condition(N > 0 && N < INT32_MAX && end == 168 * H, "geometry");
-    std::vector<I> times;
+    std::string mode = argv[1], stream_prefix = argv[2], output_directory = argv[5];
+    int64_t block_id_count = std::stoll(argv[3]), end_us = std::stoll(argv[4]);
+    require_condition(block_id_count > 0 && block_id_count < INT32_MAX && end_us == 168 * H,
+                      "geometry");
+    std::vector<int64_t> arrival_times_us;
     {
-      std::ifstream f(pre + "_ts.i64", std::ios::binary);
-      I t;
-      while (read_record(f, t)) {
-        if (t >= end)
+      std::ifstream arrival_times_file(stream_prefix + "_ts.i64", std::ios::binary);
+      int64_t arrival_us;
+      while (read_record(arrival_times_file, arrival_us)) {
+        if (arrival_us >= end_us)
           break;
-        times.push_back(t);
+        arrival_times_us.push_back(arrival_us);
       }
     }
-    require_condition(times.size() < INT32_MAX, "row overflow");
+    require_condition(arrival_times_us.size() < INT32_MAX, "row overflow");
     // Build: scan for eligible reads, then save per-block request and hour indexes.
     if (mode == "build") {
-      std::vector<uint32_t> counts(N);
-      std::vector<int32_t> stamp(N, -1), mark(N, -1), row;
+      std::vector<uint32_t> counts(block_id_count);
+      std::vector<int32_t> stamp(block_id_count, -1), mark(block_id_count, -1), row;
       auto scan = [&](auto callback) {
         std::fill(stamp.begin(), stamp.end(), -1);
         std::fill(mark.begin(), mark.end(), -1);
-        std::ifstream ns(pre + "_nb.i32", std::ios::binary),
-            ss(pre + "_sess.i32", std::ios::binary), ids(pre + "_ids.i32", std::ios::binary);
-        require_condition(ns && ss && ids, "raw open");
-        for (size_t r = 0; r < times.size(); r++) {
-          int32_t n, s;
-          require_condition(read_record(ns, n) && read_record(ss, s) && n >= 0, "metadata");
-          row.resize(n);
-          ids.read((char *)row.data(), I(n) * 4);
-          require_condition(ids.gcount() == I(n) * 4, "raw IDs");
-          for (int b : row) {
-            require_condition(b >= 0 && b < N, "ID");
-            if (mark[b] == int32_t(r))
+        std::ifstream block_count_file(stream_prefix + "_nb.i32", std::ios::binary),
+            session_file(stream_prefix + "_sess.i32", std::ios::binary),
+            block_id_file(stream_prefix + "_ids.i32", std::ios::binary);
+        require_condition(block_count_file && session_file && block_id_file, "raw open");
+        for (size_t request_index = 0; request_index < arrival_times_us.size();
+             request_index++) {
+          int32_t request_block_count, session_code;
+          require_condition(read_record(block_count_file, request_block_count) &&
+                                read_record(session_file, session_code) &&
+                                request_block_count >= 0,
+                            "metadata");
+          row.resize(request_block_count);
+          block_id_file.read((char *)row.data(), int64_t(request_block_count) * 4);
+          require_condition(block_id_file.gcount() == int64_t(request_block_count) * 4,
+                            "raw IDs");
+          for (int block_id : row) {
+            require_condition(block_id >= 0 && block_id < block_id_count, "ID");
+            if (mark[block_id] == int32_t(request_index))
               continue;
-            mark[b] = r;
-            bool e = stamp[b] == s;
-            stamp[b] = s;
-            if (times[r] >= 0 && e)
-              callback(b, r);
+            mark[block_id] = request_index;
+            bool is_session_repeat = stamp[block_id] == session_code;
+            stamp[block_id] = session_code;
+            if (arrival_times_us[request_index] >= 0 && is_session_repeat)
+              callback(block_id, request_index);
           }
         }
       };
-      scan([&](int b, size_t) {
-        require_condition(counts[b] < UINT32_MAX, "credit overflow");
-        counts[b]++;
+      scan([&](int block_id, size_t) {
+        require_condition(counts[block_id] < UINT32_MAX, "credit overflow");
+        counts[block_id]++;
       });
-      Map<uint64_t> off(out + "/offsets.u64", N + 1, true);
-      off[0] = 0;
-      for (I b = 0; b < N; b++)
-        off[b + 1] = off[b] + counts[b];
-      I total = off[N];
+      Map<uint64_t> event_offsets(output_directory + "/offsets.u64", block_id_count + 1, true);
+      event_offsets[0] = 0;
+      for (int64_t block_id = 0; block_id < block_id_count; block_id++)
+        event_offsets[block_id + 1] = event_offsets[block_id] + counts[block_id];
+      int64_t total = event_offsets[block_id_count];
       require_condition(total > 0, "no events");
-      Map<int32_t> events(out + "/events.i32", total, true);
+      Map<int32_t> events(output_directory + "/events.i32", total, true);
       std::fill(counts.begin(), counts.end(), 0);
-      scan([&](int b, size_t r) { events[off[b] + counts[b]++] = r; });
-      Map<uint64_t> ho(out + "/hour_offsets.u64", N + 1, true);
-      ho[0] = 0;
-      for (I b = 0; b < N; b++) {
-        require_condition(off[b] + counts[b] == off[b + 1], "fill count");
-        I last = -1, nh = 0;
-        for (uint64_t k = off[b]; k < off[b + 1]; k++) {
-          I h = times[events[k]] / H;
+      scan([&](int block_id, size_t request_index) {
+        events[event_offsets[block_id] + counts[block_id]++] = request_index;
+      });
+      Map<uint64_t> hour_offsets(output_directory + "/hour_offsets.u64", block_id_count + 1,
+                                 true);
+      hour_offsets[0] = 0;
+      for (int64_t block_id = 0; block_id < block_id_count; block_id++) {
+        require_condition(event_offsets[block_id] + counts[block_id] ==
+                              event_offsets[block_id + 1],
+                          "fill count");
+        int64_t last = -1, nh = 0;
+        for (uint64_t k = event_offsets[block_id]; k < event_offsets[block_id + 1]; k++) {
+          int64_t h = arrival_times_us[events[k]] / H;
           require_condition(h >= 0 && h < 168, "event hour");
           if (h != last) {
             nh++;
             last = h;
           }
         }
-        ho[b + 1] = ho[b] + nh;
+        hour_offsets[block_id + 1] = hour_offsets[block_id] + nh;
       }
-      Map<Hour> hs(out + "/hour_entries.bin", ho[N], true);
-      for (I b = 0; b < N; b++) {
-        uint64_t q = ho[b];
-        for (uint64_t k = off[b]; k < off[b + 1];) {
-          I hour = times[events[k]] / H;
+      Map<Hour> hour_totals(output_directory + "/hour_entries.bin",
+                            hour_offsets[block_id_count], true);
+      for (int64_t block_id = 0; block_id < block_id_count; block_id++) {
+        uint64_t q = hour_offsets[block_id];
+        for (uint64_t k = event_offsets[block_id]; k < event_offsets[block_id + 1];) {
+          int64_t hour = arrival_times_us[events[k]] / H;
           uint64_t j = k + 1;
-          while (j < off[b + 1] && times[events[j]] / H == hour)
+          while (j < event_offsets[block_id + 1] && arrival_times_us[events[j]] / H == hour)
             j++;
           require_condition(j - k <= UINT32_MAX, "hour overflow");
-          hs[q++] = {uint32_t(hour), uint32_t(j - k)};
+          hour_totals[q++] = {uint32_t(hour), uint32_t(j - k)};
           k = j;
         }
-        require_condition(q == ho[b + 1], "hour fill");
+        require_condition(q == hour_offsets[block_id + 1], "hour fill");
       }
       std::cout << "{\"status\":\"BUILT_ELIGIBLE_EVENT_INDEX\",\"events\":" << total
-                << ",\"hour_entries\":" << ho[N] << ",\"rows\":" << times.size() << "}\n";
+                << ",\"hour_entries\":" << hour_offsets[block_id_count]
+                << ",\"rows\":" << arrival_times_us.size() << "}\n";
     } else {
       // Audit: independently scan requests and check every saved event and hour count.
       require_condition(mode == "audit", "mode");
-      Map<uint64_t> off(out + "/offsets.u64", N + 1, false),
-          ho(out + "/hour_offsets.u64", N + 1, false);
-      Map<int32_t> ev(out + "/events.i32", off[N], false);
-      Map<Hour> hs(out + "/hour_entries.bin", ho[N], false);
-      std::vector<uint32_t> cursor(N);
-      std::vector<int32_t> prev(N, -1), row;
-      I checked = 0;
-      std::ifstream ns(pre + "_nb.i32", std::ios::binary),
-          ss(pre + "_sess.i32", std::ios::binary), ids(pre + "_ids.i32", std::ios::binary);
-      require_condition(ns && ss && ids, "audit input");
-      for (size_t r = 0; r < times.size(); r++) {
-        int32_t n, s;
-        require_condition(read_record(ns, n) && read_record(ss, s) && n >= 0, "audit metadata");
-        row.resize(n);
-        ids.read((char *)row.data(), I(n) * 4);
-        require_condition(ids.gcount() == I(n) * 4, "audit raw");
+      Map<uint64_t> event_offsets(output_directory + "/offsets.u64", block_id_count + 1, false),
+          hour_offsets(output_directory + "/hour_offsets.u64", block_id_count + 1, false);
+      Map<int32_t> events(output_directory + "/events.i32", event_offsets[block_id_count],
+                          false);
+      Map<Hour> hour_totals(output_directory + "/hour_entries.bin",
+                            hour_offsets[block_id_count], false);
+      std::vector<uint32_t> cursor(block_id_count);
+      std::vector<int32_t> prev(block_id_count, -1), row;
+      int64_t checked = 0;
+      std::ifstream block_count_file(stream_prefix + "_nb.i32", std::ios::binary),
+          session_file(stream_prefix + "_sess.i32", std::ios::binary),
+          block_id_file(stream_prefix + "_ids.i32", std::ios::binary);
+      require_condition(block_count_file && session_file && block_id_file, "audit input");
+      for (size_t request_index = 0; request_index < arrival_times_us.size(); request_index++) {
+        int32_t request_block_count, session_code;
+        require_condition(read_record(block_count_file, request_block_count) &&
+                              read_record(session_file, session_code) &&
+                              request_block_count >= 0,
+                          "audit metadata");
+        row.resize(request_block_count);
+        block_id_file.read((char *)row.data(), int64_t(request_block_count) * 4);
+        require_condition(block_id_file.gcount() == int64_t(request_block_count) * 4,
+                          "audit raw");
         std::sort(row.begin(), row.end());
         row.erase(std::unique(row.begin(), row.end()), row.end());
-        for (int b : row) {
-          require_condition(b >= 0 && b < N, "auditID");
-          if (times[r] >= 0 && prev[b] == s) {
-            require_condition(off[b] + cursor[b] < off[b + 1] && ev[off[b] + cursor[b]] == I(r),
+        for (int block_id : row) {
+          require_condition(block_id >= 0 && block_id < block_id_count, "auditID");
+          if (arrival_times_us[request_index] >= 0 && prev[block_id] == session_code) {
+            require_condition(event_offsets[block_id] + cursor[block_id] <
+                                      event_offsets[block_id + 1] &&
+                                  events[event_offsets[block_id] + cursor[block_id]] ==
+                                      int64_t(request_index),
                               "event identity mismatch");
-            cursor[b]++;
+            cursor[block_id]++;
             checked++;
           }
-          prev[b] = s;
+          prev[block_id] = session_code;
         }
       }
-      for (I b = 0; b < N; b++) {
-        require_condition(off[b] + cursor[b] == off[b + 1], "extra event");
-        uint64_t at = off[b];
+      for (int64_t block_id = 0; block_id < block_id_count; block_id++) {
+        require_condition(event_offsets[block_id] + cursor[block_id] ==
+                              event_offsets[block_id + 1],
+                          "extra event");
+        uint64_t at = event_offsets[block_id];
         int last = -1;
-        for (uint64_t j = ho[b]; j < ho[b + 1]; j++) {
-          auto z = hs[j];
-          require_condition(z.h < 168 && I(z.h) > last && z.count > 0, "hour order");
-          for (uint32_t k = 0; k < z.count; k++) {
-            require_condition(at < off[b + 1] && times[ev[at]] / H == z.h,
+        for (uint64_t j = hour_offsets[block_id]; j < hour_offsets[block_id + 1]; j++) {
+          auto hour_entry = hour_totals[j];
+          require_condition(hour_entry.h < 168 && int64_t(hour_entry.h) > last &&
+                                hour_entry.count > 0,
+                            "hour order");
+          for (uint32_t k = 0; k < hour_entry.count; k++) {
+            require_condition(at < event_offsets[block_id + 1] &&
+                                  arrival_times_us[events[at]] / H == hour_entry.h,
                               "hour count mismatch");
             at++;
           }
-          last = z.h;
+          last = hour_entry.h;
         }
-        require_condition(at == off[b + 1], "unaccounted hour");
+        require_condition(at == event_offsets[block_id + 1], "unaccounted hour");
       }
-      require_condition(checked == I(off[N]), "total mismatch");
+      require_condition(checked == int64_t(event_offsets[block_id_count]), "total mismatch");
       std::cout << "{\"status\":\"PASS_INDEPENDENT_ALL_EVENT_AND_HOUR_AUDIT\","
                    "\"events\":"
-                << checked << ",\"rows\":" << times.size() << "}\n";
+                << checked << ",\"rows\":" << arrival_times_us.size() << "}\n";
     }
     return 0;
-  } catch (const std::exception &e) {
-    std::cerr << e.what() << '\n';
+  } catch (const std::exception &is_session_repeat) {
+    std::cerr << is_session_repeat.what() << '\n';
     return 1;
   }
 }

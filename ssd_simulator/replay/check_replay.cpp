@@ -207,27 +207,35 @@ struct Count {
 
 int main(int argc, char **argv) {
   try {
-    map<string, string> a;
+    map<string, string> options;
     for (int j = 1; j < argc; j += 2) {
       demand(j + 1 < argc, "option value");
-      a[argv[j]] = argv[j + 1];
+      options[argv[j]] = argv[j + 1];
     }
-    auto get = [&](string k) {
-      demand(a.count(k), "missing " + k);
-      return a[k];
+    auto required_option = [&](string option_name) {
+      demand(options.count(option_name), "missing " + option_name);
+      return options[option_name];
     };
-    string p = get("--prefix"), out = get("--out-prefix");
-    int NB = stoi(get("--nb")), CH = stoi(get("--hbm"));
-    int64_t cs = stoll(get("--ssd")), B = stoll(get("--budget")),
-            split = stoll(get("--eval-start-us")), stop = stoll(get("--stop-us"));
-    demand(NB > 0 && CH > 0 && cs > 0 && B >= 0 && split >= 0 && stop >= 0, "geometry");
-    string policy = a.count("--verify-policy") ? a["--verify-policy"] : "bits";
-    uint64_t seed = stoull(a.count("--seed") ? a["--seed"] : "17");
-    int64_t numerator =
-                stoll(a.count("--probability-numerator") ? a["--probability-numerator"] : "0"),
-            denominator = stoll(
-                a.count("--probability-denominator") ? a["--probability-denominator"] : "1");
-    int threshold = stoi(a.count("--threshold") ? a["--threshold"] : "0");
+    string stream_prefix = required_option("--prefix"),
+           output_prefix = required_option("--out-prefix");
+    int block_id_count = stoi(required_option("--nb")),
+        hbm_capacity = stoi(required_option("--hbm"));
+    int64_t ssd_capacity = stoll(required_option("--ssd")),
+            write_budget = stoll(required_option("--budget")),
+            split = stoll(required_option("--eval-start-us")),
+            stop = stoll(required_option("--stop-us"));
+    demand(block_id_count > 0 && hbm_capacity > 0 && ssd_capacity > 0 && write_budget >= 0 &&
+               split >= 0 && stop >= 0,
+           "geometry");
+    string policy = options.count("--verify-policy") ? options["--verify-policy"] : "bits";
+    uint64_t seed = stoull(options.count("--seed") ? options["--seed"] : "17");
+    int64_t numerator = stoll(options.count("--probability-numerator")
+                                  ? options["--probability-numerator"]
+                                  : "0"),
+            denominator = stoll(options.count("--probability-denominator")
+                                    ? options["--probability-denominator"]
+                                    : "1");
+    int threshold = stoi(options.count("--threshold") ? options["--threshold"] : "0");
     demand(policy == "bits" || policy == "all" || policy == "coin" || policy == "stride" ||
                policy == "access_min" || policy == "eviction_min" || policy == "eviction_exact",
            "audit policy");
@@ -241,65 +249,72 @@ int main(int argc, char **argv) {
       x ^= x >> 33;
       return __int128(x >> 11) * denominator < __int128(numerator) * (uint64_t(1) << 53);
     };
-    Input<int32_t> nb(p + "_nb.i32"), ids(p + "_ids.i32");
-    Input<int64_t> ts(p + "_ts.i64"), tokens(get("--tokens"));
-    Input<uint8_t> bits(get("--program-bits"));
-    demand(nb.size == ts.size && nb.size == tokens.size, "request length");
-    audit_domain = NB;
-    LRU H(min(NB, CH)), S(int(min<int64_t>(NB, cs)));
-    vector<int32_t> last(NB, -1), born(NB, -1), frequency(NB), eviction_count(NB);
-    vector<uint8_t> written(NB);
+    Input<int32_t> block_counts(stream_prefix + "_nb.i32"),
+        block_ids(stream_prefix + "_ids.i32");
+    Input<int64_t> arrival_times(stream_prefix + "_ts.i64"),
+        tokens(required_option("--tokens"));
+    Input<uint8_t> bits(required_option("--program-bits"));
+    demand(block_counts.size == arrival_times.size && block_counts.size == tokens.size,
+           "request length");
+    audit_domain = block_id_count;
+    LRU hbm_cache(min(block_id_count, hbm_capacity)),
+        ssd_cache(int(min<int64_t>(block_id_count, ssd_capacity)));
+    vector<int32_t> last(block_id_count, -1), born(block_id_count, -1),
+        frequency(block_id_count), eviction_count(block_id_count);
+    vector<uint8_t> written(block_id_count);
     size_t offset = 0;
-    int64_t W = 0, E = 0, WP = 0, EP = 0, positive = 0;
+    int64_t blocks_written = 0, eviction_total = 0, writes_before_evaluation = 0,
+            evictions_before_evaluation = 0, positive = 0;
     bool snapped = false;
     string warmh, warms;
     Digest event_hash, eviction_hash;
     Count total, evaluation;
-    ofstream rows(out + ".rows.i64", ios::binary);
+    ofstream rows(output_prefix + ".rows.i64", ios::binary);
     demand(bool(rows), "row output");
     auto event = [&](int32_t b, int32_t r) {
       event_hash.value(b);
       event_hash.value(r);
     };
-    for (size_t row = 0; row < nb.size; row++) {
-      auto now = ts[row];
-      demand(row == 0 || now >= ts[row - 1], "timestamp order");
-      demand(nb[row] >= 0 && offset + size_t(nb[row]) <= ids.size && tokens[row] >= 0 &&
-                 tokens[row] / 16 == nb[row],
+    for (size_t row = 0; row < block_counts.size; row++) {
+      auto now = arrival_times[row];
+      demand(row == 0 || now >= arrival_times[row - 1], "timestamp order");
+      demand(block_counts[row] >= 0 && offset + size_t(block_counts[row]) <= block_ids.size &&
+                 tokens[row] >= 0 && tokens[row] / 16 == block_counts[row],
              "token/hash mapping");
       if (now < split) {
-        offset += nb[row];
+        offset += block_counts[row];
         continue;
       }
       if (now >= split && !snapped) {
-        demand(H.size() == 0 && S.size() == 0 && W == 0, "cold day4");
-        WP = W;
-        EP = E;
-        warmh = H.digest();
-        warms = S.digest();
+        demand(hbm_cache.size() == 0 && ssd_cache.size() == 0 && blocks_written == 0,
+               "cold day4");
+        writes_before_evaluation = blocks_written;
+        evictions_before_evaluation = eviction_total;
+        warmh = hbm_cache.digest();
+        warms = ssd_cache.digest();
         snapped = true;
       }
       if (now >= stop)
         break;
       Count m;
       m.requests = 1;
-      m.prompt_blocks = nb[row];
+      m.prompt_blocks = block_counts[row];
       m.prompt_tokens = tokens[row];
       m.tail = tokens[row] % 16;
       int64_t max_prefix = tokens[row] > 0 ? (tokens[row] - 1) / 16 : 0;
-      m.capped = nb[row] - max_prefix;
+      m.capped = block_counts[row] - max_prefix;
       vector<int> distinct;
       unordered_set<int> seen;
-      for (int j = 0; j < nb[row]; j++) {
-        int b = ids[offset + j];
-        demand(b >= 0 && b < NB, "block ID");
+      for (int j = 0; j < block_counts[row]; j++) {
+        int b = block_ids[offset + j];
+        demand(b >= 0 && b < block_id_count, "block ID");
         if (seen.insert(b).second)
           distinct.push_back(b);
       }
-      m.bypass = distinct.size() > size_t(CH);
+      m.bypass = distinct.size() > size_t(hbm_capacity);
       if (!m.bypass) {
         for (int j = 0; j < max_prefix; j++) {
-          if (!H.contains(ids[offset + j]))
+          if (!hbm_cache.contains(block_ids[offset + j]))
             break;
           m.hbm++;
         }
@@ -308,12 +323,12 @@ int main(int argc, char **argv) {
         // Plan all reads against original physical state. A fetched payload is
         // staged before any later admission can replace its SSD source entry.
         for (int j = 0; j < max_prefix; j++) {
-          int b = ids[offset + j];
-          if (H.contains(b)) {
+          int b = block_ids[offset + j];
+          if (hbm_cache.contains(b)) {
             m.prefix++;
             continue;
           }
-          if (!S.contains(b))
+          if (!ssd_cache.contains(b))
             break;
           m.prefix++;
           m.ssd++;
@@ -322,18 +337,18 @@ int main(int argc, char **argv) {
             restore.push_back(b);
         }
         for (int b : restore) {
-          S.touch(b);
+          ssd_cache.touch(b);
           m.payloads++;
         }
         vector<int> missing;
         for (int b : distinct) {
-          if (H.contains(b))
-            H.touch(b);
+          if (hbm_cache.contains(b))
+            hbm_cache.touch(b);
           else
             missing.push_back(b);
         }
-        while (H.size() + missing.size() > size_t(CH)) {
-          int b = H.victim();
+        while (hbm_cache.size() + missing.size() > size_t(hbm_capacity)) {
+          int b = hbm_cache.victim();
           demand(last[b] >= 0 && born[b] >= 0, "victim history");
           for (int32_t x :
                {int32_t(row), int32_t(b), last[b], frequency[b], eviction_count[b], born[b]})
@@ -341,13 +356,13 @@ int main(int argc, char **argv) {
           eviction_count[b]++;
           event(b, row);
           m.evictions++;
-          demand(size_t(E / 8) < bits.size, "missing program bit");
-          int64_t eid = E;
-          bool program = (bits[E / 8] >> (E % 8)) & 1;
-          E++;
-          if (S.contains(b)) {
+          demand(size_t(eviction_total / 8) < bits.size, "missing program bit");
+          int64_t eviction_id = eviction_total;
+          bool program = (bits[eviction_total / 8] >> (eviction_total % 8)) & 1;
+          eviction_total++;
+          if (ssd_cache.contains(b)) {
             demand(!program, "program resident");
-            S.touch(b);
+            ssd_cache.touch(b);
             m.free++;
           } else if (now < 0)
             demand(!program, "negative-time write");
@@ -358,7 +373,7 @@ int main(int argc, char **argv) {
             if (policy == "all")
               wanted = true;
             else if (policy == "coin")
-              wanted = choose(eid);
+              wanted = choose(eviction_id);
             else if (policy == "stride")
               wanted = positive % threshold == 0;
             else if (policy == "access_min")
@@ -368,29 +383,29 @@ int main(int argc, char **argv) {
             else if (policy == "eviction_exact")
               wanted = eviction_count[b] == threshold;
             if (policy != "bits")
-              demand(program == (W < B && wanted),
+              demand(program == (blocks_written < write_budget && wanted),
                      "admission rule or hard-budget decision mismatch");
             if (program) {
-              demand(W < B, "budget violation");
-              W++;
+              demand(blocks_written < write_budget, "budget violation");
+              blocks_written++;
               m.writes++;
               m.reprograms += written[b];
               written[b] = 1;
-              if (S.size() == size_t(S.capacity)) {
-                S.evict();
+              if (ssd_cache.size() == size_t(ssd_cache.capacity)) {
+                ssd_cache.evict();
                 m.ssd_evictions++;
               }
-              S.insert(b);
+              ssd_cache.insert(b);
             }
           }
-          demand(H.evict() == b, "victim changed");
+          demand(hbm_cache.evict() == b, "victim changed");
         }
         for (int b : missing) {
           if (last[b] >= 0) {
             event(~b, row);
             m.raw++;
           }
-          H.insert(b);
+          hbm_cache.insert(b);
           born[b] = row;
         }
         for (int b : distinct) {
@@ -403,33 +418,38 @@ int main(int argc, char **argv) {
         total.add(m);
       if (now >= split) {
         evaluation.add(m);
-        int64_t z[13] = {int64_t(row), now,        nb[row],    m.hbm,       m.prefix,
-                         m.ssd,        m.payloads, m.writes,   m.evictions, m.bypass,
+        int64_t z[13] = {int64_t(row), now,        block_counts[row], m.hbm,       m.prefix,
+                         m.ssd,        m.payloads, m.writes,          m.evictions, m.bypass,
                          m.capped,     m.raw,      tokens[row]};
         rows.write((char *)z, sizeof z);
       }
-      offset += nb[row];
+      offset += block_counts[row];
     }
     if (!snapped) {
-      WP = W;
-      EP = E;
-      warmh = H.digest();
-      warms = S.digest();
+      writes_before_evaluation = blocks_written;
+      evictions_before_evaluation = eviction_total;
+      warmh = hbm_cache.digest();
+      warms = ssd_cache.digest();
     }
-    demand(bits.size == size_t((E + 7) / 8), "program file size");
-    for (size_t k = E; k < bits.size * 8; k++)
-      demand(!((bits[k / 8] >> (k % 8)) & 1), "nonzero program padding");
-    demand(W <= B && evaluation.writes == W - WP, "wallet accounting");
+    demand(bits.size == size_t((eviction_total + 7) / 8), "program file size");
+    for (size_t option_name = eviction_total; option_name < bits.size * 8; option_name++)
+      demand(!((bits[option_name / 8] >> (option_name % 8)) & 1), "nonzero program padding");
+    demand(blocks_written <= write_budget &&
+               evaluation.writes == blocks_written - writes_before_evaluation,
+           "wallet accounting");
     rows.close();
     demand(bool(rows), "rows flush");
     cout << "{\"event\":\"result\",\"status\":\"PASS\",\"schema\":\"ssd_prefix_"
             "independent_fixed_program_audit_v1\",\"budget\":"
-         << B << ",\"writes\":" << W << ",\"W_pre\":" << WP << ",\"W_test\":" << W - WP
-         << ",\"processed_evictions\":" << E << ",\"warm_evictions\":" << EP
-         << ",\"peak_hbm\":" << H.peak << ",\"peak_ssd\":" << S.peak
+         << write_budget << ",\"writes\":" << blocks_written
+         << ",\"W_pre\":" << writes_before_evaluation
+         << ",\"W_test\":" << blocks_written - writes_before_evaluation
+         << ",\"processed_evictions\":" << eviction_total
+         << ",\"warm_evictions\":" << evictions_before_evaluation
+         << ",\"peak_hbm\":" << hbm_cache.peak << ",\"peak_ssd\":" << ssd_cache.peak
          << ",\"warm_hbm_sha256\":\"" << warmh << "\",\"warm_ssd_sha256\":\"" << warms
-         << "\",\"final_hbm_sha256\":\"" << H.digest() << "\",\"final_ssd_sha256\":\""
-         << S.digest() << "\",\"eviction_records_sha256\":\"" << eviction_hash.str()
+         << "\",\"final_hbm_sha256\":\"" << hbm_cache.digest() << "\",\"final_ssd_sha256\":\""
+         << ssd_cache.digest() << "\",\"eviction_records_sha256\":\"" << eviction_hash.str()
          << "\",\"hbm_signed_event_sha256\":\"" << event_hash.str()
          << "\",\"total\":" << total.json() << ",\"evaluation\":" << evaluation.json() << "}"
          << endl;

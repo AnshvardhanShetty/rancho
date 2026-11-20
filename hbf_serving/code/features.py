@@ -57,17 +57,23 @@ class RequestHistory:
             or user < 0
         ):
             raise ValueError("Original request order/IDs/clock required")
-        old = self.sessions.get(session)
-        position, age, gap = (
+        earlier_session = self.sessions.get(session)
+        position, session_age_seconds, previous_gap_seconds = (
             (0, 0.0, -1.0)
-            if old is None
-            else (old[0], (time_us - old[1]) / 1e6, (time_us - old[2]) / 1e6)
+            if earlier_session is None
+            else (
+                earlier_session[0],
+                (time_us - earlier_session[1]) / 1e6,
+                (time_us - earlier_session[2]) / 1e6,
+            )
         )
-        first = time_us if old is None else old[1]
-        self.sessions[session] = (position + 1, first, time_us)
+        first_arrival_us = time_us if earlier_session is None else earlier_session[1]
+        self.sessions[session] = (position + 1, first_arrival_us, time_us)
         self.next_row += 1
         self.last_time_us = time_us
-        return RequestInfo(row, time_us, user, position, age, gap)
+        return RequestInfo(
+            row, time_us, user, position, session_age_seconds, previous_gap_seconds
+        )
 
 
 @dataclass
@@ -90,47 +96,53 @@ class BlockHistory:
     def enter(self, block_id, request):
         if type(block_id) is not int or block_id < 0:
             raise ValueError("Invalid block ID")
-        b = self.blocks.setdefault(block_id, Block())
-        if b.born_us is not None:
+        block_history = self.blocks.setdefault(block_id, Block())
+        if block_history.born_us is not None:
             raise ValueError("HBM entry for already resident block")
-        b.born_us = request.time_us
+        block_history.born_us = request.time_us
 
     def touch_request(self, block_ids, request):
         # The physical replay counts a block once per request, even if repeated
         # at multiple prompt positions. No admission status enters this update.
         """Update block history once per block in this request"""
         for block_id in dict.fromkeys(block_ids):
-            b = self.blocks.get(block_id)
-            if b is None or b.born_us is None:
+            block_history = self.blocks.get(block_id)
+            if block_history is None or block_history.born_us is None:
                 raise ValueError("HBM touch for absent block")
-            if b.last_touch_row >= request.row or (
-                b.last is not None and b.last.time_us > request.time_us
+            if block_history.last_touch_row >= request.row or (
+                block_history.last is not None
+                and block_history.last.time_us > request.time_us
             ):
                 raise ValueError("Duplicate or reordered request history update")
-            b.last = request
-            b.touches += 1
-            b.last_touch_row = request.row
+            block_history.last = request
+            block_history.touches += 1
+            block_history.last_touch_row = request.row
 
     def eviction(self, block_id, request):
         """Get the history of a block as it leaves memory"""
-        b = self.blocks.get(block_id)
-        if b is None or b.last is None or b.born_us is None:
+        block_history = self.blocks.get(block_id)
+        if (
+            block_history is None
+            or block_history.last is None
+            or block_history.born_us is None
+        ):
             raise ValueError("Eviction lacks complete HBM prehistory")
         if (
-            b.last.row >= request.row
-            or b.last.time_us > request.time_us
-            or b.born_us > request.time_us
+            block_history.last.row >= request.row
+            or block_history.last.time_us > request.time_us
+            or block_history.born_us > request.time_us
         ):
             raise ValueError("Eviction history is not strictly prior to this request")
         # SSD uses the evicted block's last-touch request metadata, not the
         # request that happened to displace it. Counters precede this eviction.
         result = dict(
-            b.last.shared(),
-            prior_eviction_count=b.evictions,
-            prior_touch_count=b.touches,
-            seconds_in_HBM=(request.time_us - b.born_us) / 1e6,
-            seconds_since_last_touch=(request.time_us - b.last.time_us) / 1e6,
+            block_history.last.shared(),
+            prior_eviction_count=block_history.evictions,
+            prior_touch_count=block_history.touches,
+            seconds_in_HBM=(request.time_us - block_history.born_us) / 1e6,
+            seconds_since_last_touch=(request.time_us - block_history.last.time_us)
+            / 1e6,
         )
-        b.evictions += 1
-        b.born_us = None
+        block_history.evictions += 1
+        block_history.born_us = None
         return result

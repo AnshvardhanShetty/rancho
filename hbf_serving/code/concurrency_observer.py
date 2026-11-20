@@ -46,16 +46,28 @@ class Observer:
         host_schedule_ns = time.monotonic_ns() - started
         if self.observer_step is not None:
             raise ValueError("Only one synchronous observed GPU step is supported")
-        before = {r.req_id: r.num_computed_tokens for r in output.scheduled_new_reqs}
+        computed_tokens_before = {
+            request_record.req_id: request_record.num_computed_tokens
+            for request_record in output.scheduled_new_reqs
+        }
         cached = output.scheduled_cached_reqs
-        before.update(zip(cached.req_ids, cached.num_computed_tokens))
+        computed_tokens_before.update(zip(cached.req_ids, cached.num_computed_tokens))
         scheduled = output.num_scheduled_tokens
         decode = sum(
-            before[rid] >= len(self.requests[rid].prompt_token_ids) for rid in scheduled
+            computed_tokens_before[request_id]
+            >= len(self.requests[request_id].prompt_token_ids)
+            for request_id in scheduled
         )
         prefill_tokens = sum(
-            min(n, max(0, len(self.requests[rid].prompt_token_ids) - before[rid]))
-            for rid, n in scheduled.items()
+            min(
+                scheduled_tokens,
+                max(
+                    0,
+                    len(self.requests[request_id].prompt_token_ids)
+                    - computed_tokens_before[request_id],
+                ),
+            )
+            for request_id, scheduled_tokens in scheduled.items()
         )
         self.observer_step = dict(
             event="GPU_STEP",
@@ -76,7 +88,10 @@ class Observer:
             native_KV_allocation_refusals=len(self.observer_step_refusals),
             native_KV_allocation_refusals_total=self.observer_refusals,
             refused_request_ids=sorted(
-                {r["request_id"] for r in self.observer_step_refusals}
+                {
+                    request_record["request_id"]
+                    for request_record in self.observer_step_refusals
+                }
             ),
             refusal_samples=self.observer_step_refusals[:8],
         )
@@ -87,10 +102,10 @@ class Observer:
         host_start = time.monotonic_ns()
         result = super().update_from_output(*args, **kwargs)
         host_update_ns = time.monotonic_ns() - host_start
-        r = self.observer_step
-        if r is None:
+        step_record = self.observer_step
+        if step_record is None:
             raise ValueError("GPU completion lacks its observed scheduling step")
-        r.update(
+        step_record.update(
             end_ns=time.monotonic_ns(),
             host_update_ns=host_update_ns,
             preemptions_total=self.observer_preemptions,
@@ -98,22 +113,23 @@ class Observer:
         )
         if (
             self.observer_steps % 64 == 0
-            or r["resident_requests"] != self.observer_last_resident
+            or step_record["resident_requests"] != self.observer_last_resident
         ):
             pool = self.tiers.pool
-            r["tier_occupancy_sample"] = dict(
+            step_record["tier_occupancy_sample"] = dict(
                 active_HBM_pages=self.tiers.hbm_pages - self.tiers.hbm_free_count(),
                 active_HBF_pages=sum(
-                    b.ref_cnt > 0 for b in pool.blocks[self.tiers.hbm_pages + 1 :]
+                    block.ref_cnt > 0
+                    for block in pool.blocks[self.tiers.hbm_pages + 1 :]
                 ),
                 retained_HBF_pages=sum(
-                    b.block_hash is not None
-                    for b in pool.blocks[self.tiers.hbm_pages + 1 :]
+                    block.block_hash is not None
+                    for block in pool.blocks[self.tiers.hbm_pages + 1 :]
                 ),
             )
-        self.observer_file.write(json.dumps(r, separators=(",", ":")) + "\n")
+        self.observer_file.write(json.dumps(step_record, separators=(",", ":")) + "\n")
         self.observer_steps += 1
-        self.observer_last_resident = r["resident_requests"]
+        self.observer_last_resident = step_record["resident_requests"]
         self.observer_step = None
         if self.observer_steps % 64 == 0 or self.get_num_unfinished_requests() == 0:
             self.observer_file.flush()

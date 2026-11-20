@@ -42,22 +42,22 @@ class PhysicalTests(unittest.TestCase):
     def test_c7_observes_but_never_charges_unfunded_offer(self):
         w = Wallet("hbf", 100, 17, end_us=DAY, release_us=DAY)
         self.assertFalse(w.decide(0, 1, 10.0, distinct=8, cost=8, payment_limit=0))
-        self.assertEqual(w.W, 0)
+        self.assertEqual(w.blocks_written, 0)
         self.assertEqual(w.observations, 1)
         self.assertTrue(w.decide(1, 2, 10.0, distinct=8, cost=8, payment_limit=8))
-        self.assertEqual(w.W, 8)
+        self.assertEqual(w.blocks_written, 8)
         self.assertEqual(w.observations, 2)
 
     def test_zero_cost_reuse_does_not_consume_write_credit(self):
         w = Wallet("hbf", 100, 17, end_us=DAY, release_us=DAY)
         self.assertTrue(w.decide(0, 1, 10.0, distinct=8, cost=0, payment_limit=0))
-        self.assertEqual(w.W, 0)
+        self.assertEqual(w.blocks_written, 0)
 
     def test_daily_cap_survives_large_external_credit(self):
         w = Wallet("hbf", 2, 17, end_us=DAY, release_us=DAY)
         self.assertTrue(w.decide(0, 1, 10.0, distinct=2, cost=2, payment_limit=100))
         self.assertFalse(w.decide(1, 2, 10.0, distinct=1, cost=1, payment_limit=100))
-        self.assertEqual(w.W, 2)
+        self.assertEqual(w.blocks_written, 2)
 
 
 if __name__ == "__main__":

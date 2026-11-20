@@ -27,41 +27,49 @@ def commit_existing(tiers, pairs, *, gpu_completed):
     if gpu_completed is not True:
         raise ValueError("Prefill GPU work must complete before remapping")
     pairs = list(pairs)
-    if len(set(src for src, dst in pairs)) != len(pairs):
+    if len(set(source_page_id for source_page_id, target_page_id in pairs)) != len(
+        pairs
+    ):
         raise ValueError("Duplicate reuse source")
     pool = tiers.pool
     tables = tiers.managers[0].req_to_blocks
     references = {}
-    for src, dst in pairs:
-        if not tiers.is_hbm(src) or not tiers.is_hbf(dst):
+    for source_page_id, target_page_id in pairs:
+        if not tiers.is_hbm(source_page_id) or not tiers.is_hbf(target_page_id):
             raise ValueError("Wrong reuse tier")
-        old, new = pool.blocks[src], pool.blocks[dst]
-        refs = [
-            (rid, i)
-            for rid, blocks in tables.items()
-            for i, b in enumerate(blocks)
-            if b is old
+        source_block, target_block = (
+            pool.blocks[source_page_id],
+            pool.blocks[target_page_id],
+        )
+        active_references = [
+            (request_id, block_position)
+            for request_id, blocks in tables.items()
+            for block_position, block in enumerate(blocks)
+            if block is source_block
         ]
         if (
-            old.block_hash is None
-            or old.block_hash != new.block_hash
-            or not refs
-            or old.ref_cnt != len(refs)
+            source_block.block_hash is None
+            or source_block.block_hash != target_block.block_hash
+            or not active_references
+            or source_block.ref_cnt != len(active_references)
         ):
             raise ValueError("Existing-copy identity or source references changed")
-        references[src] = refs
-    for src, dst in pairs:
-        old, new = pool.blocks[src], pool.blocks[dst]
-        if new.ref_cnt == 0:
-            pool.free_block_queue.remove(new)
-        pool._maybe_evict_cached_block(old)
-        refs = references[src]
-        for rid, i in refs:
-            tables[rid][i] = new
-            tiers.dirty_requests.add(rid)
-        new.ref_cnt += len(refs)
-        old.ref_cnt = 0
-        pool.free_block_queue.prepend_n([old])
+        references[source_page_id] = active_references
+    for source_page_id, target_page_id in pairs:
+        source_block, target_block = (
+            pool.blocks[source_page_id],
+            pool.blocks[target_page_id],
+        )
+        if target_block.ref_cnt == 0:
+            pool.free_block_queue.remove(target_block)
+        pool._maybe_evict_cached_block(source_block)
+        active_references = references[source_page_id]
+        for request_id, block_position in active_references:
+            tables[request_id][block_position] = target_block
+            tiers.dirty_requests.add(request_id)
+        target_block.ref_cnt += len(active_references)
+        source_block.ref_cnt = 0
+        pool.free_block_queue.prepend_n([source_block])
     return dict(
         reused_HBF_pages=len(pairs), freed_HBM_pages=len(pairs), additional_writes=0
     )

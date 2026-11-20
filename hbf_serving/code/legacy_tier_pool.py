@@ -87,34 +87,44 @@ class TierPool:
         tables = self.managers[0].req_to_blocks
         references = {}
         # Validate the entire transaction before changing a hash or a table.
-        for src, dst in pairs:
-            if not self.is_hbm(src) or not self.is_hbf(dst):
+        for source_page_id, target_page_id in pairs:
+            if not self.is_hbm(source_page_id) or not self.is_hbf(target_page_id):
                 raise ValueError("Migration must be from HBM to HBF")
-            old, new = self.pool.blocks[src], self.pool.blocks[dst]
-            if dst not in free_ids or new.ref_cnt != 0:
+            source_block, target_block = (
+                self.pool.blocks[source_page_id],
+                self.pool.blocks[target_page_id],
+            )
+            if target_page_id not in free_ids or target_block.ref_cnt != 0:
                 raise ValueError("HBF destination has an active reader")
-            refs = [
-                (rid, i)
-                for rid, blocks in tables.items()
-                for i, block in enumerate(blocks)
-                if block is old
+            active_references = [
+                (request_id, block_position)
+                for request_id, blocks in tables.items()
+                for block_position, block in enumerate(blocks)
+                if block is source_block
             ]
-            if not refs or old.ref_cnt != len(refs) or old.block_hash is None:
+            if (
+                not active_references
+                or source_block.ref_cnt != len(active_references)
+                or source_block.block_hash is None
+            ):
                 raise ValueError(
                     "Source references/hash do not match immutable prefix state"
                 )
-            references[src] = refs
-        for src, dst in pairs:
-            old, new = self.pool.blocks[src], self.pool.blocks[dst]
-            self.pool.free_block_queue.remove(new)
-            self.pool._maybe_evict_cached_block(new)
-            self.pool.move_block_hashes(old, new)
-            refs = references[src]
-            for rid, at in refs:
-                tables[rid][at] = new
-                self.dirty_requests.add(rid)
-            new.ref_cnt, old.ref_cnt = len(refs), 0
-            self.pool.free_block_queue.prepend_n([old])
+            references[source_page_id] = active_references
+        for source_page_id, target_page_id in pairs:
+            source_block, target_block = (
+                self.pool.blocks[source_page_id],
+                self.pool.blocks[target_page_id],
+            )
+            self.pool.free_block_queue.remove(target_block)
+            self.pool._maybe_evict_cached_block(target_block)
+            self.pool.move_block_hashes(source_block, target_block)
+            active_references = references[source_page_id]
+            for request_id, block_position in active_references:
+                tables[request_id][block_position] = target_block
+                self.dirty_requests.add(request_id)
+            target_block.ref_cnt, source_block.ref_cnt = len(active_references), 0
+            self.pool.free_block_queue.prepend_n([source_block])
         return dict(
             migrated_pages=len(pairs),
             freed_HBM_pages=len(pairs),
@@ -125,10 +135,12 @@ class TierPool:
         """Update the page locations the worker sees"""
         cached = output.scheduled_cached_reqs
         tables = self.managers[0].req_to_blocks
-        for i, rid in enumerate(cached.req_ids):
-            if rid in self.dirty_requests:
-                cached.new_block_ids[i] = ([b.block_id for b in tables[rid]],)
-                cached.resumed_req_ids.add(rid)
-                self.dirty_requests.remove(rid)
-        for req in output.scheduled_new_reqs:
-            self.dirty_requests.discard(req.req_id)
+        for request_index, request_id in enumerate(cached.req_ids):
+            if request_id in self.dirty_requests:
+                cached.new_block_ids[request_index] = (
+                    [b.block_id for b in tables[request_id]],
+                )
+                cached.resumed_req_ids.add(request_id)
+                self.dirty_requests.remove(request_id)
+        for scheduled_request in output.scheduled_new_reqs:
+            self.dirty_requests.discard(scheduled_request.req_id)

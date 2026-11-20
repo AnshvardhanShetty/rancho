@@ -80,7 +80,7 @@ class SyntheticTrainingData(model_training.RequestData):
                 earlier_offers_by_block.setdefault(block, []).append(request_index)
 
 
-def fit_research_model(data, cut, settings):
+def fit_research_model(data, cutoff_us, settings):
     """Call the research fit, silencing only LightGBM's renamed-argument notice."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -89,7 +89,7 @@ def fit_research_model(data, cut, settings):
             category=FutureWarning,
             module="lightgbm.sklearn",
         )
-        return model_training.fit_tree_model(data, cut, settings)
+        return model_training.fit_tree_model(data, cutoff_us, settings)
 
 
 def initial_predictions(data, settings):

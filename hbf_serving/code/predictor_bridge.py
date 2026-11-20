@@ -3,16 +3,27 @@
 import numpy as np
 
 
-def encode(X, vocab):
+def encode(feature_table, categories_by_column):
     """Use the model's saved user codes for incoming requests"""
-    z = np.where(np.isfinite(X) & (X >= 0), X, np.nan)
-    for i, values in enumerate(vocab):
-        if values is None:
+    encoded_features = np.where(
+        np.isfinite(feature_table) & (feature_table >= 0), feature_table, np.nan
+    )
+    for column, known_categories in enumerate(categories_by_column):
+        if known_categories is None:
             continue
-        z[:, i] = -1
-        if len(values):
-            at = np.searchsorted(values, X[:, i])
-            good = at < len(values)
-            good &= values[np.minimum(at, len(values) - 1)] == X[:, i]
-            z[good, i] = at[good]
-    return z
+        encoded_features[:, column] = -1
+        if len(known_categories):
+            category_indices = np.searchsorted(
+                known_categories, feature_table[:, column]
+            )
+            known_category_mask = category_indices < len(known_categories)
+            known_category_mask &= (
+                known_categories[
+                    np.minimum(category_indices, len(known_categories) - 1)
+                ]
+                == feature_table[:, column]
+            )
+            encoded_features[known_category_mask, column] = category_indices[
+                known_category_mask
+            ]
+    return encoded_features

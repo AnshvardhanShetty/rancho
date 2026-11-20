@@ -71,14 +71,17 @@ def make_stream(setup, folder):
         "features"
     ]
     history_clock = RequestHistory()
-    gap = setup["logical_gap_seconds"] * 1_000_000
+    request_gap_us = setup["logical_gap_seconds"] * 1_000_000
     policy_times = [
-        FIT["cut_us"] - (history_count - i) * gap for i in range(history_count)
+        FIT["cut_us"] - (history_count - i) * request_gap_us
+        for i in range(history_count)
     ]
     policy_times += [r["policy_us"] for r in records(setup)[1]]
     feature_rows = []
-    for i, now in enumerate(policy_times):
-        info = history_clock.arrival(i, now, sessions[i], setup["synthetic_user"])
+    for i, arrival_us in enumerate(policy_times):
+        info = history_clock.arrival(
+            i, arrival_us, sessions[i], setup["synthetic_user"]
+        )
         feature_rows.append([info.shared()[name] for name in names])
     features = np.array(feature_rows, dtype=float)
     expected_features = np.array(
@@ -113,18 +116,18 @@ def make_stream(setup, folder):
     )
 
 
-def fit_predictor(setup, data, folder, hbm, hbf):
+def fit_predictor(setup, data, folder, hbm_pages, hbf_pages):
     """Collect suffix offers using the arm's capacities and one-capacity allowance."""
     settings = json.loads(
         (ROOT / "hbf_simulator/model/model_settings.json").read_text()
     )
-    n = data["history_count"]
+    training_request_count = data["history_count"]
     names = settings["features"]
     initial = SyntheticTrainingData(
         data["history_rows"],
         data["history_times"],
         data["history_sessions"],
-        data["features"][:n],
+        data["features"][:training_request_count],
         names,
     )
     predicted = initial_predictions(initial, settings)
@@ -137,8 +140,8 @@ def fit_predictor(setup, data, folder, hbm, hbf):
         "i",
         (block for row in data["history_rows"] for block in row),
     )
-    write_array(folder / "training_zero", "B", [0] * n)
-    write_array(folder / "training_eligible", "B", [1] * n)
+    write_array(folder / "training_zero", "B", [0] * training_request_count)
+    write_array(folder / "training_eligible", "B", [1] * training_request_count)
     write_array(folder / "training_predictions", "d", predicted)
     shadow = folder / "training_shadow"
     start = data["history_times"][0]
@@ -146,7 +149,7 @@ def fit_predictor(setup, data, folder, hbm, hbf):
         "hbm_only_readable_prefix",
         stream,
         data["block_count"],
-        hbm,
+        hbm_pages,
         start,
         FIT["cut_us"],
         shadow,
@@ -155,20 +158,20 @@ def fit_predictor(setup, data, folder, hbm, hbf):
     run_cache_simulation(
         stream,
         data["block_count"],
-        hbf,
-        hbm,
+        hbf_pages,
+        hbm_pages,
         folder / "training_zero",
         folder / "training_eligible",
         folder / "training_predictions",
         setup["repetition"],
-        hbf,
+        hbf_pages,
         start,
         FIT["cut_us"],
         shadow,
         output,
     )
     observed = np.fromfile(output / "rows.i64", dtype="<i8").reshape(-1, 10)
-    if len(observed) != n:
+    if len(observed) != training_request_count:
         raise RuntimeError("Training replay omitted earlier requests")
     offers = [
         blocks[int(row[3]) :] for blocks, row in zip(data["history_rows"], observed)
@@ -177,13 +180,13 @@ def fit_predictor(setup, data, folder, hbm, hbf):
         data["history_rows"],
         data["history_times"],
         data["history_sessions"],
-        data["features"][:n],
+        data["features"][:training_request_count],
         names,
         offered=offers,
     )
     model, record = fit_research_model(final, FIT["cut_us"], settings)
-    scores = [0.0] * n + model_training.predict_reuse(
-        model, data["features"][n:]
+    scores = [0.0] * training_request_count + model_training.predict_reuse(
+        model, data["features"][training_request_count:]
     ).tolist()
     write_array(folder / "predictions", "d", scores)
     _, labels = final.training_examples(FIT["cut_us"])
@@ -239,37 +242,37 @@ def retained_baseline(setup, data):
     )
 
 
-def replay_arm(setup, data, folder, hbm, ratio):
+def replay_arm(setup, data, folder, hbm_pages, ratio):
     """Run the real C++ admission controller and count measured request outputs."""
-    hbf = ratio * (setup["baseline_pages"] - hbm)
-    training = fit_predictor(setup, data, folder, hbm, hbf)
+    hbf_pages = ratio * (setup["baseline_pages"] - hbm_pages)
+    training = fit_predictor(setup, data, folder, hbm_pages, hbf_pages)
     shadow = folder / "shadow"
     run_program(
         "hbm_only_readable_prefix",
         data["stream"],
         data["block_count"],
-        hbm,
+        hbm_pages,
         data["start"],
         data["end"],
         shadow,
     )
-    out = folder / "replay"
+    replay_output = folder / "replay"
     counters = run_cache_simulation(
         data["stream"],
         data["block_count"],
-        hbf,
-        hbm,
+        hbf_pages,
+        hbm_pages,
         folder.parent / "zero",
         folder.parent / "eligible",
         folder / "predictions",
         setup["repetition"],
-        hbf,
+        hbf_pages,
         data["start"],
         data["end"],
         shadow,
-        out,
+        replay_output,
     )
-    rows = np.fromfile(out / "rows.i64", dtype="<i8").reshape(-1, 10)
+    rows = np.fromfile(replay_output / "rows.i64", dtype="<i8").reshape(-1, 10)
     rows = rows[data["history_count"] + setup["groups"] :]
     if len(rows) != setup["requests"]:
         raise RuntimeError("Measured request count differs from the workload")
@@ -281,19 +284,19 @@ def replay_arm(setup, data, folder, hbm, ratio):
         if int(row[4] + row[5]) != sum(mask[: int(row[3])]):
             raise RuntimeError("Independent prefix recount differs from C++ hits")
     writes = counters["writes"]
-    if writes > hbf:
+    if writes > hbf_pages:
         raise RuntimeError("Flash write allowance exceeded")
     return dict(
         policy=f"RANCHO {ratio}:1",
-        hbm_blocks=hbm,
-        hbf_blocks=hbf,
-        hbm_replaced_percent=100 * (1 - hbm / setup["baseline_pages"]),
+        hbm_blocks=hbm_pages,
+        hbf_blocks=hbf_pages,
+        hbm_replaced_percent=100 * (1 - hbm_pages / setup["baseline_pages"]),
         eligible_accesses=eligible,
         cache_hits=hits,
         hit_ratio_percent=100 * hits / eligible,
         prefill_blocks_recomputed=int(sum(row[2] - row[3] for row in rows)),
         flash_blocks_written=writes,
-        write_allowance_blocks=hbf,
+        write_allowance_blocks=hbf_pages,
         training=training,
     )
 
@@ -306,14 +309,14 @@ def run_demo():
     if args.output and args.output.exists():
         parser.error("--output must name a new file")
     setup = json.loads((ROOT / "hbf_serving/synthetic_setup.json").read_text())
-    with tempfile.TemporaryDirectory() as tmp:
-        folder = Path(tmp)
+    with tempfile.TemporaryDirectory() as temp_directory:
+        folder = Path(temp_directory)
         data = make_stream(setup, folder)
         results = [retained_baseline(setup, data)]
-        for hbm, ratio in [(320, 8), (144, 16)]:
-            arm = folder / f"rancho{ratio}"
-            arm.mkdir()
-            results.append(replay_arm(setup, data, arm, hbm, ratio))
+        for hbm_pages, ratio in [(320, 8), (144, 16)]:
+            arm_output = folder / f"rancho{ratio}"
+            arm_output.mkdir()
+            results.append(replay_arm(setup, data, arm_output, hbm_pages, ratio))
     print("CPU cache replay of the bundled synthetic serving prompts")
     print(f"{setup['groups']} warm-up requests; {setup['requests']} measured requests")
     print(

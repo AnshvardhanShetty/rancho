@@ -237,13 +237,15 @@ class Connector(KVConnectorBase_V1):
     def stage_lookup(self, request):
         """Preserve needed KV before allocation can recycle its source."""
         staged = []
-        for key, local in self.pending.get(request.request_id, (0, []))[1]:
-            if local is None:
-                payload = store.read(key)
+        for block_key, local_hbm_page in self.pending.get(request.request_id, (0, []))[
+            1
+        ]:
+            if local_hbm_page is None:
+                payload = store.read(block_key)
             else:
                 payload = store.buffer.new_empty(store.page_bytes)
-                store.copy(local, payload, True)
-            staged.append((key, local, payload))
+                store.copy(local_hbm_page, payload, True)
+            staged.append((block_key, local_hbm_page, payload))
         self.staged = staged
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
@@ -252,14 +254,14 @@ class Connector(KVConnectorBase_V1):
         if not num_external_tokens:
             return
         assert num_external_tokens == 16 * len(matches) == 16 * len(self.staged)
-        dest = blocks.get_block_ids()[0][begin : begin + len(matches)]
-        assert len(dest) == len(matches)
-        for page, (key, local, payload) in zip(dest, self.staged):
+        destination_pages = blocks.get_block_ids()[0][begin : begin + len(matches)]
+        assert len(destination_pages) == len(matches)
+        for page, (key, local_hbm_page, payload) in zip(destination_pages, self.staged):
             if page in self.destinations and self.destinations[page] != key:
                 raise RuntimeError("Conflicting restore to a single HBM page")
             self.destinations[page] = key
             loads[page] = payload
-            if local is None:
+            if local_hbm_page is None:
                 if key in store.slots:
                     store.slots.move_to_end(key)
                 self.restored += 1
@@ -303,29 +305,29 @@ class SSDScheduler(Scheduler):
             raise RuntimeError(
                 "Requires one synchronous UniProcExecutor with registered local KV"
             )
-        c = self.connector
+        connector = self.connector
         manager = self.kv_cache_manager
-        c.pool = manager.block_pool
-        if c.pool.hash_block_size != 16:
+        connector.pool = manager.block_pool
+        if connector.pool.hash_block_size != 16:
             raise ValueError("Expected 16-token hashes")
-        evict = c.pool._maybe_evict_cached_block
+        evict = connector.pool._maybe_evict_cached_block
 
         def before_reuse(block):
-            if block.block_id in c.resident:
-                c.evict(block)
+            if block.block_id in connector.resident:
+                connector.evict(block)
             return evict(block)
 
-        c.pool._maybe_evict_cached_block = before_reuse
+        connector.pool._maybe_evict_cached_block = before_reuse
         allocate = manager.allocate_slots
 
         def tracked_allocate(request, *args, **kwargs):
-            c.begin_allocation(request)
-            c.stage_lookup(request)
+            connector.begin_allocation(request)
+            connector.stage_lookup(request)
             result = allocate(request, *args, **kwargs)
             if result is not None:
-                c.record_pages(request, manager)
+                connector.record_pages(request, manager)
             else:
-                c.staged = []
+                connector.staged = []
             return result
 
         manager.allocate_slots = tracked_allocate

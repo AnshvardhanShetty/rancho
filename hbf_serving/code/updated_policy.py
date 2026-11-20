@@ -18,43 +18,56 @@ class BandWallet(Wallet):
         """Estimate affordable demand, then update each populated cost group’s cutoff."""
         super().recompute(now)
         # Estimate future write demand from recent positive-cost offers.
-        values = [v for v in self.ring if v.cost > 0 and math.isfinite(v.score)]
+        values = [
+            offer
+            for offer in self.offer_history
+            if offer.cost > 0 and math.isfinite(offer.score)
+        ]
         if len(values) < 100:
             return
-        span = max(
+        history_seconds = max(
             1.0,
-            (max(v.time_us for v in self.ring) - min(v.time_us for v in self.ring))
+            (
+                max(offer.time_us for offer in self.offer_history)
+                - min(offer.time_us for offer in self.offer_history)
+            )
             / 1e6,
         )
         demand = (
             len(values)
-            / span
+            / history_seconds
             * max(1.0, (self.end_us - now) / 1e6)
-            * (sum(v.cost for v in values) / len(values))
+            * (sum(offer.cost for offer in values) / len(values))
         )
-        fraction = min(1.0, max(0.0, (self.cap - self.W) / max(1e-9, demand)))
+        fraction = min(
+            1.0,
+            max(
+                0.0,
+                (self.current_spending_limit - self.blocks_written) / max(1e-9, demand),
+            ),
+        )
         # Find score cutoffs within groups of similarly priced writes.
         groups = {}
-        self.bandcuts = {}
-        for v in values:
-            groups.setdefault(v.cost.bit_length() - 1, []).append(v)
-        for key, group in groups.items():
+        self.cutoffs_by_cost_band = {}
+        for offer in values:
+            groups.setdefault(offer.cost.bit_length() - 1, []).append(offer)
+        for cost_band, group in groups.items():
             if len(group) < 100:
                 continue
             if fraction in (0.0, 1.0):
-                self.bandcuts[key] = (
+                self.cutoffs_by_cost_band[cost_band] = (
                     (math.inf, 0.0) if fraction == 0 else (-math.inf, 1.0)
                 )
                 continue
             weights = {}
-            for v in group:
-                weights[v.score] = weights.get(v.score, 0) + v.cost
+            for offer in group:
+                weights[offer.score] = weights.get(offer.score, 0) + offer.cost
             wanted = fraction * sum(weights.values())
             above = 0
             for score in sorted(weights, reverse=True):
                 equal = weights[score]
                 if above + equal >= wanted:
-                    self.bandcuts[key] = (
+                    self.cutoffs_by_cost_band[cost_band] = (
                         score,
                         max(0.0, min(1.0, (wanted - above) / equal)),
                     )
@@ -84,16 +97,17 @@ class BandWallet(Wallet):
         )
         # Select the cutoff; coin controls ties at exactly that score.
         cutoff, coin = (
-            getattr(self, "bandcuts", {}).get(
-                cost.bit_length() - 1, (self.threshold, self.tie)
+            getattr(self, "cutoffs_by_cost_band", {}).get(
+                cost.bit_length() - 1, (self.threshold, self.tie_probability)
             )
-            if cost and self.have
-            else (self.threshold, self.tie)
+            if cost and self.cutoff_ready
+            else (self.threshold, self.tie_probability)
         )
         behind = bool(
             cost
-            and self.have
-            and self.W * (self.end_us - split) < self.budget * (now - split)
+            and self.cutoff_ready
+            and self.blocks_written * (self.end_us - split)
+            < self.budget * (now - split)
         )
         if behind:
             cutoff *= 0.5
@@ -102,10 +116,10 @@ class BandWallet(Wallet):
             distinct
             and (
                 not cost
-                or cost <= self.budget - self.W
-                and cost <= self.cap - self.W
+                or cost <= self.budget - self.blocks_written
+                and cost <= self.current_spending_limit - self.blocks_written
                 and (
-                    not self.have
+                    not self.cutoff_ready
                     or score > cutoff
                     or score == cutoff
                     and hash01(event, self.seed ^ 0x5BF03635) < coin
@@ -120,7 +134,7 @@ class BandWallet(Wallet):
             score=score if math.isfinite(score) else str(score),
             cutoff=cutoff if math.isfinite(cutoff) else str(cutoff),
             tie=float(coin),
-            have_threshold=bool(self.have),
+            have_threshold=bool(self.cutoff_ready),
             half_behind=behind,
             history_multiplier=multiplier,
             past_filtered_reuses=past,
@@ -130,7 +144,7 @@ class BandWallet(Wallet):
         # Record every offer, including declines; charge accepted writes only.
         self._observe(Observation(event, score, cost, now, distinct))
         if admit:
-            self.W += cost
+            self.blocks_written += cost
         return admit, details
 
 
@@ -155,14 +169,16 @@ class FilteredHistory:
             self.cache.move_to_end(key)
             readable += 1
         suffix = list(dict.fromkeys(keys[suffix_begin:]))
-        past = sum(self.counts.get(k, 0) for k in suffix)
+        past_filtered_reuses = sum(
+            self.counts.get(block_hash, 0) for block_hash in suffix
+        )
         pending = []
         seen = set()
-        for j, key in enumerate(keys):
+        for position, key in enumerate(keys):
             if key in seen:
                 continue
             seen.add(key)
-            if j >= readable and self.stamps.get(key) == session:
+            if position >= readable and self.stamps.get(key) == session:
                 pending.append(key)
         return dict(
             request_id=request_id,
@@ -170,23 +186,23 @@ class FilteredHistory:
             session=session,
             suffix_begin=suffix_begin,
             shadow_cached_pages=readable,
-            past_filtered_reuses=past,
+            past_filtered_reuses=past_filtered_reuses,
             pending=pending,
         )
 
-    def commit(self, t):
+    def commit(self, reuse_history):
         """Apply the staged observations after the write decision."""
-        for key in t["keys"][t["shadow_cached_pages"] :]:
+        for key in reuse_history["keys"][reuse_history["shadow_cached_pages"] :]:
             if self.capacity:
                 self.cache[key] = True
                 self.cache.move_to_end(key)
                 if len(self.cache) > self.capacity:
                     self.cache.popitem(last=False)
-        for key in t["pending"]:
+        for key in reuse_history["pending"]:
             self.counts[key] = self.counts.get(key, 0) + 1
-        for key in t["keys"]:
-            self.stamps[key] = t["session"]
-        self.processed.add(t["request_id"])
+        for key in reuse_history["keys"]:
+            self.stamps[key] = reuse_history["session"]
+        self.processed.add(reuse_history["request_id"])
 
 
 class UpdatedAdmission:
@@ -198,9 +214,12 @@ class UpdatedAdmission:
         from pathlib import Path
         import hashlib, json
 
-        raw = Path(config["controller_history"]).read_bytes()
-        assert hashlib.sha256(raw).hexdigest() == config["controller_history_sha256"]
-        receipt = json.loads(raw)
+        controller_start_bytes = Path(config["controller_history"]).read_bytes()
+        assert (
+            hashlib.sha256(controller_start_bytes).hexdigest()
+            == config["controller_history_sha256"]
+        )
+        receipt = json.loads(controller_start_bytes)
         assert (
             receipt["cold"]
             and receipt["observations"] == receipt["paid_pages"] == 0
@@ -257,7 +276,7 @@ class UpdatedAdmission:
             admit=admit,
             prediction=prediction,
             paid_cost=cost if admit else 0,
-            total_paid_writes=self.wallet.W,
+            total_paid_writes=self.wallet.blocks_written,
             fit_cut_us=CUT,
             model_sha256=self.model.model_sha256,
             predictor_cpu_ns=predictor_ns,

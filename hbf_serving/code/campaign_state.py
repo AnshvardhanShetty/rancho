@@ -12,9 +12,9 @@ def read_run_json(output_directory, filename, earlier_filename):
     return json.loads(path.read_text())
 
 
-def save(path, obj):
+def save(path, record):
     """Write JSON to a temporary file, then replace the destination."""
     path = Path(path)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(obj, indent=2, allow_nan=False) + "\n")
+    temporary.write_text(json.dumps(record, indent=2, allow_nan=False) + "\n")
     temporary.replace(path)

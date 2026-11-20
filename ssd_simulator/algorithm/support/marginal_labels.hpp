@@ -27,49 +27,60 @@ struct Marginal {
       owner[b] = int(next++);
   }
 
-  void measure(const Cache &h, const Cache &s, const Map<int32_t> &ids, size_t off, int cap,
-               int prefix, int r) {
-    auto accessible = [&](int b) { return h.has(b) || s.has(b); };
+  void measure(const Cache &hbm_cache, const Cache &ssd_cache, const Map<int32_t> &block_ids,
+               size_t request_offset, int lookup_limit, int reference_prefix,
+               int request_index) {
+    auto accessible = [&](int block_id) {
+      return hbm_cache.has(block_id) || ssd_cache.has(block_id);
+    };
     // Recompute a sample of the contributions by explicitly forcing one
     // identity present and absent. Duplicate positions carry one identity.
-    auto record = [&](int b, int start, int end) {
-      int i = owner[b];
-      if (i < 0 || last_accounted[i] == r)
+    auto record = [&](int block_id, int start, int prefix_end) {
+      int sample_index = owner[block_id];
+      if (sample_index < 0 || last_accounted[sample_index] == request_index)
         return;
-      last_accounted[i] = r;
-      uint64_t gain = credited_before(off + end) - credited_before(off + start);
-      if ((r % 257) == 0) {
-        int with = 0, without = 0;
-        while (with < cap && (ids[off + with] == b || accessible(ids[off + with])))
-          ++with;
-        while (without < cap && (ids[off + without] != b || h.has(b)) &&
-               accessible(ids[off + without]))
-          ++without;
-        ck(credited_before(off + with) - credited_before(off + without) == gain,
+      last_accounted[sample_index] = request_index;
+      uint64_t gain = credited_before(request_offset + prefix_end) -
+                      credited_before(request_offset + start);
+      if ((request_index % 257) == 0) {
+        int prefix_with_block = 0, prefix_without_block = 0;
+        while (prefix_with_block < lookup_limit &&
+               (block_ids[request_offset + prefix_with_block] == block_id ||
+                accessible(block_ids[request_offset + prefix_with_block])))
+          ++prefix_with_block;
+        while (prefix_without_block < lookup_limit &&
+               (block_ids[request_offset + prefix_without_block] != block_id ||
+                hbm_cache.has(block_id)) &&
+               accessible(block_ids[request_offset + prefix_without_block]))
+          ++prefix_without_block;
+        ck(credited_before(request_offset + prefix_with_block) -
+                   credited_before(request_offset + prefix_without_block) ==
+               gain,
            "toggle verification");
         ++tests;
       }
       if (gain) {
         ck(gain <= INT32_MAX, "gain overflow");
-        int32_t row[3] = {r, i, int32_t(gain)};
+        int32_t row[3] = {request_index, sample_index, int32_t(gain)};
         events.write((char *)row, sizeof(row));
       }
     };
     // Removing an SSD-dependent block breaks the reachable prefix at
     // its first occurrence. Everything through the original prefix end counts.
-    for (int j = 0; j < prefix; ++j) {
-      int b = ids[off + j];
-      if (owner[b] >= 0 && !h.has(b))
-        record(b, j, prefix);
+    for (int j = 0; j < reference_prefix; ++j) {
+      int block_id = block_ids[request_offset + j];
+      if (owner[block_id] >= 0 && !hbm_cache.has(block_id))
+        record(block_id, j, reference_prefix);
     }
-    if (prefix == cap)
+    if (reference_prefix == lookup_limit)
       return;
-    int b = ids[off + prefix];
-    if (owner[b] < 0)
+    int block_id = block_ids[request_offset + reference_prefix];
+    if (owner[block_id] < 0)
       return;
-    int end = prefix + 1;
-    while (end < cap && (ids[off + end] == b || accessible(ids[off + end])))
-      ++end;
-    record(b, prefix, end);
+    int prefix_end = reference_prefix + 1;
+    while (prefix_end < lookup_limit && (block_ids[request_offset + prefix_end] == block_id ||
+                                         accessible(block_ids[request_offset + prefix_end])))
+      ++prefix_end;
+    record(block_id, reference_prefix, prefix_end);
   }
 };
