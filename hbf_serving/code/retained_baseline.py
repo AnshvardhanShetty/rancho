@@ -14,7 +14,7 @@ class RetainedPrefixScheduler(DirectScheduler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        cfg = self.direct_plan
+        cfg = self.engine_settings
         assert cfg["baseline_prefix_retention"] is True and cfg["HBF_pages"] == 0
         assert cfg["shared_prefix_tokens"] % cfg["block_tokens"] == 0
         self.shared_pages = cfg["shared_prefix_tokens"] // cfg["block_tokens"]
@@ -54,7 +54,7 @@ class RetainedPrefixScheduler(DirectScheduler):
         if added:
             invariant = self.retention.verify()
             log_event(
-                self.direct_plan,
+                self.engine_settings,
                 "retention.jsonl",
                 dict(
                     event="PREFIX_PAGES_RETAINED",
@@ -69,7 +69,9 @@ class RetainedPrefixScheduler(DirectScheduler):
         # Empty engine queues can occur between rate-paced arrivals. Only finish
         # validation after every measured request has computed its shared prefix
         # and all active work has completed; never reset or release retained KV.
-        all_requests_seen = len(self.retention_seen) == self.direct_plan["n_requests"]
+        all_requests_seen = (
+            len(self.retention_seen) == self.engine_settings["n_requests"]
+        )
         if (
             all_requests_seen
             and self.get_num_unfinished_requests() == 0
@@ -78,7 +80,7 @@ class RetainedPrefixScheduler(DirectScheduler):
             invariant = self.retention.verify()
             assert invariant["retained_pages"] == invariant["expected_shared_pages"]
             log_event(
-                self.direct_plan,
+                self.engine_settings,
                 "retention.jsonl",
                 dict(
                     event="RETENTION_COMPLETE", step=self.retention_steps, **invariant

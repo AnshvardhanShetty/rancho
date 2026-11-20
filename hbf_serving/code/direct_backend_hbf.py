@@ -201,7 +201,7 @@ class HBFScheduler(DirectScheduler):
                     meta.pairs, gpu_completed=meta.gpu_completed
                 )
                 log_event(
-                    self.direct_plan,
+                    self.engine_settings,
                     "scheduler.jsonl",
                     dict(event="PUBLISHED_NATIVE_HBF", **result),
                 )
@@ -214,7 +214,7 @@ class HBFScheduler(DirectScheduler):
                     self.tiers, reuse, gpu_completed=meta.gpu_completed
                 )
                 log_event(
-                    self.direct_plan,
+                    self.engine_settings,
                     "scheduler.jsonl",
                     dict(event="REUSED_NATIVE_HBF", **result),
                 )

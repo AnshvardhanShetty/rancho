@@ -19,17 +19,17 @@ def main():
     """Supply the local SSD path and launch a fresh engine process."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--plan", type=Path, default=HERE / "examples/fixture_accept.json"
+        "--settings", "--plan", type=Path, default=HERE / "examples/fixture_accept.json"
     )
     parser.add_argument("--ssd-directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    plan = json.loads(args.plan.read_text())
-    plan["ssd_directory"] = str(args.ssd_directory.resolve(strict=True))
+    serving_settings = json.loads(args.settings.read_text())
+    serving_settings["ssd_directory"] = str(args.ssd_directory.resolve(strict=True))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    configured = output / "input.json"
-    configured.write_text(json.dumps(plan, indent=2) + "\n")
+    serving_inputs_file = output / "serving_inputs.json"
+    serving_inputs_file.write_text(json.dumps(serving_settings, indent=2) + "\n")
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(HERE / "code"), str(SHARED), env.get("PYTHONPATH", "")]
@@ -40,7 +40,7 @@ def main():
         [
             sys.executable,
             str(HERE / "code/serve.py"),
-            str(configured),
+            str(serving_inputs_file),
             str(output / "cell"),
         ],
         env=env,

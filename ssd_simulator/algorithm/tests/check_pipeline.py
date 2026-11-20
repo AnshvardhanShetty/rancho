@@ -10,7 +10,7 @@ import numpy as np
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from ssd_simulator.algorithm.training_data import EDT
+from ssd_simulator.algorithm.training_data import EVICTION_RECORD_DTYPE
 from ssd_simulator.algorithm.settings import HOUR
 from ssd_simulator.algorithm.run import prepare, replay
 
@@ -75,9 +75,9 @@ with tempfile.TemporaryDirectory(prefix="ssd-full-pipeline-") as tmp:
         check=True,
         capture_output=True,
     )
-    cold = np.fromfile(root / "cold_evictions", EDT)
+    cold = np.fromfile(root / "cold_evictions", EVICTION_RECORD_DTYPE)
     assert len(cold) > 0
-    train = np.zeros(ntrain, dtype=EDT)
+    train = np.zeros(ntrain, dtype=EVICTION_RECORD_DTYPE)
     train["row"] = np.arange(ntrain)
     train["last"] = np.maximum(0, train["row"] - 1)
     train["born"] = train["last"]

@@ -14,7 +14,14 @@ from pathlib import Path
 import numpy as np
 
 from tree_encoding import build_category_values, encode_tree_features
-from file_helpers import CODE, ROOT, read_json, write_json, file_fingerprint
+from file_helpers import (
+    MODEL_DIRECTORY,
+    SIMULATOR_DIRECTORY,
+    file_fingerprint,
+    read_json,
+    read_training_json,
+    write_json,
+)
 
 # Request times are microseconds. Both names denote one hour in these units.
 HOUR = 3_600_000_000
@@ -27,74 +34,103 @@ class RequestData:
 
     def __init__(self, label_dir=None):
         """Load checked features and the saved counts of later reads"""
-        # Find the recipe and the files it uses
-        plan = read_json(CODE / "PLAN.json")
-        paths = read_json(ROOT / "RESOLVED_MODEL_INPUTS.json")
-        inputs = read_json(CODE / "INPUTS.json")
+        # Read the model settings and find the files with the prepared data
+        training_recipe = read_training_json(
+            MODEL_DIRECTORY, "training_recipe.json", "PLAN.json"
+        )
+        training_files = read_training_json(
+            SIMULATOR_DIRECTORY,
+            "training_data_files.json",
+            "RESOLVED_MODEL_INPUTS.json",
+        )
+        request_files = read_training_json(
+            MODEL_DIRECTORY, "request_stream_files.json", "INPUTS.json"
+        )
 
         # Load one arrival time per request.
-        self.ts = np.fromfile(inputs["raw"]["_ts.i64"]["path"], "<i8")
-        self.n = len(self.ts)
+        arrival_times_file = request_files["raw"]["_ts.i64"]["path"]
+        self.arrival_times_us = np.fromfile(arrival_times_file, "<i8")
+        self.request_count = len(self.arrival_times_us)
 
         # Load the named feature arrays; matching positions describe the same request.
-        feature_names = plan["recipe"]["features"]
-        with np.load(paths["features"]["path"]) as feature_file:
+        feature_names = training_recipe["recipe"]["features"]
+        with np.load(training_files["features"]["path"]) as feature_file:
             self.features = {name: feature_file[name] for name in feature_names}
 
         # Load feature types, including categorical user ID, and check they are allowed.
-        descriptions = read_json(paths["feature_registry"]["path"])["features"]
-        self.schema = {feature["name"]: feature for feature in descriptions}
-        assert all(self.schema[name]["status"] == "ALLOWED" for name in feature_names)
+        descriptions = read_json(training_files["feature_registry"]["path"])["features"]
+        self.feature_schema = {feature["name"]: feature for feature in descriptions}
+        assert all(
+            self.feature_schema[name]["status"] == "ALLOWED" for name in feature_names
+        )
 
-        # Open offered-block counts c[i] and observed reads Y[hour, i] after checking their audit.
+        # Load the size of each offer and its reads by hour after checking the label audit
         if label_dir is not None:
             folder = Path(label_dir)
             assert (
                 read_json(folder / "AUDIT.json")["status"]
                 == "PASS_FULL_INDEPENDENT_SUFFIX_LABEL_AUDIT"
             )
-            self.c = np.fromfile(folder / "c.i32", "<i4")
-            self.Y = np.memmap(folder / "Y.u64", "<u8", "r", shape=(168, self.n))
-            self.label_hash = file_fingerprint(folder / "Y.u64")
+            self.offer_block_counts = np.fromfile(folder / "c.i32", "<i4")
+            self.hourly_read_counts = np.memmap(
+                folder / "Y.u64", "<u8", "r", shape=(168, self.request_count)
+            )
+            self.label_file_sha256 = file_fingerprint(folder / "Y.u64")
             self.label_kind = "offered_suffix"
         # The full rebuild uses initial trace-derived counts when no label folder is supplied.
         else:
-            self.c = np.fromfile(paths["original_offer_counts"]["path"], "<i4")
-            self.Y = np.memmap(
-                paths["hourly_labels"]["path"], "<i4", "r", shape=(168, self.n)
+            self.offer_block_counts = np.fromfile(
+                training_files["original_offer_counts"]["path"], "<i4"
             )
-            self.label_hash = paths["hourly_labels"]["sha256"]
+            self.hourly_read_counts = np.memmap(
+                training_files["hourly_labels"]["path"],
+                "<i4",
+                "r",
+                shape=(168, self.request_count),
+            )
+            self.label_file_sha256 = training_files["hourly_labels"]["sha256"]
             self.label_kind = "original_increment"
 
         # Start the running observed-read totals at zero.
-        self.latest = 0
-        self.observed = np.zeros(self.n, dtype=np.int64)
-        assert len(self.c) == self.n and np.all(self.c >= 0)
+        self.counted_until_hour = 0
+        self.observed_read_totals = np.zeros(self.request_count, dtype=np.int64)
+        assert len(self.offer_block_counts) == self.request_count and np.all(
+            self.offer_block_counts >= 0
+        )
 
-    def training_examples(self, cut):
+    def training_examples(self, cutoff_us):
         """Return request positions and reads per block known by this cutoff"""
         # Convert the hourly cutoff into a row boundary in the read-count table.
-        assert cut % H == 0 and 0 <= cut <= 168 * H
-        cutoff_hour = cut // H
+        assert cutoff_us % H == 0 and 0 <= cutoff_us <= 168 * H
+        cutoff_hour = cutoff_us // H
 
         # Add newly completed hours, excluding reads at or after the cutoff.
-        if cutoff_hour > self.latest:
-            new_hours = self.Y[self.latest : cutoff_hour]
-            self.observed += new_hours.sum(axis=0, dtype=np.int64)
-            self.latest = cutoff_hour
+        if cutoff_hour > self.counted_until_hour:
+            new_hours = self.hourly_read_counts[self.counted_until_hour : cutoff_hour]
+            self.observed_read_totals += new_hours.sum(axis=0, dtype=np.int64)
+            self.counted_until_hour = cutoff_hour
 
         # For an earlier validation cutoff, subtract later hours without changing stored totals.
-        observed_reads = self.observed
-        if cutoff_hour < self.latest:
-            later_hours = self.Y[cutoff_hour : self.latest]
-            observed_reads = observed_reads - later_hours.sum(axis=0, dtype=np.int64)
+        observed_reads = self.observed_read_totals
+        if cutoff_hour < self.counted_until_hour:
+            hours_after_cutoff = self.hourly_read_counts[
+                cutoff_hour : self.counted_until_hour
+            ]
+            observed_reads = observed_reads - hours_after_cutoff.sum(
+                axis=0, dtype=np.int64
+            )
 
         # Select earlier offers and divide observed reads by offered blocks to form training labels.
-        offered_blocks = self.c
-        training_rows = np.flatnonzero((self.ts < cut) & (offered_blocks > 0))
+        offered_blocks = self.offer_block_counts
+        training_rows = np.flatnonzero(
+            (self.arrival_times_us < cutoff_us) & (offered_blocks > 0)
+        )
         reads_per_block = observed_reads[training_rows] / offered_blocks[training_rows]
         assert np.all(np.isfinite(reads_per_block)) and np.all(reads_per_block >= 0)
-        assert not len(training_rows) or self.ts[training_rows].max() < cut
+        assert (
+            not len(training_rows)
+            or self.arrival_times_us[training_rows].max() < cutoff_us
+        )
         return training_rows, reads_per_block
 
     def feature_table(self, request_rows, feature_names):
@@ -108,7 +144,7 @@ class RequestData:
         return [
             column
             for column, name in enumerate(feature_names)
-            if self.schema[name]["encoding"] == "categorical"
+            if self.feature_schema[name]["encoding"] == "categorical"
         ]
 
 
@@ -121,7 +157,8 @@ def check_condition(condition, message):
 def training_weights(data, request_rows, cut):
     """Give requests half as much weight for each extra day since arrival"""
     weights = np.exp2(
-        -(cut - np.asarray(data.ts[request_rows], dtype=float)) / (24 * HOUR)
+        -(cut - np.asarray(data.arrival_times_us[request_rows], dtype=float))
+        / (24 * HOUR)
     )
     check_condition(
         np.all(np.isfinite(weights)) and np.all(weights > 0),
@@ -214,7 +251,7 @@ def fit_tree_model(data, cut, settings):
     # The earlier fit sees only reads before earlier_cut. Validation uses reads before cut.
     earlier_cut = cut - VALIDATION_HOURS
     earlier_rows, earlier_reuse = data.training_examples(earlier_cut)
-    validation_rows = data.ts[request_rows] >= earlier_cut
+    validation_rows = data.arrival_times_us[request_rows] >= earlier_cut
     tree_count, errors = settings["max_rounds"], []
     if (
         len(earlier_rows) >= 2 * settings["minimum"]
@@ -313,31 +350,38 @@ def record_fit_details(model, features, reads_per_block, started, record):
 
 
 # FIT AND PREDICT ONE HOUR: the experiment runner calls this function.
-def fit_hourly_model(data, cut, out):
+def fit_hourly_model(data, cutoff_us, output_directory):
     """Train on earlier observations and predict reuse for requests in this hour."""
     # 1. Set up a fresh output folder and load the model recipe.
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=False)
-    recipe = read_json(CODE / "PLAN.json")["recipe"]
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=False)
+    recipe = read_training_json(MODEL_DIRECTORY, "training_recipe.json", "PLAN.json")[
+        "recipe"
+    ]
 
     # 2. Call fit_tree_model() to choose the tree count and fit on earlier observations.
-    model, record = fit_tree_model(data, cut, recipe)
-    training_rows, reads_per_block = data.training_examples(cut)
+    model, fit_summary = fit_tree_model(data, cutoff_us, recipe)
+    training_rows, reads_per_block = data.training_examples(cutoff_us)
     assert len(training_rows) > 0
 
     # 3. Independently recount labels at the fitting and earlier validation cutoffs.
-    for check_cut in [cut, cut - 6 * H]:
+    for check_cut in [cutoff_us, cutoff_us - 6 * H]:
         checked_rows, checked_targets = data.training_examples(check_cut)
-        expected_rows = np.flatnonzero((data.ts < check_cut) & (data.c > 0))
-        direct_counts = data.Y[: check_cut // H].sum(axis=0, dtype=np.int64)
+        expected_rows = np.flatnonzero(
+            (data.arrival_times_us < check_cut) & (data.offer_block_counts > 0)
+        )
+        direct_counts = data.hourly_read_counts[: check_cut // H].sum(
+            axis=0, dtype=np.int64
+        )
         assert np.array_equal(checked_rows, expected_rows) and np.array_equal(
-            checked_targets, direct_counts[expected_rows] / data.c[expected_rows]
+            checked_targets,
+            direct_counts[expected_rows] / data.offer_block_counts[expected_rows],
         )
 
     # 4. Predict requests in [cut, cut+H) from their features.
-    hour_end = min(cut + H, 168 * H)
-    first_row = int(np.searchsorted(data.ts, cut))
-    stop_row = int(np.searchsorted(data.ts, hour_end))
+    hour_end = min(cutoff_us + H, 168 * H)
+    first_row = int(np.searchsorted(data.arrival_times_us, cutoff_us))
+    stop_row = int(np.searchsorted(data.arrival_times_us, hour_end))
     prediction_rows = np.arange(first_row, stop_row)
     predictions = predict_reuse(
         model,
@@ -346,32 +390,32 @@ def fit_hourly_model(data, cut, out):
     assert np.all(np.isfinite(predictions)) and np.all(predictions >= 0)
 
     # 5. Save the fitted model and current-hour prediction array.
-    with (out / "model.pkl").open("xb") as model_file:
+    with (output_directory / "model.pkl").open("xb") as model_file:
         pickle.dump(model, model_file, protocol=5)
-    predictions.astype("<f8").tofile(out / "segment.f64")
+    predictions.astype("<f8").tofile(output_directory / "segment.f64")
 
     # 6. Record the cutoff, training examples, checks, and output fingerprints.
-    record.update(
+    fit_summary.update(
         status="PASS_CAUSAL_FIXED_RECIPE_FIT",
         label="cutoff-censored observed "
         + data.label_kind
         + " reuse per distinct block",
         target=data.label_kind,
-        cut_us=cut,
-        label_available_strictly_before_us=cut,
-        latest_training_request_us=int(data.ts[training_rows].max()),
+        cut_us=cutoff_us,
+        label_available_strictly_before_us=cutoff_us,
+        latest_training_request_us=int(data.arrival_times_us[training_rows].max()),
         training_rows=len(training_rows),
         training_row_hash=array_fingerprint(training_rows.astype("<i8")),
         training_target_hash=array_fingerprint(reads_per_block.astype("<f8")),
-        label_source_sha256=data.label_hash,
+        label_source_sha256=data.label_file_sha256,
         prediction_start=first_row,
         prediction_stop=stop_row,
-        model_sha256=file_fingerprint(out / "model.pkl"),
-        prediction_sha256=file_fingerprint(out / "segment.f64"),
+        model_sha256=file_fingerprint(output_directory / "model.pkl"),
+        prediction_sha256=file_fingerprint(output_directory / "segment.f64"),
         future_buckets_excluded_from_training=True,
         direct_prefix_and_inner_label_audit=True,
     )
-    write_json(out / "COMPLETE.json", record, exclusive=True)
+    write_json(output_directory / "model_fit_summary.json", fit_summary, exclusive=True)
 
     # 7. Return predictions and their request positions for the runner's full scores array.
     return predictions, first_row, stop_row

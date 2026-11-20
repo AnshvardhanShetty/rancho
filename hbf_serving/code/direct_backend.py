@@ -18,10 +18,12 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from tier_pool import TierPool
 
 
-def plan():
+def read_engine_settings():
     """Read the settings passed to this vLLM process"""
-    p = Path(os.environ["RANCHO_DIRECT_PLAN"])
-    result = json.loads(p.read_text())
+    settings_file = os.environ.get("RANCHO_HBF_ENGINE_SETTINGS")
+    if settings_file is None:
+        settings_file = os.environ["RANCHO_DIRECT_PLAN"]
+    result = json.loads(Path(settings_file).read_text())
     if result["block_tokens"] != 16 or result["native_block_bytes"] != 1572864:
         raise ValueError("Unexpected native geometry")
     if result["mode"] == "benchmark" and result["policy"] in (
@@ -66,7 +68,7 @@ class DirectConnector(KVConnectorBase_V1):
 
     def __init__(self, vllm_config, role, kv_cache_config):
         super().__init__(vllm_config, role, kv_cache_config)
-        self.config = plan()
+        self.config = read_engine_settings()
         self.pages = None
         self.output = None
         self.policy = None
@@ -237,15 +239,15 @@ class DirectScheduler(Scheduler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.direct_plan = plan()
+        self.engine_settings = read_engine_settings()
         if self.scheduler_config.async_scheduling:
             raise ValueError("Direct migration requires synchronous scheduling")
         managers = self.kv_cache_manager.coordinator.single_type_managers
         self.tiers = TierPool(
             self.kv_cache_manager.block_pool,
             managers,
-            self.direct_plan["HBM_pages"],
-            self.direct_plan["HBF_pages"],
+            self.engine_settings["HBM_pages"],
+            self.engine_settings["HBF_pages"],
         )
         self.first_computed = {}
         self.offered = set()
@@ -261,24 +263,24 @@ class DirectScheduler(Scheduler):
         beginnings.update(zip(cached.req_ids, cached.num_computed_tokens))
         meta = Step(destinations=self.tiers.available_hbf())
         tables = self.tiers.managers[0].req_to_blocks
-        for rid, count in output.num_scheduled_tokens.items():
-            request = self.requests[rid]
-            before = beginnings[rid]
-            first_seen = rid not in self.first_computed
-            if rid in cached.resumed_req_ids and rid not in self.offered:
-                self.first_computed[rid] = before
-            self.first_computed.setdefault(rid, before)
-            prompt = len(request.prompt_token_ids)
+        for request_id, count in output.num_scheduled_tokens.items():
+            request = self.requests[request_id]
+            cached_tokens_before = beginnings[request_id]
+            first_seen = request_id not in self.first_computed
+            if request_id in cached.resumed_req_ids and request_id not in self.offered:
+                self.first_computed[request_id] = cached_tokens_before
+            self.first_computed.setdefault(request_id, cached_tokens_before)
+            prompt_token_count = len(request.prompt_token_ids)
             if first_seen:
-                prefix = tables[rid][: before // 16]
+                prefix = tables[request_id][: cached_tokens_before // 16]
                 log_event(
-                    self.direct_plan,
+                    self.engine_settings,
                     "scheduler.jsonl",
                     dict(
                         event="INITIAL_PREFIX_LOOKUP",
-                        request_id=rid,
-                        prompt_tokens=prompt,
-                        cached_tokens=before,
+                        request_id=request_id,
+                        prompt_tokens=prompt_token_count,
+                        cached_tokens=cached_tokens_before,
                         cached_HBF_full_pages=sum(
                             self.tiers.is_hbf(b.block_id) for b in prefix
                         ),
@@ -287,21 +289,31 @@ class DirectScheduler(Scheduler):
                         ),
                     ),
                 )
-            if rid not in self.offered and before < prompt <= before + count:
-                if before + count != prompt:
+            if (
+                request_id not in self.offered
+                and cached_tokens_before
+                < prompt_token_count
+                <= cached_tokens_before + count
+            ):
+                if cached_tokens_before + count != prompt_token_count:
                     raise ValueError("Unqualified prefill/decode boundary")
-                external = rid
-                if external not in self.direct_plan["requests"]:
-                    match = re.fullmatch(r"(.+)-[0-9a-f]{8}", rid)
-                    if match is None or match[1] not in self.direct_plan["requests"]:
+                trace_request_id = request_id
+                if trace_request_id not in self.engine_settings["requests"]:
+                    match = re.fullmatch(r"(.+)-[0-9a-f]{8}", request_id)
+                    if (
+                        match is None
+                        or match[1] not in self.engine_settings["requests"]
+                    ):
                         raise ValueError(
-                            "Unbound native/external request identity: " + rid
+                            "Unbound native/external request identity: " + request_id
                         )
-                    external = match[1]
-                info = self.direct_plan["requests"][external]
+                    trace_request_id = match[1]
+                info = self.engine_settings["requests"][trace_request_id]
                 sources = [
                     b.block_id
-                    for b in tables[rid][self.first_computed[rid] // 16 : prompt // 16]
+                    for b in tables[request_id][
+                        self.first_computed[request_id] // 16 : prompt_token_count // 16
+                    ]
                     if self.tiers.is_hbm(b.block_id)
                 ]
                 if len(set(sources)) != len(sources):
@@ -314,32 +326,32 @@ class DirectScheduler(Scheduler):
                             request.prompt_token_ids
                         )
                     ]
-                    if self.direct_plan.get("updated_rancho")
+                    if self.engine_settings.get("updated_rancho")
                     else None
                 )
                 feature_cpu_ns = time.perf_counter_ns() - feature_start
                 meta.candidates.append(
                     dict(
-                        request_id=rid,
-                        prompt_tokens=prompt,
+                        request_id=request_id,
+                        prompt_tokens=prompt_token_count,
                         sources=sources,
                         features=info.get("features"),
                         policy_us=info.get("policy_us"),
                         prompt_keys=prompt_keys,
                         feature_cpu_ns=feature_cpu_ns,
                         session=info.get("session"),
-                        suffix_begin=self.first_computed[rid] // 16,
+                        suffix_begin=self.first_computed[request_id] // 16,
                     )
                 )
-                self.offered.add(rid)
+                self.offered.add(request_id)
                 log_event(
-                    self.direct_plan,
+                    self.engine_settings,
                     "scheduler.jsonl",
                     dict(
                         event="PREFILL_SCHEDULED",
-                        request_id=rid,
-                        prompt_tokens=prompt,
-                        initial_cached_tokens=self.first_computed[rid],
+                        request_id=request_id,
+                        prompt_tokens=prompt_token_count,
+                        initial_cached_tokens=self.first_computed[request_id],
                         HBM_free_pages=self.tiers.hbm_free_count(),
                         HBF_available_pages=len(meta.destinations),
                     ),
@@ -359,7 +371,7 @@ class DirectScheduler(Scheduler):
                     meta.pairs, gpu_completed=meta.gpu_completed
                 )
                 log_event(
-                    self.direct_plan,
+                    self.engine_settings,
                     "scheduler.jsonl",
                     dict(event="PUBLISHED_NATIVE_HBF", **result),
                 )

@@ -10,55 +10,58 @@ from reference_wallet_check import BandWallet
 from controllers_reference import Observation, hash01
 from updated_model import SuffixGBT, CUT
 from controlled_workload import prompts, block_keys, records
+from campaign_state import read_run_json
 
 
-def audit_policy(root, cfg, saved):
+def audit_policy(root, engine_settings, saved):
     """Check the saved policy inputs and replay the admission decisions"""
     read = lambda p: json.loads(Path(p).read_text())
-    receipt = Path(cfg["controller_history"])
+    receipt = Path(engine_settings["controller_history"])
     assert (
         hashlib.sha256(receipt.read_bytes()).hexdigest()
-        == cfg["controller_history_sha256"]
+        == engine_settings["controller_history_sha256"]
     )
-    r = read(receipt)
+    controller_start_record = read(receipt)
     assert (
-        r["cold"]
-        and r["observations"] == r["paid_pages"] == 0
-        and r["fit"] == cfg["fit"]
+        controller_start_record["cold"]
+        and controller_start_record["observations"]
+        == controller_start_record["paid_pages"]
+        == 0
+        and controller_start_record["fit"] == engine_settings["fit"]
     )
-    model = SuffixGBT(cfg["fit"])
-    assert model.model_sha256 == r["model_sha256"]
-    setup = read(root / "SETUP.json")
-    payload = prompts(setup)
-    info = records(setup)[1]
-    w = BandWallet(
+    model = SuffixGBT(engine_settings["fit"])
+    assert model.model_sha256 == controller_start_record["model_sha256"]
+    workload_settings = read_run_json(root, "workload_settings.json", "SETUP.json")
+    payload = prompts(workload_settings)
+    info = records(workload_settings)[1]
+    reference_controller = BandWallet(
         "hbf",
-        cfg["HBF_pages"],
-        cfg["repetition"],
+        engine_settings["HBF_pages"],
+        engine_settings["repetition"],
         end_us=CUT + 86400000000,
         release_us=CUT + 86400000000,
         reserve=0.0,
     )
     offers = [
-        o
+        offer
         for line in (root / "worker.jsonl").read_text().splitlines()
-        for o in json.loads(line).get("offers", [])
+        for offer in json.loads(line).get("offers", [])
     ]
-    assert len(offers) == cfg["n_requests"]
+    assert len(offers) == engine_settings["n_requests"]
     cache = []
     counts = {}
     stamps = {}
     seen_requests = set()
     event = 0
     boosted = half = threshold = 0
-    for o in offers:
-        i = int(re.fullmatch(r"row(\d+)(?:-[0-9a-f]{8})?", o["request_id"])[1])
+    for offer in offers:
+        i = int(re.fullmatch(r"row(\d+)(?:-[0-9a-f]{8})?", offer["request_id"])[1])
         assert i not in seen_requests
         seen_requests.add(i)
         keys = [b.hex() for b in block_keys(payload[i])]
         session = info[i]["session"]
-        h = o["history"]
-        first = h["suffix_begin"]
+        reuse_history = offer["history"]
+        first = reuse_history["suffix_begin"]
         readable = 0
         for key in keys:
             if key not in cache:
@@ -67,7 +70,7 @@ def audit_policy(root, cfg, saved):
             cache.append(key)
             readable += 1
         past = sum(counts.get(k, 0) for k in dict.fromkeys(keys[first:]))
-        assert h == dict(
+        assert reuse_history == dict(
             shadow_cached_pages=readable, past_filtered_reuses=past, suffix_begin=first
         )
         pending = [
@@ -75,23 +78,29 @@ def audit_policy(root, cfg, saved):
             for j, key in enumerate(keys)
             if key not in keys[:j] and j >= readable and stamps.get(key) == session
         ]
-        if "decision" in o:
-            d = o["decision"]
+        if "decision" in offer:
+            d = offer["decision"]
             now = d["controller_time_us"]
-            n, c = o["source_pages"], o["write_cost_pages"]
+            n, c = offer["source_pages"], offer["write_cost_pages"]
             assert n == len(set(keys[first:]))
-            prediction = float(model.predict([o["features"]], now)[0])
+            prediction = float(model.predict([offer["features"]], now)[0])
             assert prediction == d["prediction"]
             assert d["model_sha256"] == model.model_sha256 and d["fit_cut_us"] == CUT
             score = prediction * float(n) / float(c) * (1 + past / n) if c else math.inf
-            w.phase(now)
+            reference_controller.phase(now)
             cut, coin = (
-                getattr(w, "bandcuts", {}).get(c.bit_length() - 1, (w.threshold, w.tie))
-                if c and w.have
-                else (w.threshold, w.tie)
+                getattr(reference_controller, "bandcuts", {}).get(
+                    c.bit_length() - 1,
+                    (reference_controller.threshold, reference_controller.tie),
+                )
+                if c and reference_controller.have
+                else (reference_controller.threshold, reference_controller.tie)
             )
             behind = bool(
-                c and w.have and w.W * (w.end_us - CUT) < w.budget * (now - CUT)
+                c
+                and reference_controller.have
+                and reference_controller.W * (reference_controller.end_us - CUT)
+                < reference_controller.budget * (now - CUT)
             )
             if behind:
                 cut /= 2
@@ -99,13 +108,13 @@ def audit_policy(root, cfg, saved):
                 n
                 and (
                     not c
-                    or c <= w.budget - w.W
-                    and c <= w.cap - w.W
+                    or c <= reference_controller.budget - reference_controller.W
+                    and c <= reference_controller.cap - reference_controller.W
                     and (
-                        not w.have
+                        not reference_controller.have
                         or score > cut
                         or score == cut
-                        and hash01(event, w.seed ^ 0x5BF03635) < coin
+                        and hash01(event, reference_controller.seed ^ 0x5BF03635) < coin
                     )
                 )
             )
@@ -118,7 +127,7 @@ def audit_policy(root, cfg, saved):
             )
             assert (
                 d["admit"] == admit
-                and d["have_threshold"] == w.have
+                and d["have_threshold"] == reference_controller.have
                 and d["half_behind"] == behind
                 and d["history_multiplier"] == 1 + past / n
                 and d["past_filtered_reuses"] == past
@@ -126,27 +135,29 @@ def audit_policy(root, cfg, saved):
             assert d["score_admit_before_physical_guard"] == before and d[
                 "physical_guard_rejected"
             ] == (before and not admit)
-            w._observe(Observation(event, score, c, now, n))
+            reference_controller._observe(Observation(event, score, c, now, n))
             if admit:
-                w.W += c
-            assert d["total_paid_writes"] == w.W and d["paid_cost"] == (
-                c if admit else 0
-            )
-            assert o["action"] in (
+                reference_controller.W += c
+            assert d["total_paid_writes"] == reference_controller.W and d[
+                "paid_cost"
+            ] == (c if admit else 0)
+            assert offer["action"] in (
                 ["COPIED", "REUSED_EXISTING_ONLY"] if admit else ["POLICY_REJECT"]
             )
             if admit:
                 assert (
-                    o["native_bytes"] == c * cfg["native_block_bytes"]
-                    and o["copy_and_service_ns"]
-                    >= o["native_bytes"] * 1e9 / cfg["write_bandwidth_bytes_s"]
+                    offer["native_bytes"] == c * engine_settings["native_block_bytes"]
+                    and offer["copy_and_service_ns"]
+                    >= offer["native_bytes"]
+                    * 1e9
+                    / engine_settings["write_bandwidth_bytes_s"]
                 )
             boosted += past > 0
             half += behind
-            threshold += w.have
+            threshold += reference_controller.have
             event += 1
         else:
-            assert o["action"] in [
+            assert offer["action"] in [
                 "NO_NEW_FULL_SUFFIX",
                 "NO_PHYSICAL_DESTINATION_CAPACITY",
             ]
@@ -154,21 +165,23 @@ def audit_policy(root, cfg, saved):
             if key in cache:
                 cache.remove(key)
             cache.append(key)
-            while len(cache) > cfg["HBM_pages"]:
+            while len(cache) > engine_settings["HBM_pages"]:
                 cache.pop(0)
         for key in pending:
             counts[key] = counts.get(key, 0) + 1
         for key in keys:
             stamps[key] = session
     assert (
-        w.W == saved["admission"]["paid_pages"] <= w.budget
-        and len(seen_requests) == cfg["n_requests"]
+        reference_controller.W
+        == saved["admission"]["paid_pages"]
+        <= reference_controller.budget
+        and len(seen_requests) == engine_settings["n_requests"]
     )
     return dict(
         status="PASS_ARCHIVED_UPDATED_POLICY_AND_INDEPENDENT_HISTORY",
         model_sha256=model.model_sha256,
         decisions=event,
-        paid_pages=w.W,
+        paid_pages=reference_controller.W,
         history_boosted=boosted,
         half_behind=half,
         threshold_active=threshold,

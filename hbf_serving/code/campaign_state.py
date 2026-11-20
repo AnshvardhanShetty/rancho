@@ -1,7 +1,15 @@
-"""Save a JSON record so readers only see the finished file"""
+"""Read and write the settings and records saved by a serving run"""
 
 import json
 from pathlib import Path
+
+
+def read_run_json(output_directory, filename, earlier_filename):
+    """Read new or earlier serving output folders"""
+    path = output_directory / filename
+    if not path.exists():
+        path = output_directory / earlier_filename
+    return json.loads(path.read_text())
 
 
 def save(path, obj):

@@ -49,18 +49,18 @@ int main(int argc, char **argv) {
     require_condition(argc == 7, "raw prefix, N, HBM capacity, split, end, output");
     std::string stream_prefix = argv[1];
     int block_id_count = std::stoi(argv[2]), hbm_capacity = std::stoi(argv[3]);
-    I evaluation_start = std::stoll(argv[4]), evaluation_end = std::stoll(argv[5]);
+    int64_t evaluation_start = std::stoll(argv[4]), evaluation_end = std::stoll(argv[5]);
 
     // 2. Load request lengths and arrival times, and create two empty caches.
     auto block_counts = read_binary_array<int>(stream_prefix + "_nb.i32");
-    auto arrival_times = read_binary_array<I>(stream_prefix + "_ts.i64");
+    auto arrival_times = read_binary_array<int64_t>(stream_prefix + "_ts.i64");
     require_condition(block_counts.size() == arrival_times.size() &&
                           std::is_sorted(arrival_times.begin(), arrival_times.end()),
                       "time and size");
     Cache hbm(hbm_capacity, block_id_count);
     ReferenceCache reference(hbm_capacity);
     bool evaluation_started = false;
-    I measured_requests = 0, total_readable = 0, total_positions = 0;
+    int64_t measured_requests = 0, total_readable = 0, total_positions = 0;
 
     // 3. Open the block-ID file. Reserve one output value per request.
     std::ifstream file(stream_prefix + "_ids.i32", std::ios::binary);
@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
       require_condition(block_count >= 0, "length");
       blocks.resize(block_count);
       file.read(reinterpret_cast<char *>(blocks.data()), sizeof(int) * blocks.size());
-      require_condition(file.gcount() == I(sizeof(int) * blocks.size()), "short row");
+      require_condition(file.gcount() == int64_t(sizeof(int) * blocks.size()), "short row");
       if (arrival_times[request] < 0)
         continue;
 

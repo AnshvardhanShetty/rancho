@@ -56,18 +56,20 @@ def prepare_example():
                     labels.append(0)
     feature_table = np.array(features, float)
     train_rows = np.array(offered)
-    ts = np.array([r["time"] for r in requests])
+    arrival_times_us = np.array([request["time"] for request in requests])
 
     def training_examples(cut):
         # Second requests arrive exactly one microsecond after the first.
-        keep = ts[train_rows] < cut
-        idx = train_rows[keep]
-        y = np.array(labels)[keep] * (ts[idx] + 1 < cut)
-        return idx, y
+        keep = arrival_times_us[train_rows] < cut
+        selected_rows = train_rows[keep]
+        observed_reads = np.array(labels)[keep] * (
+            arrival_times_us[selected_rows] + 1 < cut
+        )
+        return selected_rows, observed_reads
 
     data = SimpleNamespace(
         training_examples=training_examples,
-        ts=ts,
+        arrival_times_us=arrival_times_us,
         feature_table=lambda ix, names: feature_table[ix],
         categorical_columns=lambda names: [0],
     )

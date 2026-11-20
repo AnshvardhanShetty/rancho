@@ -11,7 +11,7 @@ class Observer:
         self.observer_preemptions = 0
         super().__init__(*args, **kwargs)
         self.observer_file = (
-            Path(self.direct_plan["output"]) / "concurrency.jsonl"
+            Path(self.engine_settings["output"]) / "concurrency.jsonl"
         ).open("a", buffering=65536)
         self.observer_step = None
         self.observer_steps = 0

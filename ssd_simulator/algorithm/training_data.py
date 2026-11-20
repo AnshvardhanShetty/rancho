@@ -15,7 +15,9 @@ from pathlib import Path
 import numpy as np
 from .settings import HOUR, TRAINING
 
-EDT = np.dtype([(x, "<i4") for x in ("row", "block", "last", "freq", "nev", "born")])
+EVICTION_RECORD_DTYPE = np.dtype(
+    [(x, "<i4") for x in ("row", "block", "last", "freq", "nev", "born")]
+)
 
 
 def pinned(record, parent):
@@ -59,21 +61,24 @@ class TrainingData:
             key: pinned(files[key], manifest_path.parent)
             for key in ("timestamps", "evictions", "features", "sample_indices")
         }
-        # ts holds request arrival times; es has one record per GPU eviction.
-        self.ts = np.memmap(paths["timestamps"], "<i8", "r")
-        self.es = np.memmap(paths["evictions"], EDT, "r")
-        if len(self.es) != manifest["eviction_count"]:
+        self.arrival_times_us = np.memmap(paths["timestamps"], "<i8", "r")
+        self.eviction_records = np.memmap(
+            paths["evictions"], EVICTION_RECORD_DTYPE, "r"
+        )
+        if len(self.eviction_records) != manifest["eviction_count"]:
             raise ValueError("Eviction count differs")
         if cold:
-            self.es = self.es[manifest["ntrain"] :]
-        self.n = len(self.es)
+            self.eviction_records = self.eviction_records[manifest["ntrain"] :]
+        self.eviction_count = len(self.eviction_records)
         self.labels = {}
         with np.load(paths["features"], allow_pickle=False) as archive:
             self.features = {name: archive[name] for name in archive.files}
-        self.sample = np.load(paths["sample_indices"], allow_pickle=False)
+        self.sampled_eviction_ids = np.load(paths["sample_indices"], allow_pickle=False)
         if not cold:
-            self.sample_times = self.ts[self.es["row"][self.sample]]
-            if np.any(np.diff(self.sample) <= 0) or np.any(
+            self.sample_times = self.arrival_times_us[
+                self.eviction_records["row"][self.sampled_eviction_ids]
+            ]
+            if np.any(np.diff(self.sampled_eviction_ids) <= 0) or np.any(
                 np.diff(self.sample_times) < 0
             ):
                 raise ValueError("Samples must be distinct and chronological")
@@ -83,21 +88,21 @@ class TrainingData:
 
     def first_eviction_at(self, cutoff):
         """Find the first eviction whose request arrived at or after this time."""
-        row = int(np.searchsorted(self.ts, cutoff, side="left"))
-        return int(np.searchsorted(self.es["row"], row, side="left"))
+        row = int(np.searchsorted(self.arrival_times_us, cutoff, side="left"))
+        return int(np.searchsorted(self.eviction_records["row"], row, side="left"))
 
     def decision_times(self, indices):
-        return np.asarray(self.ts[self.es["row"][indices]])
+        return np.asarray(self.arrival_times_us[self.eviction_records["row"][indices]])
 
     def user_ids(self, indices):
-        return np.asarray(self.features["user"][self.es["last"][indices]])
+        return np.asarray(self.features["user"][self.eviction_records["last"][indices]])
 
     def training_examples(self, cutoff, config):
         """Return earlier eviction IDs, observed marginal gains and sample weights."""
         profile = next((x for x in TRAINING if x["id"] == config["training"]))
         if config["target_mode"] != "cumulative":
             raise ValueError("Expected recorded cumulative marginal labels")
-        a = int(
+        first_sample = int(
             np.searchsorted(
                 self.sample_times,
                 (
@@ -108,27 +113,39 @@ class TrainingData:
                 side="left",
             )
         )
-        b = max(a, int(np.searchsorted(self.sample_times, cutoff, side="left")))
-        a = max(a, b - config["sample_cap"])
-        ids = np.asarray(self.sample[a:b], dtype=np.int64)
-        if not len(ids):
-            return (ids, np.empty(0), np.empty(0))
+        stop_sample = max(
+            first_sample, int(np.searchsorted(self.sample_times, cutoff, side="left"))
+        )
+        first_sample = max(first_sample, stop_sample - config["sample_cap"])
+        eviction_ids = np.asarray(
+            self.sampled_eviction_ids[first_sample:stop_sample], dtype=np.int64
+        )
+        if not len(eviction_ids):
+            return (eviction_ids, np.empty(0), np.empty(0))
         if cutoff % HOUR or cutoff < 0:
             raise ValueError("Exact hourly observed cutoff required")
-        q = self.manifest["cumulative_labels"]
+        label_file = self.manifest["cumulative_labels"]
         if not hasattr(self, "observed_matrix"):
-            verify_digest(q["path"], q["sha256"])
+            verify_digest(label_file["path"], label_file["sha256"])
             self.observed_matrix = np.memmap(
-                q["path"], "<u4", "r", shape=(169, len(self.sample))
+                label_file["path"],
+                "<u4",
+                "r",
+                shape=(169, len(self.sampled_eviction_ids)),
             )
-        y = np.asarray(self.observed_matrix[cutoff // HOUR, a:b], dtype=np.float64)
-        if np.any(self.sample_times[a:b] >= cutoff):
+        observed_gains = np.asarray(
+            self.observed_matrix[cutoff // HOUR, first_sample:stop_sample],
+            dtype=np.float64,
+        )
+        if np.any(self.sample_times[first_sample:stop_sample] >= cutoff):
             raise ValueError("Nonpast cumulative example")
-        weights = np.ones(len(ids), dtype=np.float64)
+        weights = np.ones(len(eviction_ids), dtype=np.float64)
         if profile["sample_weight"] == "recency24h":
-            weights = np.exp2(-(cutoff - self.sample_times[a:b]) / (24 * HOUR))
+            weights = np.exp2(
+                -(cutoff - self.sample_times[first_sample:stop_sample]) / (24 * HOUR)
+            )
             weights /= weights.mean()
-        return (ids, y, weights)
+        return (eviction_ids, observed_gains, weights)
 
     def categorical_columns(self, config):
         """Tell the tree which columns represent identities rather than quantities."""
@@ -140,28 +157,37 @@ class TrainingData:
 
     def feature_table(self, indices, config):
         """Build request inputs from the last touch and block inputs from the eviction."""
-        ids = np.asarray(indices, dtype=np.int64)
-        if np.any(ids < 0) or np.any(ids >= self.n):
+        eviction_ids = np.asarray(indices, dtype=np.int64)
+        if np.any(eviction_ids < 0) or np.any(eviction_ids >= self.eviction_count):
             raise ValueError("Scoring request references invalid event IDs")
-        e = self.es[ids]
-        rows, now = (e["last"], self.ts[e["row"]])
-        if np.any(rows > e["row"]) or np.any(e["born"] > e["row"]):
+        eviction_records = self.eviction_records[eviction_ids]
+        last_touch_rows, eviction_times_us = (
+            eviction_records["last"],
+            self.arrival_times_us[eviction_records["row"]],
+        )
+        if np.any(last_touch_rows > eviction_records["row"]) or np.any(
+            eviction_records["born"] > eviction_records["row"]
+        ):
             raise ValueError("Noncausal eviction metadata")
-        cols = []
+        feature_columns = []
         for name in config["features"]:
             if name == "prior_touch_count":
-                values = e["freq"]
+                values = eviction_records["freq"]
             elif name == "seconds_since_last_touch":
-                values = (now - self.ts[rows]) / 1000000.0
+                values = (
+                    eviction_times_us - self.arrival_times_us[last_touch_rows]
+                ) / 1000000.0
             elif name == "seconds_in_HBM":
-                values = (now - self.ts[e["born"]]) / 1000000.0
+                values = (
+                    eviction_times_us - self.arrival_times_us[eviction_records["born"]]
+                ) / 1000000.0
             elif name == "prior_eviction_count":
-                values = e["nev"]
+                values = eviction_records["nev"]
             else:
-                values = self.features[name][rows]
-            cols.append(values)
+                values = self.features[name][last_touch_rows]
+            feature_columns.append(values)
         return (
-            np.column_stack(cols).astype(np.float64)
-            if cols
-            else np.empty((len(ids), 0))
+            np.column_stack(feature_columns).astype(np.float64)
+            if feature_columns
+            else np.empty((len(eviction_ids), 0))
         )

@@ -31,31 +31,43 @@ def run_program(name, *args):
 
 
 def run_cache_simulation(
-    stream, n, flash, ram, zero, eligible, scores, seed, budget, start, end, shadow, out
+    request_stream_prefix,
+    block_id_count,
+    hbf_capacity,
+    hbm_capacity,
+    zero_flags_path,
+    eligible_requests_path,
+    predictions_path,
+    seed,
+    write_budget,
+    start_us,
+    end_us,
+    hbm_only_prefix_path,
+    output_directory,
 ):
     """Run one seed with its saved predictions and read the simulator’s counters."""
     run_program(
         "rancho",
-        stream,
-        n,
-        flash,
-        ram,
-        zero,
-        zero,
-        budget,
-        start,
-        end,
+        request_stream_prefix,
+        block_id_count,
+        hbf_capacity,
+        hbm_capacity,
+        zero_flags_path,
+        zero_flags_path,
+        write_budget,
+        start_us,
+        end_us,
         "v1",
-        out,
+        output_directory,
         "--live-rancho",
         seed,
-        eligible,
-        scores,
+        eligible_requests_path,
+        predictions_path,
         "--reuse-bonus",
         "--cost-bands",
         "--half-behind",
         "--shadow",
         "shadow-linear",
-        shadow,
+        hbm_only_prefix_path,
     )
-    return read_json(out / "metrics.json")["evaluation"]
+    return read_json(output_directory / "metrics.json")["evaluation"]

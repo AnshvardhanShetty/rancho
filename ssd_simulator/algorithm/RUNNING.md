@@ -25,7 +25,7 @@ python -m ssd_simulator.algorithm.run \
   --ssd-blocks BLOCK_COUNT --budget-blocks WRITE_ALLOWANCE
 ```
 
-The recorded run uses 81,380 GPU cache blocks. It fits each hour, replays days 4–7 with seed 17, and asks Python to refresh saved offer scores when the model changes. It then checks the write log and counts which reads SSD saved.
+The recorded run uses 81,380 GPU cache blocks. It fits each hour, replays days 4–7 with seed 17, and asks Python to refresh saved offer scores when the model changes. Each hourly folder contains the model and a `model_fit_summary.json` with its checksum. The runner then checks the write log and counts which reads SSD saved.
 
 The manifest has:
 

@@ -4,13 +4,21 @@ import hashlib
 import json
 from pathlib import Path
 
-CODE = Path(__file__).resolve().parent
-ROOT = CODE.parent
+MODEL_DIRECTORY = Path(__file__).resolve().parent
+SIMULATOR_DIRECTORY = MODEL_DIRECTORY.parent
 
 
 # Load a JSON settings or record file.
 def read_json(path):
     return json.loads(Path(path).read_text())
+
+
+def read_training_json(directory, filename, earlier_filename):
+    """Use the descriptive filename if present or read an older training folder"""
+    path = directory / filename
+    if not path.exists():
+        path = directory / earlier_filename
+    return read_json(path)
 
 
 # Save a JSON record; exclusive mode refuses to overwrite a file.

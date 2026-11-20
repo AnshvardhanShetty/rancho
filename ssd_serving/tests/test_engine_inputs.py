@@ -86,7 +86,7 @@ class Eviction(unittest.TestCase):
         connector.history = {
             b"key": dict(evictions=0, count=2, last=1.0, rid="row0", features={})
         }
-        connector.cfg = dict(write_budget_pages=budget)
+        connector.serving_settings = dict(write_budget_pages=budget)
         connector.evictions = connector.absent = connector.retained = (
             connector.rejected
         ) = 0

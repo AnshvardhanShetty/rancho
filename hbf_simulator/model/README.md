@@ -12,3 +12,14 @@ Start in [model_training.py](model_training.py) and read these in order:
 [tree_encoding.py](tree_encoding.py) maps known user IDs to category codes so the model treats each ID as a name. [model_settings.json](model_settings.json) has the settings used for fitting. [file_helpers.py](file_helpers.py) reads and saves the model's records.
 
 [run_experiment.py](../experiments/run_experiment.py) calls the fitting code once per hour. The [CPU demo](../examples/README.md) supplies synthetic training data.
+
+## Files used for an hourly fit
+
+| File | What it contains |
+| --- | --- |
+| `training_recipe.json` | The feature list and tree settings under the `recipe` key |
+| `request_stream_files.json` | The location of the arrival-time array under `raw` → `_ts.i64` |
+| `training_data_files.json` | Paths to the feature table, feature types and initial reuse counts |
+| `model_fit_summary.json` | The cutoff, tree count and file checksums saved after one fit |
+
+The first two files go in the model folder. The training data file list goes one level above them. Older prepared folders used `PLAN.json`, `INPUTS.json` and `RESOLVED_MODEL_INPUTS.json`. The loader still reads those names. The CPU demo already supplies its own inputs.

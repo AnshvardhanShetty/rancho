@@ -35,61 +35,61 @@ def sha(path):
 
 def prepare(manifest_path, output):
     """Verify supplied arrays and train all 96 hourly raw-target models."""
-    training = TrainingData(manifest_path)
-    cold = TrainingData(manifest_path, cold=True)
+    training_data = TrainingData(manifest_path)
+    measured_data = TrainingData(manifest_path, cold=True)
     models = output / "models"
     models.mkdir()
-    scores = output / "test_raw.f64"
-    with scores.open("xb") as stream:
+    predictions_path = output / "test_raw.f64"
+    with predictions_path.open("xb") as stream:
         for hour in range(72, 168):
-            cut = hour * HOUR
-            model, record = fit_model(training, cut, SETTINGS)
-            if model["kind"] != "tree" or record["max_train_decision_us"] >= cut:
+            cutoff_us = hour * HOUR
+            model, record = fit_model(training_data, cutoff_us, SETTINGS)
+            if model["kind"] != "tree" or record["max_train_decision_us"] >= cutoff_us:
                 raise ValueError("Expected a fitted causal tree")
-            first, stop = (
-                cold.first_eviction_at(cut),
-                cold.first_eviction_at(cut + HOUR),
+            first_eviction, stop_eviction = (
+                measured_data.first_eviction_at(cutoff_us),
+                measured_data.first_eviction_at(cutoff_us + HOUR),
             )
-            folder = models / str(hour)
-            folder.mkdir()
-            with (folder / "model.pkl").open("xb") as file:
+            hour_output = models / str(hour)
+            hour_output.mkdir()
+            with (hour_output / "model.pkl").open("xb") as file:
                 pickle.dump(model, file, protocol=5)
-            for start in range(first, stop, 200000):
-                rows = np.arange(start, min(start + 200000, stop))
-                values, _ = predict_events(cold, model, rows)
+            for start in range(first_eviction, stop_eviction, 200000):
+                rows = np.arange(start, min(start + 200000, stop_eviction))
+                values, _ = predict_events(measured_data, model, rows)
                 values.astype("<f8").tofile(stream)
             record.update(
-                first=first,
-                stop=stop,
-                model_sha256=sha(folder / "model.pkl"),
+                first=first_eviction,
+                stop=stop_eviction,
+                model_sha256=sha(hour_output / "model.pkl"),
                 training_target="historical marginal credited prefix unlock",
             )
-            save(folder / "FIT.json", record)
-    if scores.stat().st_size != cold.n * 8:
+            save(hour_output / "model_fit_summary.json", record)
+    if predictions_path.stat().st_size != measured_data.eviction_count * 8:
         raise ValueError("One score per measured eviction is required")
-    expected = training.manifest.get("expected_scores_sha256")
-    if expected and sha(scores) != expected:
+    expected_sha256 = training_data.manifest.get("expected_scores_sha256")
+    if expected_sha256 and sha(predictions_path) != expected_sha256:
         raise ValueError("Predictions differ from the recorded experiment")
-    return (cold, scores)
+    return (measured_data, predictions_path)
 
 
-def replay(manifest_path, cold, scores, output, ssd_blocks, budget):
+def replay(manifest_path, measured_data, predictions_path, output, ssd_blocks, budget):
     """Run the verified policy and answer its hourly requests for updated scores."""
-    manifest = cold.manifest
+    manifest = measured_data.manifest
     parent = Path(manifest_path).resolve().parent
     inputs = manifest["replay"]
-    blocks = pinned(inputs["block_ids"], parent)
-    prefix = str(blocks).removesuffix("_ids.i32")
+    block_ids_path = pinned(inputs["block_ids"], parent)
+    prefix = str(block_ids_path).removesuffix("_ids.i32")
     for key, suffix in [("block_counts", "_nb.i32"), ("arrival_times", "_ts.i64")]:
         if pinned(inputs[key], parent) != Path(prefix + suffix):
             raise ValueError("Stream filenames must share one prefix")
     tokens = pinned(inputs["tokens"], parent)
     expected_evictions = pinned(inputs["measured_evictions"], parent)
-    if expected_evictions.stat().st_size != cold.n * 24:
+    if expected_evictions.stat().st_size != measured_data.eviction_count * 24:
         raise ValueError("Measured eviction stream differs from model rows")
-    cuts = output / "cuts.i64"
-    (np.arange(72, 168, dtype="<i8") * HOUR).tofile(cuts)
-    common = [
+    cutoff_times_path = output / "cuts.i64"
+    (np.arange(72, 168, dtype="<i8") * HOUR).tofile(cutoff_times_path)
+    shared_replay_arguments = [
         "--prefix",
         prefix,
         "--tokens",
@@ -109,7 +109,7 @@ def replay(manifest_path, cold, scores, output, ssd_blocks, budget):
     ]
     command = [
         BUILD / "recorded_ssd_replay",
-        *common,
+        *shared_replay_arguments,
         "--end-us",
         168 * HOUR,
         "--mode",
@@ -121,9 +121,9 @@ def replay(manifest_path, cold, scores, output, ssd_blocks, budget):
         "--expected-evictions",
         expected_evictions,
         "--scores",
-        scores,
+        predictions_path,
         "--cuts-i64",
-        cuts,
+        cutoff_times_path,
         "--reprice-stdio",
         "--reserve",
         0.15,
@@ -138,7 +138,7 @@ def replay(manifest_path, cold, scores, output, ssd_blocks, budget):
         "--count-gain",
         32,
     ]
-    count = 0
+    hourly_updates = 0
     result = None
     with subprocess.Popen(
         list(map(str, command)),
@@ -152,42 +152,47 @@ def replay(manifest_path, cold, scores, output, ssd_blocks, budget):
                 if event["event"] == "result":
                     result = event
                     continue
-                cut = (72 + count) * HOUR
-                if event["event"] != "reprice" or event["cut_us"] != cut:
+                cutoff_us = (72 + hourly_updates) * HOUR
+                if event["event"] != "reprice" or event["cut_us"] != cutoff_us:
                     raise ValueError("Unexpected hourly update")
                 rows = np.asarray(event["ids"], dtype=np.int64)
-                if np.any(rows < 0) or np.any(rows >= cold.first_eviction_at(cut)):
+                if np.any(rows < 0) or np.any(
+                    rows >= measured_data.first_eviction_at(cutoff_us)
+                ):
                     raise ValueError("History contains a future eviction")
-                folder = output / "models" / str(72 + count)
-                record = json.loads((folder / "FIT.json").read_text())
-                if sha(folder / "model.pkl") != record["model_sha256"]:
+                hour_output = output / "models" / str(72 + hourly_updates)
+                fit_summary_file = hour_output / "model_fit_summary.json"
+                if not fit_summary_file.exists():
+                    fit_summary_file = hour_output / "FIT.json"
+                record = json.loads(fit_summary_file.read_text())
+                if sha(hour_output / "model.pkl") != record["model_sha256"]:
                     raise ValueError("Saved hourly model changed")
-                with (folder / "model.pkl").open("rb") as file:
+                with (hour_output / "model.pkl").open("rb") as file:
                     model = pickle.load(file)
-                values, _ = predict_events(cold, model, rows)
+                values, _ = predict_events(measured_data, model, rows)
                 response = dict(
                     event="reprice_scores",
-                    cut_us=cut,
+                    cut_us=cutoff_us,
                     ids=event["ids"],
                     scores=values.tolist(),
                 )
                 process.stdin.write(json.dumps(response, allow_nan=False) + "\n")
                 process.stdin.flush()
-                count += 1
-            if process.wait() or count != 96 or result is None:
+                hourly_updates += 1
+            if process.wait() or hourly_updates != 96 or result is None:
                 raise ValueError("Replay did not finish all 96 model updates")
         except BaseException:
             process.kill()
             process.wait()
             raise
     save(output / "native.json", result)
-    checked = subprocess.check_output(
+    checker_output = subprocess.check_output(
         list(
             map(
                 str,
                 [
                     BUILD / "check_replay",
-                    *common,
+                    *shared_replay_arguments,
                     "--program-bits",
                     output / "native.programs.bits",
                     "--out-prefix",
@@ -196,7 +201,7 @@ def replay(manifest_path, cold, scores, output, ssd_blocks, budget):
             )
         )
     )
-    audit = json.loads(checked)
+    audit = json.loads(checker_output)
     for key, value in audit.items():
         if key != "schema" and result[key] != value:
             raise ValueError("Independent replay mismatch: " + key)
@@ -244,13 +249,13 @@ def main():
     if args.ssd_blocks <= 0 or args.budget_blocks < 0:
         parser.error("Positive capacity and nonnegative allowance required")
     args.output.mkdir(parents=True, exist_ok=False)
-    cold, scores = prepare(args.manifest, args.output)
+    measured_data, predictions_path = prepare(args.manifest, args.output)
     print(
         json.dumps(
             replay(
                 args.manifest,
-                cold,
-                scores,
+                measured_data,
+                predictions_path,
                 args.output,
                 args.ssd_blocks,
                 args.budget_blocks,

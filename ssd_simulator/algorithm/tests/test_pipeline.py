@@ -13,7 +13,7 @@ from ssd_simulator.algorithm.accounting import credit_and_overlap
 from ssd_simulator.algorithm.labels import build_observed_counts
 from ssd_simulator.algorithm.settings import RECORDED, SETTINGS, HOUR
 from ssd_simulator.algorithm.training import fit_model, predict, vocab_encode, vocab_fit
-from ssd_simulator.algorithm.training_data import EDT, TrainingData
+from ssd_simulator.algorithm.training_data import EVICTION_RECORD_DTYPE, TrainingData
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -75,7 +75,7 @@ class PipelineChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             data = TrainingData.__new__(TrainingData)
-            data.sample = np.arange(3)
+            data.sampled_eviction_ids = np.arange(3)
             data.sample_times = np.array([HOUR, 2 * HOUR, 4 * HOUR])
             matrix = np.zeros((169, 3), dtype="<u4")
             matrix[3] = [2, 7, 0]

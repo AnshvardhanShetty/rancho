@@ -24,15 +24,18 @@ from ssd_storage import Storage
 from ssd_policy import Offer
 
 
-def config():
+def read_serving_settings():
     """Read the plan supplied by the launcher."""
-    return json.loads(Path(os.environ["RANCHO_SSD_PLAN"]).read_text())
+    settings_file = os.environ.get("RANCHO_SSD_SERVING_SETTINGS")
+    if settings_file is None:
+        settings_file = os.environ["RANCHO_SSD_PLAN"]
+    return json.loads(Path(settings_file).read_text())
 
 
-def emit(cfg, name, fields):
+def emit(serving_settings, name, fields):
     """Append one engine event to the output log."""
-    with (Path(cfg["output"]) / (name + ".jsonl")).open("a") as f:
-        f.write(json.dumps(fields, allow_nan=False) + "\n")
+    with (Path(serving_settings["output"]) / (name + ".jsonl")).open("a") as log_file:
+        log_file.write(json.dumps(fields, allow_nan=False) + "\n")
 
 
 store = None
@@ -51,14 +54,14 @@ class Connector(KVConnectorBase_V1):
 
     def __init__(self, vllm_config, role, kv_cache_config):
         super().__init__(vllm_config, role, kv_cache_config)
-        self.cfg = config()
+        self.serving_settings = read_serving_settings()
         self.worker_role = role == KVConnectorRole.WORKER
         self.pending = {}
         self.destinations = {}
         if role == KVConnectorRole.SCHEDULER:
-            module, name = self.cfg["policy_factory"].split(":")
+            module, name = self.serving_settings["policy_factory"].split(":")
             self.decide = getattr(importlib.import_module(module), name)(
-                self.cfg["policy_settings"]
+                self.serving_settings["policy_settings"]
             )
             self.clock_start = time.monotonic()
             self.history = {}
@@ -80,7 +83,7 @@ class Connector(KVConnectorBase_V1):
         if store is not None:
             raise RuntimeError("One engine per serving process required")
         pages = NativeCachePages(self._kv_cache_config, caches)
-        if pages.num_blocks != self.cfg["hbm_pages"] + 1:
+        if pages.num_blocks != self.serving_settings["hbm_pages"] + 1:
             raise ValueError("HBM allocation mismatch")
         for name, view in pages.pages.items():
             tensor = caches[name]
@@ -92,13 +95,13 @@ class Connector(KVConnectorBase_V1):
             ):
                 raise ValueError("Native KV page address or geometry mismatch: " + name)
         store = Storage(
-            self.cfg["ssd_directory"],
-            self.cfg["ssd_pages"],
+            self.serving_settings["ssd_directory"],
+            self.serving_settings["ssd_pages"],
             pages,
-            self.cfg.get("verify_payloads", False),
+            self.serving_settings.get("verify_payloads", False),
         )
         emit(
-            self.cfg,
+            self.serving_settings,
             "geometry",
             dict(
                 page_bytes=store.page_bytes,
@@ -118,9 +121,9 @@ class Connector(KVConnectorBase_V1):
 
     def begin_allocation(self, request):
         """Select the request metadata and advance the policy clock."""
-        self.rid = re.sub(r"-[0-9a-f]{8}$", "", request.request_id)
-        info = self.cfg["requests"][self.rid]
-        if self.cfg["clock"] == "monotonic":
+        self.trace_request_id = re.sub(r"-[0-9a-f]{8}$", "", request.request_id)
+        info = self.serving_settings["requests"][self.trace_request_id]
+        if self.serving_settings["clock"] == "monotonic":
             self.now = time.monotonic() - self.clock_start
         else:
             self.now = max(self.now, info["policy_seconds"])
@@ -128,13 +131,13 @@ class Connector(KVConnectorBase_V1):
 
     def record_pages(self, request, manager):
         """Record one access per block per request."""
-        info = self.cfg["requests"][self.rid]
+        request_info = self.serving_settings["requests"][self.trace_request_id]
         touched = self.request_touched.setdefault(request.request_id, set())
         blocks = manager.get_blocks(request.request_id).blocks[0]
-        for block, h in zip(
+        for block, block_hash in zip(
             blocks, request.block_hashes[: len(request.prompt_token_ids) // 16]
         ):
-            key = bytes(h)
+            key = bytes(block_hash)
             if (
                 block.block_hash is None
                 or bytes(get_block_hash(block.block_hash)) != key
@@ -150,7 +153,9 @@ class Connector(KVConnectorBase_V1):
             if key in touched:
                 if acquired:
                     self.history[key].update(
-                        last=self.now, rid=self.rid, features=info["features"]
+                        last=self.now,
+                        rid=self.trace_request_id,
+                        features=request_info["features"],
                     )
                 continue
             touched.add(key)
@@ -158,8 +163,8 @@ class Connector(KVConnectorBase_V1):
             state.update(
                 count=state["count"] + 1,
                 last=self.now,
-                rid=self.rid,
-                features=info["features"],
+                rid=self.trace_request_id,
+                features=request_info["features"],
             )
 
     def evict(self, block):
@@ -178,9 +183,9 @@ class Connector(KVConnectorBase_V1):
             raise RuntimeError(
                 "Attempted to evict unfinished KV in the same scheduler step"
             )
-        h = self.history[key]
-        prior = h["evictions"]
-        h["evictions"] += 1
+        block_history = self.history[key]
+        prior_evictions = block_history["evictions"]
+        block_history["evictions"] += 1
         self.evictions += 1
         if key in store.slots:
             store.slots.move_to_end(key)
@@ -193,14 +198,14 @@ class Connector(KVConnectorBase_V1):
             self.now,
             store.page_bytes,
             store.writes,
-            self.cfg["write_budget_pages"],
+            self.serving_settings["write_budget_pages"],
             store.capacity,
-            prior,
-            h["count"],
+            prior_evictions,
+            block_history["count"],
             self.now - born,
-            self.now - h["last"],
-            h["rid"],
-            dict(h["features"]),
+            self.now - block_history["last"],
+            block_history["rid"],
+            dict(block_history["features"]),
         )
         self.absent += 1
         decision = self.decide(offer)
@@ -215,11 +220,11 @@ class Connector(KVConnectorBase_V1):
         """Find how much more of the input is available from GPU or SSD."""
         begin = num_computed_tokens // 16
         matches = []
-        for h in request.block_hashes[
+        for block_hash in request.block_hashes[
             begin : (len(request.prompt_token_ids) - 1) // 16
         ]:
-            key = bytes(h)
-            local = self.pool.get_cached_block(h, [0])
+            key = bytes(block_hash)
+            local = self.pool.get_cached_block(block_hash, [0])
             if local and local[0].block_id not in self.new_pages:
                 matches.append((key, local[0].block_id))
             elif key in store.slots:
@@ -337,23 +342,23 @@ class SSDScheduler(Scheduler):
     def update_from_output(self, scheduler_output, model_runner_output):
         """Finish the step and report changed storage counters."""
         result = super().update_from_output(scheduler_output, model_runner_output)
-        c = self.connector
-        for rid in list(c.request_touched):
-            if rid not in self.requests:
-                del c.request_touched[rid]
+        connector = self.connector
+        for request_id in list(connector.request_touched):
+            if request_id not in self.requests:
+                del connector.request_touched[request_id]
         counters = dict(
             written_pages=store.writes,
             read_pages=store.reads,
-            restored_pages=c.restored,
+            restored_pages=connector.restored,
             replacements=store.replacements,
             resident_ssd_pages=len(store.slots),
-            absent_offers=c.absent,
-            evictions=c.evictions,
-            free_retentions=c.retained,
-            unwritten_offers=c.rejected,
-            local_islands=c.local_islands,
+            absent_offers=connector.absent,
+            evictions=connector.evictions,
+            free_retentions=connector.retained,
+            unwritten_offers=connector.rejected,
+            local_islands=connector.local_islands,
         )
         if counters != getattr(self, "_last_counters", None):
-            emit(c.cfg, "io", counters)
+            emit(connector.serving_settings, "io", counters)
             self._last_counters = counters
         return result
