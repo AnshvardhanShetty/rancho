@@ -45,13 +45,13 @@ In simulator experiments, RANCHO replaced **85% of the GPU memory used for prefi
 
 Each GB of GPU memory removed adds 16 GB of flash, matching SKHynix & Sandisk's proposed specification. All policies have a write allowance averaging one full flash-capacity write per day.
 
-I also integrated RANCHO into **vLLM**, an engine for serving language models. The prototype uses a separate region of GPU memory to emulate HBF and limits writes to **8 GB/s**. We test it with synthetic conversations whose shared prefixes occupy most of the baseline's KV-cache memory, leaving little room for active requests.
+I also integrated RANCHO into **vLLM**, an engine for serving language models. The prototype uses a separate region of GPU memory to emulate HBF and limits writes to **8 GB/s**. We test it with synthetic conversations that emulate high pressure on HBM capacity.
 
-With **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token (TTFT) falls **89%**. [vLLM code and setup](hbf_serving/README.md).
+At a request rate of 20req/s, with **85% less KV-cache HBM**, RANCHO achieves **6.4× throughput** at the same 95.12% cache-hit ratio. The time by which 95% of requests receive their first token (TTFT) falls **89%**. [vLLM code and setup](hbf_serving/README.md).
 
 ### SSD
 
-SSD caching avoids **79.5% of the repeated prefill left after memory caching** within conversations in our simulator experiments, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. The memory capacity stays fixed. [SSD simulator](ssd_simulator/README.md).
+SSD caching avoids **79.5% of the repeated prefill left after memory caching** within conversations in our simulator experiments, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. [SSD simulator](ssd_simulator/README.md).
 
 The HBF serving engine is still under development. We are also developing an SSD serving engine; its initial code is in [ssd_serving](ssd_serving/README.md).
 
