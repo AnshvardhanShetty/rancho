@@ -31,7 +31,7 @@ flowchart LR
 
 ## Results
 
-The simulator results use a private FreeInference trace with **1.49 million requests over seven days**. The trace is not included in this repository.
+The simulator results use a private FreeInference trace with **1.49 million requests over seven days**. The trace is still private and hence not included in this repository.
 
 ### High-bandwidth flash
 
