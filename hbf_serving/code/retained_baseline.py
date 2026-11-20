@@ -6,7 +6,7 @@ Only the declared shared prefix is retained after GPU computation."""
 
 from direct_backend import DirectScheduler, log_event
 from concurrency_observer import Observer
-from prefix_retention import PrefixRetention, completed_shared_candidates
+from prefix_retention import PrefixRetention, find_completed_shared_prefixes
 
 
 class RetainedPrefixScheduler(DirectScheduler):
@@ -51,7 +51,7 @@ class RetainedPrefixScheduler(DirectScheduler):
         # This callback is entered after synchronous GPU execution. Save block
         # objects before the native completion path frees finished request tables.
         tables = self.tiers.managers[0].req_to_blocks
-        candidates, complete_prefixes = completed_shared_candidates(
+        candidates, complete_prefixes = find_completed_shared_prefixes(
             scheduler_output.num_scheduled_tokens,
             self.requests,
             tables,
@@ -59,10 +59,12 @@ class RetainedPrefixScheduler(DirectScheduler):
             self.shared_pages,
         )
         result = super().update_from_output(scheduler_output, model_runner_output)
-        added = self.retention.retain(candidates, gpu_completed=True)
+        added = self.retention.retain_shared_prefix_blocks(
+            candidates, gpu_completed=True
+        )
         self.retention_seen.update(complete_prefixes)
         if added:
-            invariant = self.retention.verify()
+            invariant = self.retention.verify_retained_prefixes()
             log_event(
                 self.engine_settings,
                 "retention.jsonl",
@@ -87,7 +89,7 @@ class RetainedPrefixScheduler(DirectScheduler):
             and self.get_num_unfinished_requests() == 0
             and not self.retention_completed
         ):
-            invariant = self.retention.verify()
+            invariant = self.retention.verify_retained_prefixes()
             assert invariant["retained_pages"] == invariant["expected_shared_pages"]
             log_event(
                 self.engine_settings,

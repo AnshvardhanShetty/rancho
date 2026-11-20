@@ -3,7 +3,7 @@
 RequestData gets the examples and reuse counts available at a cutoff
 fit_tree_model picks a tree count using earlier requests and fits the trees
 predict_reuse returns one reads per block estimate for each new request
-fit_hourly_model runs these steps and saves the model and predictions
+fit_and_predict_one_hour runs these steps and saves the model and predictions
 """
 
 import hashlib
@@ -98,7 +98,7 @@ class RequestData:
             self.offer_block_counts >= 0
         )
 
-    def training_examples(self, cutoff_us):
+    def get_training_rows_and_reuse(self, cutoff_us):
         """Return request positions and reads per block known by this cutoff"""
         # Convert the hourly cutoff into a row boundary in the read-count table.
         assert cutoff_us % H == 0 and 0 <= cutoff_us <= 168 * H
@@ -154,7 +154,7 @@ def check_condition(condition, message):
         raise ValueError(message)
 
 
-def training_weights(data, request_rows, cutoff_us):
+def compute_training_weights(data, request_rows, cutoff_us):
     """Give requests half as much weight for each extra day since arrival"""
     weights = np.exp2(
         -(cutoff_us - np.asarray(data.arrival_times_us[request_rows], dtype=float))
@@ -172,7 +172,7 @@ def training_weights(data, request_rows, cutoff_us):
 def prepare_training_arrays(data, cutoff_us, settings):
     """Prepare the examples available before this hourly cutoff."""
     started = time.monotonic()
-    request_rows, reads_per_block = data.training_examples(cutoff_us)
+    request_rows, reads_per_block = data.get_training_rows_and_reuse(cutoff_us)
     check_condition(
         len(reads_per_block) > 0
         and np.all(np.isfinite(reads_per_block))
@@ -183,7 +183,7 @@ def prepare_training_arrays(data, cutoff_us, settings):
     feature_names = settings["features"]
     features = data.feature_table(request_rows, feature_names)
     category_columns = data.categorical_columns(feature_names)
-    weights = training_weights(data, request_rows, cutoff_us)
+    weights = compute_training_weights(data, request_rows, cutoff_us)
     average_reuse = float(np.average(reads_per_block, weights=weights))
 
     # Record which examples, weights, and settings entered this fit.
@@ -250,7 +250,7 @@ def fit_tree_model(data, cutoff_us, settings):
 
     # The earlier fit sees only reads before earlier_cut. Validation uses reads before cut.
     earlier_cut = cutoff_us - VALIDATION_HOURS
-    earlier_rows, earlier_reuse = data.training_examples(earlier_cut)
+    earlier_rows, earlier_reuse = data.get_training_rows_and_reuse(earlier_cut)
     validation_rows = data.arrival_times_us[request_rows] >= earlier_cut
     tree_count, errors = settings["max_rounds"], []
     if (
@@ -260,7 +260,7 @@ def fit_tree_model(data, cutoff_us, settings):
     ):
         earlier_features = data.feature_table(earlier_rows, settings["features"])
         category_values = build_category_values(earlier_features, category_columns)
-        earlier_weights = training_weights(data, earlier_rows, earlier_cut)
+        earlier_weights = compute_training_weights(data, earlier_rows, earlier_cut)
         fitted = lgb.LGBMRegressor(n_estimators=tree_count, **parameters)
         fitted.fit(
             encode_tree_features(earlier_features, category_values),
@@ -350,7 +350,7 @@ def record_fit_details(model, features, reads_per_block, started, record):
 
 
 # FIT AND PREDICT ONE HOUR: the experiment runner calls this function.
-def fit_hourly_model(data, cutoff_us, output_directory):
+def fit_and_predict_one_hour(data, cutoff_us, output_directory):
     """Train on earlier observations and predict reuse for requests in this hour."""
     # 1. Set up a fresh output folder and load the model recipe.
     output_directory = Path(output_directory)
@@ -361,12 +361,12 @@ def fit_hourly_model(data, cutoff_us, output_directory):
 
     # 2. Call fit_tree_model() to choose the tree count and fit on earlier observations.
     model, fit_summary = fit_tree_model(data, cutoff_us, recipe)
-    training_rows, reads_per_block = data.training_examples(cutoff_us)
+    training_rows, reads_per_block = data.get_training_rows_and_reuse(cutoff_us)
     assert len(training_rows) > 0
 
     # 3. Independently recount labels at the fitting and earlier validation cutoffs.
     for check_cut in [cutoff_us, cutoff_us - 6 * H]:
-        checked_rows, checked_targets = data.training_examples(check_cut)
+        checked_rows, checked_targets = data.get_training_rows_and_reuse(check_cut)
         expected_rows = np.flatnonzero(
             (data.arrival_times_us < check_cut) & (data.offer_block_counts > 0)
         )

@@ -59,18 +59,18 @@ class ServingReplayTest(unittest.TestCase):
         sessions = [1, 1, 1, 2, 2, 2]
         features = np.zeros((len(blocks), 1))
         initial = SyntheticTrainingData(blocks, times, sessions, features, ["user"])
-        rows, labels = initial.training_examples(6 * hour)
+        rows, labels = initial.get_training_rows_and_reuse(6 * hour)
         np.testing.assert_array_equal(rows, [0, 3, 4])
         np.testing.assert_array_equal(labels, [1, 0, 1])
         offered = SyntheticTrainingData(
             blocks, times, sessions, features, ["user"], offered=blocks
         )
-        rows, labels = offered.training_examples(2 * hour)
+        rows, labels = offered.get_training_rows_and_reuse(2 * hour)
         np.testing.assert_array_equal(rows, [0, 1])
         np.testing.assert_array_equal(labels, [0.5, 0])
-        _, later = offered.training_examples(6 * hour)
+        _, later = offered.get_training_rows_and_reuse(6 * hour)
         np.testing.assert_array_equal(later, [1.5, 1, 0, 0, 1, 0])
-        _, earlier_again = offered.training_examples(2 * hour)
+        _, earlier_again = offered.get_training_rows_and_reuse(2 * hour)
         np.testing.assert_array_equal(earlier_again, labels)
 
 

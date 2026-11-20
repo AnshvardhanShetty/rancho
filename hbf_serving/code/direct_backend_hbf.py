@@ -10,7 +10,7 @@ Reuse from the current request is added after its write decision
 
 import time
 from direct_backend import DirectConnector, DirectScheduler, Copied, log_event
-from reuse import existing_hbf, commit_existing
+from reuse import find_existing_hbf_copy, remap_to_existing_hbf_copies
 
 
 class HBFConnector(DirectConnector):
@@ -36,7 +36,7 @@ class HBFConnector(DirectConnector):
         copied_hashes = {}
         for candidate in metadata.candidates:
             history_start = time.perf_counter_ns()
-            reuse_history = self.history.prepare(
+            reuse_history = self.history.collect_request_reuse(
                 candidate["request_id"],
                 candidate["prompt_keys"],
                 candidate["session"],
@@ -90,8 +90,10 @@ class HBFConnector(DirectConnector):
                 if self.config.get("physical_write_accounting"):
                     self.policy.set_request_context(candidate["request_id"])
                 # Score using only reuse from before this request
-                self.policy.set_past(reuse_history["past_filtered_reuses"])
-                decision = self.policy.hbf_prefill_complete(
+                self.policy.set_suffix_reuse_count(
+                    reuse_history["past_filtered_reuses"]
+                )
+                decision = self.policy.decide_hbf_write_after_prefill(
                     self.event_id,
                     self.now_us,
                     candidate["features"],
@@ -156,7 +158,7 @@ class HBFConnector(DirectConnector):
             finally:
                 # Record this request for future offers even if the write was declined
                 history_start = time.perf_counter_ns()
-                self.history.commit(reuse_history)
+                self.history.record_request_reuse(reuse_history)
                 event["history_cpu_ns"] = (
                     history_prepare_ns + time.perf_counter_ns() - history_start
                 )
@@ -189,7 +191,7 @@ class HBFScheduler(DirectScheduler):
                         "An offered full native page lacks its content hash"
                     )
                 candidate["source_hashes"][source] = repr(key)
-                target = existing_hbf(self.tiers, source)
+                target = find_existing_hbf_copy(self.tiers, source)
                 if target is not None:
                     reuse.append((source, target))
                     protected.add(target)
@@ -216,7 +218,7 @@ class HBFScheduler(DirectScheduler):
                 pair for event in meta.events for pair in event.get("reuse_pairs", [])
             ]
             if reuse:
-                result = commit_existing(
+                result = remap_to_existing_hbf_copies(
                     self.tiers, reuse, gpu_completed=meta.gpu_completed
                 )
                 log_event(

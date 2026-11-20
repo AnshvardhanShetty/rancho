@@ -27,7 +27,7 @@ class RequestInfo:
     age_seconds: float
     gap_seconds: float
 
-    def shared(self):
+    def request_feature_values(self):
         return dict(
             user=self.user,
             causal_request_position=self.position,
@@ -44,7 +44,7 @@ class RequestHistory:
         self.next_row = 0
         self.last_time_us = -(1 << 63)
 
-    def arrival(self, row, time_us, session, user):
+    def record_request_arrival(self, row, time_us, session, user):
         """Read the earlier chat state before adding the current request"""
         if (
             type(row) is not int
@@ -93,7 +93,7 @@ class BlockHistory:
     def __init__(self):
         self.blocks = {}
 
-    def enter(self, block_id, request):
+    def record_hbm_entry(self, block_id, request):
         if type(block_id) is not int or block_id < 0:
             raise ValueError("Invalid block ID")
         block_history = self.blocks.setdefault(block_id, Block())
@@ -101,7 +101,7 @@ class BlockHistory:
             raise ValueError("HBM entry for already resident block")
         block_history.born_us = request.time_us
 
-    def touch_request(self, block_ids, request):
+    def record_block_reads(self, block_ids, request):
         # The physical replay counts a block once per request, even if repeated
         # at multiple prompt positions. No admission status enters this update.
         """Update block history once per block in this request"""
@@ -118,7 +118,7 @@ class BlockHistory:
             block_history.touches += 1
             block_history.last_touch_row = request.row
 
-    def eviction(self, block_id, request):
+    def record_eviction_and_get_features(self, block_id, request):
         """Get the history of a block as it leaves memory"""
         block_history = self.blocks.get(block_id)
         if (
@@ -136,7 +136,7 @@ class BlockHistory:
         # SSD uses the evicted block's last-touch request metadata, not the
         # request that happened to displace it. Counters precede this eviction.
         result = dict(
-            block_history.last.shared(),
+            block_history.last.request_feature_values(),
             prior_eviction_count=block_history.evictions,
             prior_touch_count=block_history.touches,
             seconds_in_HBM=(request.time_us - block_history.born_us) / 1e6,

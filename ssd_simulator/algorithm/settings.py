@@ -11,7 +11,7 @@ RECORDED = json.loads((Path(__file__).with_name("recorded_settings.json")).read_
 SETTINGS = dict(RECORDED, objective="raw_l2")
 
 
-def normalize(settings):
+def validate_recorded_settings(settings):
     """Reject changes to the selected eight-input recipe."""
     if settings != SETTINGS:
         raise ValueError("Expected the recorded raw-target SSD recipe")

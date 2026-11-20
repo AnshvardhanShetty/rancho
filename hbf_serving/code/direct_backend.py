@@ -166,7 +166,7 @@ class DirectConnector(KVConnectorBase_V1):
                 continue
             if self.policy is not None:
                 self.now_us = max(self.now_us, candidate["policy_us"])
-                decision = self.policy.hbf_prefill_complete(
+                decision = self.policy.decide_hbf_write_after_prefill(
                     self.event_id,
                     self.now_us,
                     candidate["features"],
@@ -259,14 +259,14 @@ class DirectScheduler(Scheduler):
     def schedule(self, *args, **kwargs):
         """Plan page moves for completed prefill and send them to the worker"""
         output = super().schedule(*args, **kwargs)
-        self.tiers.refresh_worker_tables(output)
+        self.tiers.refresh_worker_block_tables(output)
         beginnings = {
             scheduled_request.req_id: scheduled_request.num_computed_tokens
             for scheduled_request in output.scheduled_new_reqs
         }
         cached = output.scheduled_cached_reqs
         beginnings.update(zip(cached.req_ids, cached.num_computed_tokens))
-        meta = Step(destinations=self.tiers.available_hbf())
+        meta = Step(destinations=self.tiers.free_hbf_page_ids())
         tables = self.tiers.managers[0].req_to_blocks
         for request_id, count in output.num_scheduled_tokens.items():
             request = self.requests[request_id]
@@ -287,11 +287,11 @@ class DirectScheduler(Scheduler):
                         prompt_tokens=prompt_token_count,
                         cached_tokens=cached_tokens_before,
                         cached_HBF_full_pages=sum(
-                            self.tiers.is_hbf(cached_block.block_id)
+                            self.tiers.is_hbf_page(cached_block.block_id)
                             for cached_block in prefix
                         ),
                         cached_HBM_full_pages=sum(
-                            self.tiers.is_hbm(cached_block.block_id)
+                            self.tiers.is_hbm_page(cached_block.block_id)
                             for cached_block in prefix
                         ),
                     ),
@@ -321,7 +321,7 @@ class DirectScheduler(Scheduler):
                     for cached_block in tables[request_id][
                         self.first_computed[request_id] // 16 : prompt_token_count // 16
                     ]
-                    if self.tiers.is_hbm(cached_block.block_id)
+                    if self.tiers.is_hbm_page(cached_block.block_id)
                 ]
                 if len(set(sources)) != len(sources):
                     raise ValueError("Duplicate native suffix page")

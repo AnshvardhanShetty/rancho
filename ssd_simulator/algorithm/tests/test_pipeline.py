@@ -9,10 +9,15 @@ from pathlib import Path
 import tempfile
 import unittest
 import numpy as np
-from ssd_simulator.algorithm.accounting import credit_and_overlap
-from ssd_simulator.algorithm.labels import build_observed_counts
+from ssd_simulator.algorithm.accounting import count_eligible_reads_saved_and_compare
+from ssd_simulator.algorithm.labels import build_hourly_saved_read_counts
 from ssd_simulator.algorithm.settings import RECORDED, SETTINGS, HOUR
-from ssd_simulator.algorithm.training import fit_model, predict, vocab_encode, vocab_fit
+from ssd_simulator.algorithm.training import (
+    fit_eviction_reuse_model,
+    predict_saved_reads,
+    encode_tree_features,
+    build_category_values,
+)
 from ssd_simulator.algorithm.training_data import EVICTION_RECORD_DTYPE, TrainingData
 
 HERE = Path(__file__).resolve().parents[1]
@@ -31,9 +36,9 @@ class PipelineChecks(unittest.TestCase):
 
     def test_user_codes_are_reused_and_unseen_users_are_unknown(self):
         x = np.array([[4.0, 1.0], [8.0, 2.0]])
-        vocabulary = vocab_fit(x, [0])
+        vocabulary = build_category_values(x, [0])
         np.testing.assert_array_equal(
-            vocab_encode(np.array([[8.0, 3.0], [99.0, 4.0]]), vocabulary),
+            encode_tree_features(np.array([[8.0, 3.0], [99.0, 4.0]]), vocabulary),
             [[1.0, 3.0], [-1.0, 4.0]],
         )
 
@@ -49,7 +54,9 @@ class PipelineChecks(unittest.TestCase):
             row[0, 4] = 1
             row.tofile(root / "reference")
             self.assertEqual(
-                credit_and_overlap(root / "ours", root / "reference", root),
+                count_eligible_reads_saved_and_compare(
+                    root / "ours", root / "reference", root
+                ),
                 (2, 1, 1, 0),
             )
 
@@ -60,7 +67,7 @@ class PipelineChecks(unittest.TestCase):
             np.save(root / "sample.npy", np.array([0], dtype=np.int64))
             np.array([[0, 0, 0, 1, 0, 0]], dtype="<i4").tofile(root / "evictions")
             np.array([[1, 0, 3]], dtype="<i4").tofile(root / "events")
-            build_observed_counts(
+            build_hourly_saved_read_counts(
                 root / "times",
                 root / "sample.npy",
                 root / "evictions",

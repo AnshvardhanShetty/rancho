@@ -3,7 +3,7 @@
 import numpy as np
 
 
-def encode(feature_table, categories_by_column):
+def encode_tree_features(feature_table, categories_by_column):
     """Use the model's saved user codes for incoming requests"""
     encoded_features = np.where(
         np.isfinite(feature_table) & (feature_table >= 0), feature_table, np.nan

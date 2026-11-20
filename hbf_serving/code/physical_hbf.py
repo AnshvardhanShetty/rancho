@@ -42,7 +42,9 @@ class PhysicalTimedPolicy:
             raise ValueError("Unrecognized physical request identity")
         self.context = int(match[1])
 
-    def hbf_prefill_complete(self, row, logical_us, features, distinct, cost, **kwargs):
+    def decide_hbf_write_after_prefill(
+        self, row, logical_us, features, distinct, cost, **kwargs
+    ):
         """Apply the elapsed-time write limit before charging an accepted offer."""
         if self.context is None:
             raise ValueError("Physical phase must be bound to actual request")
@@ -55,10 +57,10 @@ class PhysicalTimedPolicy:
             self.begin = receipt["measurement_start_ns"]
         total_start = time.perf_counter_ns()
         now_ns = time.monotonic_ns()
-        allowance = self.ledger.limit(now_ns, warmup, self.begin)
+        allowance = self.ledger.available_write_pages(now_ns, warmup, self.begin)
         physical_us = self.config["fit"]["cut_us"] + (now_ns - self.origin) // 1000
         start = time.perf_counter_ns()
-        result = self.policy.hbf_prefill_complete(
+        result = self.policy.decide_hbf_write_after_prefill(
             row,
             physical_us,
             features,
@@ -68,7 +70,7 @@ class PhysicalTimedPolicy:
             **kwargs
         )
         cpu_ns = time.perf_counter_ns() - start
-        self.ledger.charge(result["paid_cost"], warmup, allowance)
+        self.ledger.charge_write_pages(result["paid_cost"], warmup, allowance)
         assert self.policy.wallet.blocks_written == self.ledger.total
         total_cpu_ns = time.perf_counter_ns() - total_start
         result.update(

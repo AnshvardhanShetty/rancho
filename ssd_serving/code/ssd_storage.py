@@ -1,8 +1,8 @@
 """Write KV to a local SSD file and read it back.
 
 Storage keeps one fixed-size file, divided into slots holding full KV blocks.
-put() copies GPU data through a CPU buffer and writes a slot.
-read() reads that slot; restore() copies the data back into GPU memory.
+write_block_to_ssd() copies GPU data through a CPU buffer and writes a slot.
+read_block_from_ssd() reads that slot; restore_block_to_gpu() copies the data back into GPU memory.
 close() releases the file and staging buffer.
 
 Assumes Linux direct I/O and a caller-selected local ext4 block-device filesystem.
@@ -51,7 +51,7 @@ class Storage:
         self.buffer = torch.frombuffer(self.staging, dtype=torch.uint8)
         self.page_count = pages.num_blocks
 
-    def copy(self, page_id, transfer_buffer, writing):
+    def copy_block_between_gpu_and_cpu(self, page_id, transfer_buffer, writing):
         """Copy one whole KV block between GPU memory and the CPU buffer."""
         if not 0 < page_id < self.page_count:
             raise ValueError("Invalid HBM slot")
@@ -66,7 +66,7 @@ class Storage:
             offset += layer_page.numel()
         assert offset == self.page_bytes
 
-    def put(self, key, page_id):
+    def write_block_to_ssd(self, key, page_id):
         """Write a new block, replacing the oldest unused SSD copy if full."""
         if key in self.slots:
             raise ValueError("Paid duplicate SSD write")
@@ -76,7 +76,7 @@ class Storage:
             self.replacements += 1
         else:
             slot = len(self.slots)
-        self.copy(page_id, self.buffer, True)
+        self.copy_block_between_gpu_and_cpu(page_id, self.buffer, True)
         if (
             os.pwritev(self.fd, [self.staging], slot * self.page_bytes)
             != self.page_bytes
@@ -87,7 +87,7 @@ class Storage:
         if self.verify:
             self.digests[key] = hashlib.sha256(self.staging).digest()
 
-    def read(self, key):
+    def read_block_from_ssd(self, key):
         """Read one saved block and optionally verify its contents."""
         slot = self.slots[key]
         if (
@@ -100,11 +100,11 @@ class Storage:
         self.reads += 1
         return self.buffer.clone()
 
-    def restore(self, page, payload):
+    def restore_block_to_gpu(self, page, payload):
         """Copy a staged block into its allocated GPU slot."""
-        self.copy(page, payload, False)
+        self.copy_block_between_gpu_and_cpu(page, payload, False)
         if self.verify:
-            self.copy(page, self.buffer, True)
+            self.copy_block_between_gpu_and_cpu(page, self.buffer, True)
             if not torch.equal(self.buffer, payload):
                 raise ValueError("Restored GPU KV differs from source")
 

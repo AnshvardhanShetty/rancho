@@ -14,7 +14,7 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "code"))
-from campaign_state import save
+from campaign_state import write_run_json
 from updated_model import CUT, SuffixGBT, model_fit_summary_path
 
 
@@ -64,7 +64,7 @@ def main():
         )
         model = SuffixGBT(predictor_settings)
         controller_start_state = output / "controller_start_state.json"
-        save(
+        write_run_json(
             controller_start_state,
             dict(
                 cold=True,
@@ -79,8 +79,8 @@ def main():
         )
     workload_settings_file = output / "workload_settings.json"
     comparison_settings_file = output / "comparison_settings.json"
-    save(workload_settings_file, workload_settings)
-    save(comparison_settings_file, comparison_settings)
+    write_run_json(workload_settings_file, workload_settings)
+    write_run_json(comparison_settings_file, comparison_settings)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(HERE / "code") + os.pathsep + env.get("PYTHONPATH", "")
     runner = HERE / "code/run_cell.py"

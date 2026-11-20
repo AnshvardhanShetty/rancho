@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace as NS
 import unittest
-from prefix_retention import PrefixRetention, completed_shared_candidates
+from prefix_retention import PrefixRetention, find_completed_shared_prefixes
 from tier_pool import TierPool
 
 
@@ -67,30 +67,32 @@ class RetentionTests(unittest.TestCase):
 
     def test_pin_survives_request_release_and_is_charged_to_hbm(self):
         b = self.page("prefix")
-        self.retention.retain([(b, "prefix")], gpu_completed=True)
+        self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=True)
         self.pool.free_blocks([b])
         self.assertEqual(b.ref_cnt, 1)
         self.assertEqual(self.pool.get_num_free_blocks(), 4)
         self.assertEqual(self.manager._get_num_evictable_blocks([b]), 0)
         with self.assertRaises(ValueError):
             self.pool.get_new_blocks(5)
-        self.retention.verify()
+        self.retention.verify_retained_prefixes()
 
     def test_pin_after_request_finished_removes_free_page(self):
         b = self.page("prefix")
         self.pool.free_blocks([b])
         self.assertEqual(self.pool.get_num_free_blocks(), 5)
-        self.retention.retain([(b, "prefix")], gpu_completed=True)
+        self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=True)
         self.assertEqual(self.pool.get_num_free_blocks(), 4)
-        self.retention.verify()
+        self.retention.verify_retained_prefixes()
 
     def test_repeated_hits_do_not_leak_retention_references(self):
         b = self.page("prefix")
-        self.retention.retain([(b, "prefix")], gpu_completed=True)
+        self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=True)
         self.pool.free_blocks([b])
         for _ in range(100):
             self.pool.touch([b])
-            self.retention.retain([(b, "prefix")], gpu_completed=True)
+            self.retention.retain_shared_prefix_blocks(
+                [(b, "prefix")], gpu_completed=True
+            )
             self.pool.free_blocks([b])
         self.assertEqual(b.ref_cnt, 1)
         self.assertEqual(len(self.retention.by_id), 1)
@@ -98,7 +100,9 @@ class RetentionTests(unittest.TestCase):
     def test_suffix_remains_reclaimable_and_prefix_eviction_raises(self):
         prefix = self.page("prefix")
         suffix = self.page("suffix")
-        self.retention.retain([(prefix, "prefix")], gpu_completed=True)
+        self.retention.retain_shared_prefix_blocks(
+            [(prefix, "prefix")], gpu_completed=True
+        )
         self.pool.free_blocks([prefix, suffix])
         self.pool._maybe_evict_cached_block(suffix)
         self.assertIsNone(suffix.block_hash)
@@ -109,36 +113,42 @@ class RetentionTests(unittest.TestCase):
     def test_no_early_pin_and_corrupted_hash_detected(self):
         b = self.page("prefix")
         with self.assertRaises(ValueError):
-            self.retention.retain([(b, "prefix")], gpu_completed=False)
+            self.retention.retain_shared_prefix_blocks(
+                [(b, "prefix")], gpu_completed=False
+            )
         self.assertEqual(b.ref_cnt, 1)
-        self.retention.retain([(b, "prefix")], gpu_completed=True)
+        self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=True)
         b.block_hash = "corrupted"
         with self.assertRaises(RuntimeError):
-            self.retention.verify()
+            self.retention.verify_retained_prefixes()
 
     def test_partial_computation_and_shared_boundary_are_respected(self):
         blocks = [NS(block_hash=str(i)) for i in range(5)]
         request = NS(num_computed_tokens=31)
-        candidates, complete = completed_shared_candidates(
+        candidates, complete = find_completed_shared_prefixes(
             ["r"], {"r": request}, {"r": blocks}, set(), 2
         )
         self.assertEqual(len(candidates), 1)
         self.assertEqual(complete, [])
         request.num_computed_tokens = 80
-        candidates, complete = completed_shared_candidates(
+        candidates, complete = find_completed_shared_prefixes(
             ["r"], {"r": request}, {"r": blocks}, set(), 2
         )
         self.assertEqual([x[0] for x in candidates], blocks[:2])
         self.assertEqual(complete, ["r"])
         self.assertEqual(
-            completed_shared_candidates(["r"], {"r": request}, {"r": blocks}, {"r"}, 2),
+            find_completed_shared_prefixes(
+                ["r"], {"r": request}, {"r": blocks}, {"r"}, 2
+            ),
             ([], []),
         )
 
     def test_duplicate_physical_copy_of_hash_is_not_double_pinned(self):
         a = self.page("same")
         b = self.page("same")
-        self.retention.retain([(a, "same"), (b, "same")], gpu_completed=True)
+        self.retention.retain_shared_prefix_blocks(
+            [(a, "same"), (b, "same")], gpu_completed=True
+        )
         self.assertEqual(a.ref_cnt, 2)
         self.assertEqual(b.ref_cnt, 1)
         self.assertEqual(len(self.retention.by_id), 1)

@@ -1,7 +1,7 @@
 """Check throughput, latency and configuration checks using synthetic timestamps."""
 
 import unittest
-from metrics import summarise, validate_pair
+from metrics import summarize_request_performance, validate_comparison_settings
 
 
 def row(i, n, arrival, finish, first=None, last=None):
@@ -47,7 +47,7 @@ def plan():
 
 class Checks(unittest.TestCase):
     def test_real_interval_and_undefined_populations(self):
-        result = summarise(
+        result = summarize_request_performance(
             [row(0, 3, 10, 15, 11, 13), row(1, 0, 11, 16), row(2, 1, 12, 14, 13, 13)]
         )
         self.assertEqual(result["first_arrival_to_last_completion_seconds"], 6)
@@ -61,40 +61,40 @@ class Checks(unittest.TestCase):
         r = row(0, 3, 0, 4, 1, 3)
         r["generated_tokens"] = 2
         with self.assertRaises(ValueError):
-            summarise([r])
+            summarize_request_performance([r])
 
     def test_failed_cohort_rejected(self):
         r = row(0, 1, 0, 4, 1, 1)
         r["status"] = "FAILED"
         with self.assertRaises(ValueError):
-            summarise([r])
+            summarize_request_performance([r])
 
     def test_equal_resource_pair(self):
-        self.assertTrue(validate_pair(plan()))
+        self.assertTrue(validate_comparison_settings(plan()))
 
     def test_old_fixed_working_HBM_rejected(self):
         p = plan()
         p["HBM_accounting"] = "separate_fixed_working_quota"
         with self.assertRaises(ValueError):
-            validate_pair(p)
+            validate_comparison_settings(p)
 
     def test_wrong_exchange_rejected(self):
         p = plan()
         p["RANCHO_HBF_bytes"] = 65
         with self.assertRaises(ValueError):
-            validate_pair(p)
+            validate_comparison_settings(p)
 
     def test_missing_native_GPU_gate_rejected(self):
         p = plan()
         p["GPU_backend_certificate"] = {"status": "PASS_CPU_COMPONENT"}
         with self.assertRaises(ValueError):
-            validate_pair(p)
+            validate_comparison_settings(p)
 
     def test_missing_capacity_rejected(self):
         p = plan()
         p["baseline_HBM_bytes"] = None
         with self.assertRaises(ValueError):
-            validate_pair(p)
+            validate_comparison_settings(p)
 
 
 if __name__ == "__main__":

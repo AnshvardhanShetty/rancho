@@ -1,7 +1,7 @@
 """Prepare the eviction examples used to fit each hourly model.
 
 TrainingData loads checked files and keeps their rows aligned.
-first_eviction_at() finds the requests belonging to an hourly fit interval.
+find_first_eviction_at_or_after() finds the requests belonging to an hourly fit interval.
 training_examples() selects past evictions and their gains observed by the cutoff.
 feature_table() builds the eight inputs; categorical_columns() identifies user IDs.
 
@@ -20,7 +20,7 @@ EVICTION_RECORD_DTYPE = np.dtype(
 )
 
 
-def pinned(record, parent):
+def resolve_and_verify_input_file(record, parent):
     """Resolve a caller-supplied file and check its complete contents."""
     path = Path(record["path"])
     if not path.is_absolute():
@@ -31,16 +31,16 @@ def pinned(record, parent):
     return path
 
 
-def verify_digest(path, digest):
-    pinned(dict(path=str(path), sha256=digest), Path("."))
+def verify_file_hash(path, digest):
+    resolve_and_verify_input_file(dict(path=str(path), sha256=digest), Path("."))
 
 
-def chronological_inner_cut(cutoff, cohort_lag_hours, validation_hours=6):
+def validation_start_time(cutoff, cohort_lag_hours, validation_hours=6):
     """Leave a real future validation interval, plus label-maturation delay."""
     return cutoff - (cohort_lag_hours + validation_hours) * HOUR
 
 
-def validation_mask(decision_times, cutoff, inner_cutoff, cohort_lag_hours):
+def select_validation_rows(decision_times, cutoff, inner_cutoff, cohort_lag_hours):
     times = np.asarray(decision_times)
     return (times >= inner_cutoff) & (times + cohort_lag_hours * HOUR <= cutoff)
 
@@ -58,7 +58,7 @@ class TrainingData:
         self.schema = manifest["feature_schema"]
         files = manifest["files"]
         paths = {
-            key: pinned(files[key], manifest_path.parent)
+            key: resolve_and_verify_input_file(files[key], manifest_path.parent)
             for key in ("timestamps", "evictions", "features", "sample_indices")
         }
         self.arrival_times_us = np.memmap(paths["timestamps"], "<i8", "r")
@@ -83,10 +83,12 @@ class TrainingData:
             ):
                 raise ValueError("Samples must be distinct and chronological")
         labels = dict(manifest["cumulative_labels"])
-        labels["path"] = str(pinned(labels, manifest_path.parent))
+        labels["path"] = str(
+            resolve_and_verify_input_file(labels, manifest_path.parent)
+        )
         self.manifest = dict(manifest, cumulative_labels=labels)
 
-    def first_eviction_at(self, cutoff):
+    def find_first_eviction_at_or_after(self, cutoff):
         """Find the first eviction whose request arrived at or after this time."""
         request_row = int(np.searchsorted(self.arrival_times_us, cutoff, side="left"))
         return int(
@@ -134,7 +136,7 @@ class TrainingData:
             raise ValueError("Exact hourly observed cutoff required")
         label_file = self.manifest["cumulative_labels"]
         if not hasattr(self, "observed_matrix"):
-            verify_digest(label_file["path"], label_file["sha256"])
+            verify_file_hash(label_file["path"], label_file["sha256"])
             self.observed_matrix = np.memmap(
                 label_file["path"],
                 "<u4",

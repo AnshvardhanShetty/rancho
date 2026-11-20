@@ -7,30 +7,34 @@ audit checks the counts and the write budget again
 
 import argparse, hashlib, json, math, os, re, time
 from pathlib import Path
-from controlled_workload import prompts, bound_requests, eligibility
+from controlled_workload import (
+    build_workload_prompts,
+    bind_features_to_request_ids,
+    build_eligible_read_mask,
+)
 from synthetic_workload import FIT
 from updated_model import SuffixGBT
-from campaign_state import read_run_json, save
-from metrics import summarise, describe
+from campaign_state import read_run_json, write_run_json
+from metrics import summarize_request_performance, summarize_latency_samples
 from physical_time import PhysicalBudget
 
 
-def read(json_path):
+def read_json(json_path):
     """Read one JSON file."""
     return json.loads(Path(json_path).read_text())
 
 
-def rows(jsonl_path):
+def read_jsonl_records(jsonl_path):
     """Read the JSON records stored one per line."""
     return [json.loads(line) for line in Path(jsonl_path).read_text().splitlines()]
 
 
-def digest(file_path):
+def sha256_file(file_path):
     """Calculate a file digest for later consistency checks."""
     return hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
 
 
-def index(request_id):
+def parse_request_row(request_id):
     """Extract the request’s position from its engine ID."""
     request_id_match = re.fullmatch(r"row(\d+)(?:-[0-9a-f]{8})?", request_id)
     if not request_id_match:
@@ -38,18 +42,20 @@ def index(request_id):
     return int(request_id_match[1])
 
 
-def compute(run_directory, workload_settings):
+def compute_serving_results(run_directory, workload_settings):
     """Calculate hits, timings and write charges from the saved engine events."""
     engine_settings = read_run_json(run_directory, "engine_settings.json", "PLAN.json")
-    request_records = rows(run_directory / "requests.jsonl")
+    request_records = read_jsonl_records(run_directory / "requests.jsonl")
     first_cache_lookups = [
         x
-        for x in rows(run_directory / "scheduler.jsonl")
+        for x in read_jsonl_records(run_directory / "scheduler.jsonl")
         if x["event"] == "INITIAL_PREFIX_LOOKUP"
     ]
     request_count = workload_settings["groups"] + workload_settings["requests"]
     assert len(request_records) == len(first_cache_lookups) == request_count
-    lookup_by_request_row = {index(x["request_id"]): x for x in first_cache_lookups}
+    lookup_by_request_row = {
+        parse_request_row(x["request_id"]): x for x in first_cache_lookups
+    }
     assert set(lookup_by_request_row) == set(range(request_count))
     assert sorted(r["row"] for r in request_records) == list(
         range(request_count)
@@ -58,7 +64,7 @@ def compute(run_directory, workload_settings):
         for r in request_records
     )
     # Count eligible reads served by the first cache lookup for each request.
-    mask = eligibility(workload_settings)
+    mask = build_eligible_read_mask(workload_settings)
     measured = [v for v in request_records if not v["warmup"]]
     assert len(measured) == workload_settings["requests"]
     measured_hits = total = measured_hbf_hits = measured_hbm_hits = 0
@@ -92,8 +98,8 @@ def compute(run_directory, workload_settings):
         and 0 <= measured_hits <= total
     )
     # Measure output rate and delays, including time spent draining the queue.
-    measured_metrics = summarise(measured)
-    all_request_metrics = summarise(request_records)
+    measured_metrics = summarize_request_performance(measured)
+    all_request_metrics = summarize_request_performance(request_records)
     begin = measured[0]["measurement_start_ns"]
     last_completion_ns = max(v["finish_ns"] for v in measured)
     interval = max(
@@ -111,17 +117,22 @@ def compute(run_directory, workload_settings):
         ),
     )
     # Summarize concurrent requests and the cost of admission decisions.
-    steps = rows(run_directory / "concurrency.jsonl")
+    steps = read_jsonl_records(run_directory / "concurrency.jsonl")
     active = [v for v in steps if v["start_ns"] >= begin]
     offers = (
-        [o for v in rows(run_directory / "worker.jsonl") for o in v.get("offers", [])]
+        [
+            o
+            for v in read_jsonl_records(run_directory / "worker.jsonl")
+            for o in v.get("offers", [])
+        ]
         if engine_settings["HBF_pages"]
         else []
     )
     decision_ns = [
         o["decision"]["decision_cpu_ns"]
         for o in offers
-        if "decision" in o and index(o["request_id"]) >= workload_settings["groups"]
+        if "decision" in o
+        and parse_request_row(o["request_id"]) >= workload_settings["groups"]
     ]
     admission = dict(
         live_calls=sum("decision" in o for o in offers),
@@ -129,7 +140,9 @@ def compute(run_directory, workload_settings):
         admitted=sum(bool(o.get("decision", {}).get("admit")) for o in offers),
         paid_pages=sum(o.get("decision", {}).get("paid_cost", 0) for o in offers),
         copied_bytes=sum(o.get("native_bytes", 0) for o in offers),
-        decision_CPU_microseconds=describe([v / 1000 for v in decision_ns]),
+        decision_CPU_microseconds=summarize_latency_samples(
+            [v / 1000 for v in decision_ns]
+        ),
         decision_CPU_seconds=sum(decision_ns) / 1e9,
     )
     result = dict(
@@ -170,7 +183,7 @@ def compute(run_directory, workload_settings):
     if engine_settings["HBF_pages"]:
         physical_rows = [
             v
-            for v in rows(run_directory / "worker.jsonl")
+            for v in read_jsonl_records(run_directory / "worker.jsonl")
             if v.get("event") == "PHYSICAL_CONTROLLER_CLOCK_START"
         ]
         assert len(physical_rows) == 1
@@ -180,8 +193,8 @@ def compute(run_directory, workload_settings):
             if "decision" not in offer:
                 continue
             decision = offer["decision"]
-            warm = index(offer["request_id"]) < workload_settings["groups"]
-            allowance = ledger.limit(
+            warm = parse_request_row(offer["request_id"]) < workload_settings["groups"]
+            allowance = ledger.available_write_pages(
                 decision["physical_decision_ns"], warm, None if warm else begin
             )
             assert (
@@ -194,9 +207,11 @@ def compute(run_directory, workload_settings):
                 == engine_settings["fit"]["cut_us"]
                 + (decision["physical_decision_ns"] - origin) // 1000
             )
-            ledger.charge(decision["paid_cost"], warm, allowance)
+            ledger.charge_write_pages(decision["paid_cost"], warm, allowance)
         assert ledger.total == admission["paid_pages"]
-        result["physical_writes"] = ledger.summary(last_completion_ns, begin, interval)
+        result["physical_writes"] = ledger.summarize_write_spending(
+            last_completion_ns, begin, interval
+        )
         assert (
             result["physical_writes"]["steady_rate_respected"]
             and result["physical_writes"]["daily_allowance_respected"]
@@ -204,20 +219,21 @@ def compute(run_directory, workload_settings):
         total_ns = [
             o["decision"]["total_admission_cpu_ns"]
             for o in offers
-            if "decision" in o and index(o["request_id"]) >= workload_settings["groups"]
+            if "decision" in o
+            and parse_request_row(o["request_id"]) >= workload_settings["groups"]
         ]
-        admission["predictor_controller_and_guard_CPU_microseconds"] = describe(
-            [v / 1000 for v in total_ns]
+        admission["predictor_controller_and_guard_CPU_microseconds"] = (
+            summarize_latency_samples([v / 1000 for v in total_ns])
         )
         history_ns = [
             o.get("history_cpu_ns", 0)
             for o in offers
-            if index(o["request_id"]) >= workload_settings["groups"]
+            if parse_request_row(o["request_id"]) >= workload_settings["groups"]
         ]
-        admission["filtered_history_CPU_microseconds"] = describe(
+        admission["filtered_history_CPU_microseconds"] = summarize_latency_samples(
             [v / 1000 for v in history_ns]
         )
-        admission["total_admission_CPU_microseconds"] = describe(
+        admission["total_admission_CPU_microseconds"] = summarize_latency_samples(
             [
                 (
                     o["decision"]["total_admission_cpu_ns"]
@@ -227,26 +243,27 @@ def compute(run_directory, workload_settings):
                 / 1000
                 for o in offers
                 if "decision" in o
-                and index(o["request_id"]) >= workload_settings["groups"]
+                and parse_request_row(o["request_id"]) >= workload_settings["groups"]
             ]
         )
         for label, key in [
             ("predictor_CPU_microseconds", "predictor_cpu_ns"),
             ("controller_CPU_microseconds", "controller_cpu_ns"),
         ]:
-            admission[label] = describe(
+            admission[label] = summarize_latency_samples(
                 [
                     o["decision"][key] / 1000
                     for o in offers
                     if "decision" in o
-                    and index(o["request_id"]) >= workload_settings["groups"]
+                    and parse_request_row(o["request_id"])
+                    >= workload_settings["groups"]
                 ]
             )
-        admission["scheduler_feature_CPU_microseconds"] = describe(
+        admission["scheduler_feature_CPU_microseconds"] = summarize_latency_samples(
             [
                 o.get("scheduler_feature_cpu_ns", 0) / 1000
                 for o in offers
-                if index(o["request_id"]) >= workload_settings["groups"]
+                if parse_request_row(o["request_id"]) >= workload_settings["groups"]
             ]
         )
         decisions = [o["decision"] for o in offers if "decision" in o]
@@ -267,7 +284,7 @@ def compute(run_directory, workload_settings):
     return result
 
 
-def audit(run_directory):
+def audit_serving_results(run_directory):
     """Recompute the results and independently check cache and policy accounting."""
     from controllers import Wallet
 
@@ -275,8 +292,8 @@ def audit(run_directory):
     workload_settings = read_run_json(
         run_directory, "workload_settings.json", "SETUP.json"
     )
-    saved_results = read(run_directory / "RESULT.json")
-    recomputed_results = compute(run_directory, workload_settings)
+    saved_results = read_json(run_directory / "RESULT.json")
+    recomputed_results = compute_serving_results(run_directory, workload_settings)
     assert (
         saved_results == recomputed_results
     ), "Independent timestamp/eligibility/metric recomputation mismatch"
@@ -284,14 +301,15 @@ def audit(run_directory):
     # Count each eligible block once even if a request was paused and resumed
     actual = [
         request_record
-        for request_record in rows(run_directory / "requests.jsonl")
+        for request_record in read_jsonl_records(run_directory / "requests.jsonl")
         if not request_record["warmup"]
     ]
     measured_lookups = {
-        index(request_record["request_id"]): request_record
-        for request_record in rows(run_directory / "scheduler.jsonl")
+        parse_request_row(request_record["request_id"]): request_record
+        for request_record in read_jsonl_records(run_directory / "scheduler.jsonl")
         if request_record["event"] == "INITIAL_PREFIX_LOOKUP"
-        and index(request_record["request_id"]) >= workload_settings["groups"]
+        and parse_request_row(request_record["request_id"])
+        >= workload_settings["groups"]
     }
     expected_eligible_reads = (
         len(actual)
@@ -339,7 +357,7 @@ def audit(run_directory):
         saved_results["prefix_retention"] = audit_retention(
             run_directory, engine_settings, saved_results
         )
-    save(
+    write_run_json(
         run_directory / "AUDIT.json",
         dict(
             status="PASS_INDEPENDENT_SERVING_AND_POLICY_AUDIT",
@@ -358,17 +376,19 @@ def audit(run_directory):
     print("PASS_INDEPENDENT_SERVING_AND_POLICY_AUDIT", flush=True)
 
 
-def run(workload_settings, comparison_settings, run_directory, source_checksums_file):
+def run_serving_comparison(
+    workload_settings, comparison_settings, run_directory, source_checksums_file
+):
     """Start a fresh engine, issue requests, drain its queue and save metrics."""
     source = Path(__file__).resolve().parent
     if source_checksums_file:
-        for n, h in read(source_checksums_file).items():
-            assert digest(source / n) == h, n
+        for n, h in read_json(source_checksums_file).items():
+            assert sha256_file(source / n) == h, n
     os.environ["RANCHO_DIAGNOSTIC_QUEUE"] = "indexed"
     run_directory.mkdir(exist_ok=False)
     # Prepare identical prompts and the selected cache allocation.
     hbm, hbf = comparison_settings["hbm"], comparison_settings["hbf"]
-    payload = prompts(workload_settings)
+    payload = build_workload_prompts(workload_settings)
     request_count = len(payload)
     prompt_tokens = (
         workload_settings["prefix_tokens"] + workload_settings["unique_suffix_tokens"]
@@ -394,7 +414,7 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
         block_tokens=16,
         native_block_bytes=workload_settings["native_page_bytes"],
         output=str(run_directory),
-        requests=bound_requests(workload_settings),
+        requests=bind_features_to_request_ids(workload_settings),
         write_bandwidth_bytes_s=workload_settings["write_bandwidth_bytes_s"],
         write_buffer_bytes=workload_settings["write_buffer_bytes"],
         write_budget_pages=hbf,
@@ -414,21 +434,21 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
     if hbf:
         engine_settings.update(
             controller_history=comparison_settings["controller"],
-            controller_history_sha256=digest(comparison_settings["controller"]),
+            controller_history_sha256=sha256_file(comparison_settings["controller"]),
             fit=comparison_settings["fit"],
             updated_rancho=True,
             repetition=comparison_settings["repetition"],
         )
     engine_settings_file = run_directory / "engine_settings.json"
-    save(engine_settings_file, engine_settings)
-    save(run_directory / "workload_settings.json", workload_settings)
-    save(run_directory / "comparison_settings.json", comparison_settings)
+    write_run_json(engine_settings_file, engine_settings)
+    write_run_json(run_directory / "workload_settings.json", workload_settings)
+    write_run_json(run_directory / "comparison_settings.json", comparison_settings)
     os.environ["RANCHO_HBF_ENGINE_SETTINGS"] = str(engine_settings_file)
     from vllm import LLM, SamplingParams
     from vllm.config import KVTransferConfig
     from vllm.sampling_params import RequestOutputKind
 
-    model = __import__("model_location").model_path()
+    model = __import__("model_location").resolve_model_path()
     llm = None
     try:
         # Install the custom scheduler and connector in a fresh vLLM engine.
@@ -465,7 +485,7 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
             ),
         )
         geometry = llm.collective_rpc("rancho_memory_snapshot")
-        save(run_directory / "GEOMETRY.json", geometry)
+        write_run_json(run_directory / "GEOMETRY.json", geometry)
         assert geometry[0]["native_cache_blocks"] == 1 + hbm + hbf
         state = {}
         aliases = {}
@@ -508,7 +528,7 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
             pending.add(rid)
 
         # Advance the engine and record generated tokens and completions.
-        def step(handle):
+        def advance_engine_and_record_outputs(handle):
             nonlocal completed
             outputs = llm.llm_engine.step()
             now = time.monotonic_ns()
@@ -533,9 +553,9 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
                 now = time.monotonic_ns()
                 submit(conversation_index, now, now)
                 while pending:
-                    step(handle)
+                    advance_engine_and_record_outputs(handle)
             begin = time.monotonic_ns()
-            save(
+            write_run_json(
                 run_directory / "MEASUREMENT_CLOCK.json",
                 dict(
                     measurement_start_ns=begin,
@@ -564,13 +584,13 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
                     next_ns = begin + round(at * 1e9 / comparison_settings["rate"])
                     time.sleep(max(0, min(0.02, (next_ns - time.monotonic_ns()) / 1e9)))
                     continue
-                step(handle)
+                advance_engine_and_record_outputs(handle)
                 now = time.monotonic_ns()
                 if (
                     now - last_progress_ns > 15_000_000_000
                     or completed == request_count
                 ):
-                    save(
+                    write_run_json(
                         run_directory / "PROGRESS.json",
                         dict(
                             dispatched=dispatched - workload_settings["groups"],
@@ -583,8 +603,8 @@ def run(workload_settings, comparison_settings, run_directory, source_checksums_
     finally:
         if llm is not None:
             llm.llm_engine.engine_core.shutdown()
-    result = compute(run_directory, workload_settings)
-    save(run_directory / "RESULT.json", result)
+    result = compute_serving_results(run_directory, workload_settings)
+    write_run_json(run_directory / "RESULT.json", result)
     print(
         json.dumps(
             {
@@ -607,11 +627,11 @@ if __name__ == "__main__":
     p.add_argument("--audit")
     a = p.parse_args()
     if a.audit:
-        audit(Path(a.audit))
+        audit_serving_results(Path(a.audit))
     else:
-        run(
-            read(a.workload_settings),
-            read(a.comparison_settings),
+        run_serving_comparison(
+            read_json(a.workload_settings),
+            read_json(a.comparison_settings),
             Path(a.output),
             Path(a.manifest),
         )

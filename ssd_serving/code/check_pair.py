@@ -10,23 +10,23 @@ import math
 from pathlib import Path
 
 
-def read(json_path):
+def read_json(json_path):
     return json.loads(json_path.read_text())
 
 
-def arm(root, accept):
+def audit_serving_example(root, accept):
     """Recompute one example’s timing and I/O checks."""
     cell = root / "cell"
     settings_file = cell / "serving_settings.json"
     if not settings_file.exists():
         settings_file = cell / "plan.json"
-    serving_settings = read(settings_file)
+    serving_settings = read_json(settings_file)
     assert serving_settings["batch_invariant"]
     assert serving_settings["verify_payloads"] and serving_settings[
         "policy_factory"
     ] == ("ssd_policy:accept_fixture" if accept else "ssd_policy:reject_fixture")
-    metrics = read(cell / "metrics.json")
-    request_records = read(cell / "requests.json")
+    metrics = read_json(cell / "metrics.json")
+    request_records = read_json(cell / "requests.json")
     measured = [
         request_record
         for request_record in request_records
@@ -75,7 +75,7 @@ def arm(root, accept):
         sum(len(request_record["output_ids"]) for request_record in measured) / window,
         metrics["output_tokens_per_second"],
     )
-    geometry = read(cell / "geometry.jsonl")
+    geometry = read_json(cell / "geometry.jsonl")
     assert (
         geometry["direct"] and geometry["dsync"] and geometry["page_bytes"] == 1572864
     )
@@ -130,8 +130,12 @@ def arm(root, accept):
 
 def main(accept_directory, reject_directory, report_path):
     """Check matching outputs and save the paired correctness report."""
-    accept_settings, accept_tokens, accept_report = arm(accept_directory, True)
-    reject_settings, reject_tokens, reject_report = arm(reject_directory, False)
+    accept_settings, accept_tokens, accept_report = audit_serving_example(
+        accept_directory, True
+    )
+    reject_settings, reject_tokens, reject_report = audit_serving_example(
+        reject_directory, False
+    )
     assert accept_settings == reject_settings and accept_tokens == reject_tokens
     result = dict(
         status="PASS",

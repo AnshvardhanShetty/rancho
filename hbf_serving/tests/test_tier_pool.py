@@ -3,7 +3,7 @@
 from types import SimpleNamespace as NS
 import unittest
 from tier_pool import TierPool
-from reuse import existing_hbf, commit_existing
+from reuse import find_existing_hbf_copy, remap_to_existing_hbf_copies
 
 
 class Queue:
@@ -58,7 +58,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.pool.get_num_free_blocks(), 0)
         with self.assertRaises(ValueError):
             self.pool.get_new_blocks(1)
-        self.assertEqual(self.tiers.available_hbf(), [5, 6])
+        self.assertEqual(self.tiers.free_hbf_page_ids(), [5, 6])
 
     def test_copy_migrates_all_active_readers_and_frees_source(self):
         old = self.active_page()
@@ -71,7 +71,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(old.ref_cnt, 0)
         self.assertIs(self.manager.req_to_blocks["a"][0], self.pool.blocks[5])
         self.assertIs(self.manager.req_to_blocks["b"][0], self.pool.blocks[5])
-        self.assertEqual(self.tiers.available_hbf(), [6])
+        self.assertEqual(self.tiers.free_hbf_page_ids(), [6])
 
     def test_no_publication_before_copy_completion(self):
         old = self.active_page()
@@ -102,7 +102,7 @@ class Tests(unittest.TestCase):
         self.tiers.commit_completed_copies([(old.block_id, 5)], gpu_completed=True)
         cached = NS(req_ids=["a"], new_block_ids=[None], resumed_req_ids=set())
         output = NS(scheduled_cached_reqs=cached, scheduled_new_reqs=[])
-        self.tiers.refresh_worker_tables(output)
+        self.tiers.refresh_worker_block_tables(output)
         self.assertEqual(cached.new_block_ids, [([5],)])
         self.assertEqual(cached.resumed_req_ids, {"a"})
 
@@ -124,8 +124,10 @@ class Tests(unittest.TestCase):
         self.pool.cached_block_hash_to_block = NS(
             _cache={old.block_hash: {1: old, 5: target}}
         )
-        self.assertEqual(existing_hbf(self.tiers, old.block_id), 5)
-        result = commit_existing(self.tiers, [(old.block_id, 5)], gpu_completed=True)
+        self.assertEqual(find_existing_hbf_copy(self.tiers, old.block_id), 5)
+        result = remap_to_existing_hbf_copies(
+            self.tiers, [(old.block_id, 5)], gpu_completed=True
+        )
         self.assertEqual(result["additional_writes"], 0)
         self.assertEqual(target.ref_cnt, 2)
         self.assertEqual(old.ref_cnt, 0)
@@ -136,7 +138,9 @@ class Tests(unittest.TestCase):
         old = self.active_page()
         self.pool.blocks[5].block_hash = b"different"
         with self.assertRaises(ValueError):
-            commit_existing(self.tiers, [(old.block_id, 5)], gpu_completed=True)
+            remap_to_existing_hbf_copies(
+                self.tiers, [(old.block_id, 5)], gpu_completed=True
+            )
         self.assertEqual(old.ref_cnt, 1)
 
 

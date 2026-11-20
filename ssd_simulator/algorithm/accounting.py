@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 
-def credit_and_overlap(path, reference, credit_directory):
+def count_eligible_reads_saved_and_compare(path, reference, credit_directory):
     """Return eligible reads, SSD savings, and gains/losses against a reference."""
     credit_path = Path(credit_directory)
     rows = np.memmap(path, "<i8", "r").reshape(-1, 13)
@@ -24,7 +24,7 @@ def credit_and_overlap(path, reference, credit_directory):
     eligible_prefix_counts = np.memmap(credit_path / "credit.rank", "<u8", "r")
     byte_popcounts = np.array([int(i).bit_count() for i in range(256)], dtype=np.uint8)
 
-    def eligible_before(prefix_positions):
+    def count_eligible_reads_before_prefix_end(prefix_positions):
         """Count eligible positions up to each request's prefix boundary"""
         positions = (request_offsets + prefix_positions).astype("uint64")
         word_indices, bit_offsets = np.divmod(positions, np.uint64(64))
@@ -37,11 +37,11 @@ def credit_and_overlap(path, reference, credit_directory):
         ).astype(np.int64)
 
     # Subtract the reads served by HBM to get what SSD saved
-    hbm_credit = eligible_before(rows[:, 3])
-    combined_credit = eligible_before(rows[:, 4])
-    reference_credit = eligible_before(reference_rows[:, 4])
+    hbm_credit = count_eligible_reads_before_prefix_end(rows[:, 3])
+    combined_credit = count_eligible_reads_before_prefix_end(rows[:, 4])
+    reference_credit = count_eligible_reads_before_prefix_end(reference_rows[:, 4])
     return (
-        int((eligible_before(rows[:, 2]) - hbm_credit).sum()),
+        int((count_eligible_reads_before_prefix_end(rows[:, 2]) - hbm_credit).sum()),
         int((combined_credit - hbm_credit).sum()),
         int(np.maximum(combined_credit - reference_credit, 0).sum()),
         int(np.maximum(reference_credit - combined_credit, 0).sum()),

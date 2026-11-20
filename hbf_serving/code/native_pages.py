@@ -103,7 +103,7 @@ class NativeCachePages:
             json.dumps(self.layout, sort_keys=True).encode()
         ).hexdigest()
 
-    def _ids(self, blocks):
+    def _prepare_page_indices(self, blocks):
         """Check page IDs and prepare them for GPU indexing"""
         if set(blocks) != self.groups:
             raise ValueError("Every hybrid cache group must be included")
@@ -119,11 +119,11 @@ class NativeCachePages:
             selected[group] = page_ids
         return selected
 
-    def capture(self, blocks):
+    def capture_page_data(self, blocks):
         """Copy every required state into an independent, unpublished snapshot."""
         import torch
 
-        selected = self._ids(blocks)
+        selected = self._prepare_page_indices(blocks)
         pages = {}
         for name, view in self.pages.items():
             indices = torch.tensor(
@@ -137,11 +137,11 @@ class NativeCachePages:
             sum(x.numel() * x.element_size() for x in pages.values()),
         )
 
-    def restore(self, snapshot, blocks):
+    def restore_page_data(self, snapshot, blocks):
         """Validate the entire transfer before copying; caller handles completion/publication."""
         import torch
 
-        selected = self._ids(blocks)
+        selected = self._prepare_page_indices(blocks)
         if snapshot.layout_sha256 != self.layout_sha256 or set(snapshot.pages) != set(
             self.pages
         ):

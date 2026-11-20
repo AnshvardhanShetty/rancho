@@ -19,7 +19,13 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "hbf_serving/code"))
-from controlled_workload import block_keys, eligibility, prompts, records, tokens
+from controlled_workload import (
+    block_keys,
+    build_eligible_read_mask,
+    build_workload_prompts,
+    build_request_feature_records,
+    build_prompt_tokens,
+)
 from features import RequestHistory
 from synthetic_workload import FIT
 
@@ -27,8 +33,8 @@ sys.path.insert(0, str(ROOT / "hbf_simulator/experiments"))
 from run_simulation import run_cache_simulation, run_program
 from synthetic_training import (
     SyntheticTrainingData,
-    initial_predictions,
-    fit_research_model,
+    predict_hourly_reuse_for_offer_replay,
+    fit_synthetic_reuse_model,
     model_training,
 )
 
@@ -41,13 +47,16 @@ def write_array(path, kind, values):
     path.write_bytes(data.tobytes())
 
 
-def make_stream(setup, folder):
+def build_synthetic_request_stream(setup, folder):
     """Use shared content hashes to identify blocks, including their prefix."""
-    payload = prompts(setup)
+    payload = build_workload_prompts(setup)
     # These references establish eligibility; they do not populate either cache.
-    history = [tokens(setup, i) for i in range(setup["max_reference_requests"])]
+    history = [
+        build_prompt_tokens(setup, i) for i in range(setup["max_reference_requests"])
+    ]
     history += [
-        tokens(setup, i, calibration=True) for i in range(setup["calibration_requests"])
+        build_prompt_tokens(setup, i, calibration=True)
+        for i in range(setup["calibration_requests"])
     ]
     vocabulary = {}
     block_rows = []
@@ -66,7 +75,7 @@ def make_stream(setup, folder):
     ]
     sessions = [i % warmup for i in range(setup["max_reference_requests"])]
     sessions += [10_000 + i for i in range(setup["calibration_requests"])]
-    sessions += [r["session"] for r in records(setup)[1]]
+    sessions += [r["session"] for r in build_request_feature_records(setup)[1]]
     names = json.loads((ROOT / "hbf_simulator/model/model_settings.json").read_text())[
         "features"
     ]
@@ -76,16 +85,19 @@ def make_stream(setup, folder):
         FIT["cut_us"] - (history_count - i) * request_gap_us
         for i in range(history_count)
     ]
-    policy_times += [r["policy_us"] for r in records(setup)[1]]
+    policy_times += [r["policy_us"] for r in build_request_feature_records(setup)[1]]
     feature_rows = []
     for i, arrival_us in enumerate(policy_times):
-        info = history_clock.arrival(
+        info = history_clock.record_request_arrival(
             i, arrival_us, sessions[i], setup["synthetic_user"]
         )
-        feature_rows.append([info.shared()[name] for name in names])
+        feature_rows.append([info.request_feature_values()[name] for name in names])
     features = np.array(feature_rows, dtype=float)
     expected_features = np.array(
-        [[r["features"][name] for name in names] for r in records(setup)[1]],
+        [
+            [r["features"][name] for name in names]
+            for r in build_request_feature_records(setup)[1]
+        ],
         dtype=float,
     )
     if not np.array_equal(features[history_count:], expected_features):
@@ -108,7 +120,7 @@ def make_stream(setup, folder):
         end=times[-1] + 1,
         history_count=history_count,
         rows=block_rows[history_count:],
-        eligibility=eligibility(setup),
+        eligibility=build_eligible_read_mask(setup),
         history_rows=block_rows[:history_count],
         history_times=policy_times[:history_count],
         history_sessions=sessions[:history_count],
@@ -116,7 +128,7 @@ def make_stream(setup, folder):
     )
 
 
-def fit_predictor(setup, data, folder, hbm_pages, hbf_pages):
+def fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages):
     """Collect suffix offers using the arm's capacities and one-capacity allowance."""
     settings = json.loads(
         (ROOT / "hbf_simulator/model/model_settings.json").read_text()
@@ -130,7 +142,7 @@ def fit_predictor(setup, data, folder, hbm_pages, hbf_pages):
         data["features"][:training_request_count],
         names,
     )
-    predicted = initial_predictions(initial, settings)
+    predicted = predict_hourly_reuse_for_offer_replay(initial, settings)
     stream = folder / "training"
     write_array(Path(str(stream) + "_nb.i32"), "i", map(len, data["history_rows"]))
     write_array(Path(str(stream) + "_sess.i32"), "i", data["history_sessions"])
@@ -184,12 +196,12 @@ def fit_predictor(setup, data, folder, hbm_pages, hbf_pages):
         names,
         offered=offers,
     )
-    model, record = fit_research_model(final, FIT["cut_us"], settings)
+    model, record = fit_synthetic_reuse_model(final, FIT["cut_us"], settings)
     scores = [0.0] * training_request_count + model_training.predict_reuse(
         model, data["features"][training_request_count:]
     ).tolist()
     write_array(folder / "predictions", "d", scores)
-    _, labels = final.training_examples(FIT["cut_us"])
+    _, labels = final.get_training_rows_and_reuse(FIT["cut_us"])
     return dict(
         training_examples=len(labels),
         unique_labels=len(np.unique(labels)),
@@ -198,7 +210,7 @@ def fit_predictor(setup, data, folder, hbm_pages, hbf_pages):
     )
 
 
-def retained_baseline(setup, data):
+def replay_hbm_with_retained_prefixes(setup, data):
     """Retain computed shared prefixes as the serving HBM-only baseline does."""
     pinned = set()
     transient = OrderedDict()
@@ -242,10 +254,10 @@ def retained_baseline(setup, data):
     )
 
 
-def replay_arm(setup, data, folder, hbm_pages, ratio):
+def replay_hbf_configuration(setup, data, folder, hbm_pages, ratio):
     """Run the real C++ admission controller and count measured request outputs."""
     hbf_pages = ratio * (setup["baseline_pages"] - hbm_pages)
-    training = fit_predictor(setup, data, folder, hbm_pages, hbf_pages)
+    training = fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages)
     shadow = folder / "shadow"
     run_program(
         "hbm_only_readable_prefix",
@@ -311,12 +323,14 @@ def run_demo():
     setup = json.loads((ROOT / "hbf_serving/synthetic_setup.json").read_text())
     with tempfile.TemporaryDirectory() as temp_directory:
         folder = Path(temp_directory)
-        data = make_stream(setup, folder)
-        results = [retained_baseline(setup, data)]
+        data = build_synthetic_request_stream(setup, folder)
+        results = [replay_hbm_with_retained_prefixes(setup, data)]
         for hbm_pages, ratio in [(320, 8), (144, 16)]:
             arm_output = folder / f"rancho{ratio}"
             arm_output.mkdir()
-            results.append(replay_arm(setup, data, arm_output, hbm_pages, ratio))
+            results.append(
+                replay_hbf_configuration(setup, data, arm_output, hbm_pages, ratio)
+            )
     print("CPU cache replay of the bundled synthetic serving prompts")
     print(f"{setup['groups']} warm-up requests; {setup['requests']} measured requests")
     print(

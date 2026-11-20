@@ -33,39 +33,39 @@ class TierPool:
         self.original_new = pool.get_new_blocks
         self.original_free_count = pool.get_num_free_blocks
         pool.get_num_free_blocks = self.hbm_free_count
-        pool.get_new_blocks = self.allocate_hbm
-        pool.get_usage = self.active_usage
+        pool.get_new_blocks = self.allocate_hbm_pages
+        pool.get_usage = self.hbm_usage_fraction
         # Native admission subtracts reusable cache-hit pages from the required
         # free budget. Only HBM hits consume pages in that HBM free budget.
         for manager in managers:
             manager._get_num_evictable_blocks = lambda blocks: sum(
-                b.ref_cnt == 0 and self.is_hbm(b.block_id) and not b.is_null
+                b.ref_cnt == 0 and self.is_hbm_page(b.block_id) and not b.is_null
                 for b in blocks
             )
 
-    def is_hbm(self, block_id):
+    def is_hbm_page(self, block_id):
         return 0 < block_id <= self.hbm_pages
 
-    def is_hbf(self, block_id):
+    def is_hbf_page(self, block_id):
         return self.hbm_pages < block_id < len(self.pool.blocks)
 
-    def free_order(self):
+    def free_pages_in_queue_order(self):
         return list(self.pool.free_block_queue.get_all_free_blocks())
 
     def hbm_free_count(self):
         return len(self.pool.free_block_queue.hbm)
 
-    def active_usage(self):
+    def hbm_usage_fraction(self):
         # Native usage describes referenced pages, not writable capacity.
         return 1 - (
             len(self.pool.free_block_queue.hbm) + len(self.pool.free_block_queue.hbf)
         ) / (self.hbm_pages + self.hbf_pages)
 
-    def allocate_hbm(self, count):
+    def allocate_hbm_pages(self, count):
         """Keep new allocations in the HBM page range"""
         if type(count) is not int or count < 0:
             raise ValueError("Invalid allocation count")
-        selected = self.pool.free_block_queue.first_hbm(count)
+        selected = self.pool.free_block_queue.first_free_hbm_blocks(count)
         if len(selected) != count:
             raise ValueError("Insufficient free HBM; HBF cannot absorb new writes")
         for block in selected:
@@ -78,7 +78,7 @@ class TierPool:
                 self.pool.metrics_collector.on_block_allocated(block)
         return selected
 
-    def available_hbf(self):
+    def free_hbf_page_ids(self):
         # Native free-queue order supplies the same retention eviction order;
         # active-reader pages are absent from this queue and cannot be replaced.
         return list(self.pool.free_block_queue.hbf)
@@ -93,12 +93,14 @@ class TierPool:
             destinations
         ):
             raise ValueError("Duplicate source/destination in one atomic migration")
-        free_ids = {b.block_id for b in self.free_order()}
+        free_ids = {b.block_id for b in self.free_pages_in_queue_order()}
         tables = self.managers[0].req_to_blocks
         references = {}
         # Validate the entire transaction before changing a hash or a table.
         for source_page_id, target_page_id in pairs:
-            if not self.is_hbm(source_page_id) or not self.is_hbf(target_page_id):
+            if not self.is_hbm_page(source_page_id) or not self.is_hbf_page(
+                target_page_id
+            ):
                 raise ValueError("Migration must be from HBM to HBF")
             source_block, target_block = (
                 self.pool.blocks[source_page_id],
@@ -141,7 +143,7 @@ class TierPool:
             requests_requiring_table_refresh=sorted(self.dirty_requests),
         )
 
-    def refresh_worker_tables(self, output):
+    def refresh_worker_block_tables(self, output):
         """Tell the worker where the active pages are now"""
         cached = output.scheduled_cached_reqs
         tables = self.managers[0].req_to_blocks

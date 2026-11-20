@@ -7,9 +7,13 @@ Hit counts and physical write limits are checked by the other run checks."""
 from pathlib import Path
 import hashlib, json, math, re
 from reference_wallet_check import BandWallet
-from controllers_reference import Observation, hash01
+from controllers_reference import Observation, seeded_tie_break_value
 from updated_model import SuffixGBT, CUT
-from controlled_workload import prompts, block_keys, records
+from controlled_workload import (
+    build_workload_prompts,
+    block_keys,
+    build_request_feature_records,
+)
 from campaign_state import read_run_json
 
 
@@ -32,8 +36,8 @@ def audit_policy(root, engine_settings, saved):
     model = SuffixGBT(engine_settings["fit"])
     assert model.model_sha256 == controller_start_record["model_sha256"]
     workload_settings = read_run_json(root, "workload_settings.json", "SETUP.json")
-    payload = prompts(workload_settings)
-    info = records(workload_settings)[1]
+    payload = build_workload_prompts(workload_settings)
+    info = build_request_feature_records(workload_settings)[1]
     reference_controller = BandWallet(
         "hbf",
         engine_settings["HBF_pages"],
@@ -85,7 +89,9 @@ def audit_policy(root, engine_settings, saved):
             arrival_us = decision["controller_time_us"]
             n, write_cost = offer["source_pages"], offer["write_cost_pages"]
             assert n == len(set(keys[first:]))
-            prediction = float(model.predict([offer["features"]], arrival_us)[0])
+            prediction = float(
+                model.predict_suffix_reuse([offer["features"]], arrival_us)[0]
+            )
             assert prediction == decision["prediction"]
             assert (
                 decision["model_sha256"] == model.model_sha256
@@ -96,7 +102,7 @@ def audit_policy(root, engine_settings, saved):
                 if write_cost
                 else math.inf
             )
-            reference_controller.phase(arrival_us)
+            reference_controller.release_reserved_budget_if_due(arrival_us)
             cutoff_score, coin = (
                 getattr(reference_controller, "cutoffs_by_cost_band", {}).get(
                     write_cost.bit_length() - 1,
@@ -133,7 +139,10 @@ def audit_policy(root, engine_settings, saved):
                         not reference_controller.cutoff_ready
                         or score > cutoff_score
                         or score == cutoff_score
-                        and hash01(event, reference_controller.seed ^ 0x5BF03635) < coin
+                        and seeded_tie_break_value(
+                            event, reference_controller.seed ^ 0x5BF03635
+                        )
+                        < coin
                     )
                 )
             )
@@ -154,7 +163,7 @@ def audit_policy(root, engine_settings, saved):
             assert decision["score_admit_before_physical_guard"] == before and decision[
                 "physical_guard_rejected"
             ] == (before and not admit)
-            reference_controller._observe(
+            reference_controller._record_offer(
                 Observation(event, score, write_cost, arrival_us, n)
             )
             if admit:

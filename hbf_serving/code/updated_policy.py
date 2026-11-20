@@ -7,16 +7,16 @@ BandWallet adjusts the cutoff and keeps track of writes
 
 from collections import OrderedDict
 import math, time
-from controllers import Wallet, Observation, hash01, DAY
+from controllers import Wallet, Observation, seeded_tie_break_value, DAY
 from updated_model import SuffixGBT, CUT
 
 
 class BandWallet(Wallet):
     """Keep write spending and choose cutoffs for groups of similar write costs."""
 
-    def recompute(self, now):
+    def update_admission_cutoffs(self, now):
         """Estimate affordable demand, then update each populated cost group’s cutoff."""
-        super().recompute(now)
+        super().update_admission_cutoffs(now)
         # Estimate future write demand from recent positive-cost offers.
         values = [
             offer
@@ -74,7 +74,7 @@ class BandWallet(Wallet):
                     break
                 above += equal
 
-    def updated_decide(
+    def decide_suffix_admission(
         self, event, now, prediction, distinct, cost, past, split, payment_limit=None
     ):
         """Score one offer, check its cutoff and budget, then record the observation."""
@@ -87,7 +87,7 @@ class BandWallet(Wallet):
         )
         assert distinct or not cost
         self.last_id, self.last_us = event, now
-        self.phase(now)
+        self.release_reserved_budget_if_due(now)
         # Combine the prediction with reuse observed before this request.
         multiplier = 1 + past / distinct if distinct else 1.0
         score = (
@@ -122,7 +122,7 @@ class BandWallet(Wallet):
                     not self.cutoff_ready
                     or score > cutoff
                     or score == cutoff
-                    and hash01(event, self.seed ^ 0x5BF03635) < coin
+                    and seeded_tie_break_value(event, self.seed ^ 0x5BF03635) < coin
                 )
             )
         )
@@ -142,7 +142,7 @@ class BandWallet(Wallet):
             physical_guard_rejected=before_guard and not admit,
         )
         # Record every offer, including declines; charge accepted writes only.
-        self._observe(Observation(event, score, cost, now, distinct))
+        self._record_offer(Observation(event, score, cost, now, distinct))
         if admit:
             self.blocks_written += cost
         return admit, details
@@ -159,7 +159,7 @@ class FilteredHistory:
         self.counts = {}
         self.processed = set()
 
-    def prepare(self, request_id, keys, session, suffix_begin):
+    def collect_request_reuse(self, request_id, keys, session, suffix_begin):
         """Read earlier reuse and stage new observations for after this decision."""
         assert request_id not in self.processed and 0 <= suffix_begin <= len(keys)
         readable = 0
@@ -190,7 +190,7 @@ class FilteredHistory:
             pending=pending,
         )
 
-    def commit(self, reuse_history):
+    def record_request_reuse(self, reuse_history):
         """Apply the staged observations after the write decision."""
         for key in reuse_history["keys"][reuse_history["shadow_cached_pages"] :]:
             if self.capacity:
@@ -238,12 +238,12 @@ class UpdatedAdmission:
         self.completed = set()
         self.past = 0
 
-    def set_past(self, past):
+    def set_suffix_reuse_count(self, past):
         """Supply the earlier reuse count for the next offered suffix."""
         assert type(past) is int and past >= 0
         self.past = past
 
-    def hbf_prefill_complete(
+    def decide_hbf_write_after_prefill(
         self,
         row,
         now,
@@ -264,10 +264,10 @@ class UpdatedAdmission:
             and row not in self.completed
         )
         start = time.perf_counter_ns()
-        prediction = float(self.model.predict([features], now)[0])
+        prediction = float(self.model.predict_suffix_reuse([features], now)[0])
         predictor_ns = time.perf_counter_ns() - start
         start = time.perf_counter_ns()
-        admit, detail = self.wallet.updated_decide(
+        admit, detail = self.wallet.decide_suffix_admission(
             row, now, prediction, distinct, cost, self.past, CUT, payment_limit
         )
         controller_ns = time.perf_counter_ns() - start

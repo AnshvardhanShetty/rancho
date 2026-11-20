@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 
-def build_observed_counts(
+def build_hourly_saved_read_counts(
     timestamps, sample_indices, evictions, event_paths, destination
 ):
     """Accumulate sampled marginal gains only after their read has occurred."""

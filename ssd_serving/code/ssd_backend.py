@@ -32,7 +32,7 @@ def read_serving_settings():
     return json.loads(Path(settings_file).read_text())
 
 
-def emit(serving_settings, name, fields):
+def write_serving_event(serving_settings, name, fields):
     """Append one engine event to the output log."""
     with (Path(serving_settings["output"]) / (name + ".jsonl")).open("a") as log_file:
         log_file.write(json.dumps(fields, allow_nan=False) + "\n")
@@ -100,7 +100,7 @@ class Connector(KVConnectorBase_V1):
             pages,
             self.serving_settings.get("verify_payloads", False),
         )
-        emit(
+        write_serving_event(
             self.serving_settings,
             "geometry",
             dict(
@@ -119,7 +119,7 @@ class Connector(KVConnectorBase_V1):
             store.close()
             store = None
 
-    def begin_allocation(self, request):
+    def record_allocation_start(self, request):
         """Select the request metadata and advance the policy clock."""
         self.trace_request_id = re.sub(r"-[0-9a-f]{8}$", "", request.request_id)
         info = self.serving_settings["requests"][self.trace_request_id]
@@ -129,7 +129,7 @@ class Connector(KVConnectorBase_V1):
             self.now = max(self.now, info["policy_seconds"])
         return info
 
-    def record_pages(self, request, manager):
+    def record_request_block_accesses(self, request, manager):
         """Record one access per block per request."""
         request_info = self.serving_settings["requests"][self.trace_request_id]
         touched = self.request_touched.setdefault(request.request_id, set())
@@ -167,7 +167,7 @@ class Connector(KVConnectorBase_V1):
                 features=request_info["features"],
             )
 
-    def evict(self, block):
+    def handle_hbm_eviction(self, block):
         """Ask whether to save an unused GPU block before its slot is reused."""
         resident = self.resident.pop(block.block_id, None)
         if resident is None:
@@ -212,7 +212,7 @@ class Connector(KVConnectorBase_V1):
         if type(decision) != bool:
             raise TypeError("Policy must return bool")
         if decision and store.capacity and store.writes < offer.write_budget_pages:
-            store.put(key, block.block_id)
+            store.write_block_to_ssd(key, block.block_id)
         else:
             self.rejected += 1
 
@@ -234,17 +234,17 @@ class Connector(KVConnectorBase_V1):
         self.pending[request.request_id] = (begin, matches)
         return 16 * len(matches), False
 
-    def stage_lookup(self, request):
+    def stage_cached_blocks_before_allocation(self, request):
         """Preserve needed KV before allocation can recycle its source."""
         staged = []
         for block_key, local_hbm_page in self.pending.get(request.request_id, (0, []))[
             1
         ]:
             if local_hbm_page is None:
-                payload = store.read(block_key)
+                payload = store.read_block_from_ssd(block_key)
             else:
                 payload = store.buffer.new_empty(store.page_bytes)
-                store.copy(local_hbm_page, payload, True)
+                store.copy_block_between_gpu_and_cpu(local_hbm_page, payload, True)
             staged.append((block_key, local_hbm_page, payload))
         self.staged = staged
 
@@ -279,7 +279,7 @@ class Connector(KVConnectorBase_V1):
     def start_load_kv(self, forward_context, **kwargs):
         """Restore the staged KV before the model reads it."""
         for page in self._get_connector_metadata().destinations:
-            store.restore(page, loads.pop(page))
+            store.restore_block_to_gpu(page, loads.pop(page))
 
     def wait_for_layer_load(self, layer_name):
         pass
@@ -314,18 +314,18 @@ class SSDScheduler(Scheduler):
 
         def before_reuse(block):
             if block.block_id in connector.resident:
-                connector.evict(block)
+                connector.handle_hbm_eviction(block)
             return evict(block)
 
         connector.pool._maybe_evict_cached_block = before_reuse
         allocate = manager.allocate_slots
 
         def tracked_allocate(request, *args, **kwargs):
-            connector.begin_allocation(request)
-            connector.stage_lookup(request)
+            connector.record_allocation_start(request)
+            connector.stage_cached_blocks_before_allocation(request)
             result = allocate(request, *args, **kwargs)
             if result is not None:
-                connector.record_pages(request, manager)
+                connector.record_request_block_accesses(request, manager)
             else:
                 connector.staged = []
             return result
@@ -361,6 +361,6 @@ class SSDScheduler(Scheduler):
             local_islands=connector.local_islands,
         )
         if counters != getattr(self, "_last_counters", None):
-            emit(connector.serving_settings, "io", counters)
+            write_serving_event(connector.serving_settings, "io", counters)
             self._last_counters = counters
         return result

@@ -7,7 +7,7 @@ supplies the model folder and its expected file hashes."""
 from pathlib import Path
 import hashlib, json, pickletools
 import numpy as np
-from predictor_bridge import encode
+from predictor_bridge import encode_tree_features
 
 FEATURES = (
     "user",
@@ -99,7 +99,7 @@ class SuffixGBT:
         self.native_model_sha256 = hashlib.sha256(trees[0].encode()).hexdigest()
         self.receipt = fit_summary
 
-    def predict(self, rows, now_us):
+    def predict_suffix_reuse(self, rows, now_us):
         """Encode the supplied request features and predict reads per offered block."""
         assert now_us >= self.cut_us and all(set(r) == set(FEATURES) for r in rows)
         feature_table = np.array(
@@ -107,7 +107,9 @@ class SuffixGBT:
         )
         out = np.maximum(
             np.asarray(
-                self.booster.predict(encode(feature_table, self.vocab), num_threads=1)
+                self.booster.predict(
+                    encode_tree_features(feature_table, self.vocab), num_threads=1
+                )
             ),
             0,
         )

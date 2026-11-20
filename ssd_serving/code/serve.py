@@ -1,7 +1,7 @@
 """Send requests to vLLM with the SSD cache enabled.
 
-validate() checks capacities, arrival times and request inputs.
-run() starts one engine, sends warm-up requests, then runs the measured requests.
+validate_serving_inputs() checks capacities, arrival times and request inputs.
+run_ssd_serving_example() starts one engine, sends warm-up requests, then runs the measured requests.
 It records outputs and calculates response times and output rate.
 
 Assumes the supplied Qwen model layout and synchronous single-GPU execution.
@@ -13,11 +13,11 @@ import math
 import os
 import time
 from pathlib import Path
-from metrics import summarise
-from model_location import model_path
+from metrics import summarize_request_performance
+from model_location import resolve_model_path
 
 
-def validate(serving_settings):
+def validate_serving_inputs(serving_settings):
     """Check that requests are ordered and fit the configured GPU cache."""
     for key in (
         "hbm_pages",
@@ -72,7 +72,7 @@ def validate(serving_settings):
             raise ValueError("Invalid logical time")
 
 
-def run(serving_inputs_file, output_directory):
+def run_ssd_serving_example(serving_inputs_file, output_directory):
     """Run a fresh engine and save request outputs, timings and storage counters."""
     if os.environ.get("VLLM_BATCH_INVARIANT") != "1":
         raise ValueError("Use the qualified batch-invariant launcher")
@@ -81,7 +81,7 @@ def run(serving_inputs_file, output_directory):
     from vllm.sampling_params import RequestOutputKind
 
     serving_settings = json.loads(serving_inputs_file.read_text())
-    validate(serving_settings)
+    validate_serving_inputs(serving_settings)
     output_directory.mkdir()
     serving_settings["output"] = str(output_directory.resolve())
     serving_settings["batch_invariant"] = True
@@ -89,7 +89,7 @@ def run(serving_inputs_file, output_directory):
     serving_settings_file.write_text(json.dumps(serving_settings))
     os.environ["RANCHO_SSD_SERVING_SETTINGS"] = str(serving_settings_file.resolve())
     engine = LLM(
-        model=model_path(),
+        model=resolve_model_path(),
         moe_backend="triton",
         tensor_parallel_size=1,
         dtype="bfloat16",
@@ -144,7 +144,7 @@ def run(serving_inputs_file, output_directory):
         aliases[internal] = aliases[key] = key
         pending.add(key)
 
-    def step():
+    def advance_engine_and_record_outputs():
         outputs = engine.llm_engine.step()
         now = time.monotonic_ns()
         for result in outputs:
@@ -171,7 +171,7 @@ def run(serving_inputs_file, output_directory):
         for i in range(serving_settings["warmups"]):
             submit(i, time.monotonic_ns())
             while pending:
-                step()
+                advance_engine_and_record_outputs()
         start = time.monotonic_ns()
         i = serving_settings["warmups"]
         while pending or i < len(requests):
@@ -182,7 +182,7 @@ def run(serving_inputs_file, output_directory):
                 submit(i, scheduled_ns)
                 i += 1
             if pending:
-                step()
+                advance_engine_and_record_outputs()
             elif i < len(requests):
                 time.sleep(
                     min(0.02, max(0, (scheduled_ns - time.monotonic_ns()) / 1e9))
@@ -192,7 +192,7 @@ def run(serving_inputs_file, output_directory):
     rows = list(state.values())
     assert len(rows) == len(requests)
     measured = rows[serving_settings["warmups"] :]
-    metrics = summarise(measured)
+    metrics = summarize_request_performance(measured)
     elapsed = max(
         serving_settings["arrival_window_seconds"],
         (max(request_record["finish_ns"] for request_record in measured) - start) / 1e9,
@@ -212,4 +212,4 @@ if __name__ == "__main__":
     ap.add_argument("settings", type=Path)
     ap.add_argument("output", type=Path)
     args = ap.parse_args()
-    run(args.settings, args.output)
+    run_ssd_serving_example(args.settings, args.output)

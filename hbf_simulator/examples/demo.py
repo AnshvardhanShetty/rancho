@@ -58,7 +58,7 @@ def prepare_example():
     train_rows = np.array(offered)
     arrival_times_us = np.array([request["time"] for request in requests])
 
-    def training_examples(cutoff_us):
+    def get_training_rows_and_reuse(cutoff_us):
         # Second requests arrive exactly one microsecond after the first.
         keep = arrival_times_us[train_rows] < cutoff_us
         selected_rows = train_rows[keep]
@@ -68,7 +68,7 @@ def prepare_example():
         return selected_rows, observed_reads
 
     data = SimpleNamespace(
-        training_examples=training_examples,
+        get_training_rows_and_reuse=get_training_rows_and_reuse,
         arrival_times_us=arrival_times_us,
         feature_table=lambda prediction_rows, names: feature_table[prediction_rows],
         categorical_columns=lambda names: [0],

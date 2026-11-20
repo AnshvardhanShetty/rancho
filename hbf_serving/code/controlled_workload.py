@@ -5,7 +5,7 @@ from features import RequestHistory
 from synthetic_workload import FIT
 
 
-def tokens(setup, request_index, calibration=False, warm=False):
+def build_prompt_tokens(setup, request_index, calibration=False, warm=False):
     """Build one synthetic prompt with a shared beginning and a unique ending."""
     conversation_index = request_index % setup["groups"]
     prefix_token_count = setup["prefix_tokens"]
@@ -28,20 +28,23 @@ def tokens(setup, request_index, calibration=False, warm=False):
     return prefix + [suffix_token] * unique_token_count
 
 
-def prompts(setup, calibration=False):
+def build_workload_prompts(setup, calibration=False):
     """Build warm-up prompts followed by the measured prompts."""
     if calibration:
         return [
-            tokens(setup, request_index, True)
+            build_prompt_tokens(setup, request_index, True)
             for request_index in range(setup["calibration_requests"])
         ]
     return [
-        tokens(setup, conversation_index, warm=True)
+        build_prompt_tokens(setup, conversation_index, warm=True)
         for conversation_index in range(setup["groups"])
-    ] + [tokens(setup, request_index) for request_index in range(setup["requests"])]
+    ] + [
+        build_prompt_tokens(setup, request_index)
+        for request_index in range(setup["requests"])
+    ]
 
 
-def records(setup):
+def build_request_feature_records(setup):
     """Build request features from synthetic earlier session history."""
     request_history = RequestHistory()
     reference_request_count = setup["max_reference_requests"]
@@ -50,7 +53,7 @@ def records(setup):
     training_cutoff_us = FIT["cut_us"]
     sequence_row = 0
     for request_index in range(reference_request_count):
-        request_history.arrival(
+        request_history.record_request_arrival(
             sequence_row,
             training_cutoff_us
             - (reference_request_count + calibration_request_count - request_index)
@@ -65,7 +68,7 @@ def records(setup):
             training_cutoff_us
             - (calibration_request_count - request_index) * request_gap_us
         )
-        info = request_history.arrival(
+        info = request_history.record_request_arrival(
             sequence_row, arrival_us, 10000 + request_index, setup["synthetic_user"]
         )
         sequence_row += 1
@@ -74,7 +77,7 @@ def records(setup):
                 sequence_row=sequence_row - 1,
                 session=10000 + request_index,
                 policy_us=arrival_us,
-                features=info.shared(),
+                features=info.request_feature_values(),
             )
         )
     measured = []
@@ -85,7 +88,7 @@ def records(setup):
             else (request_index - setup["groups"]) % setup["groups"]
         )
         arrival_us = training_cutoff_us + request_index * request_gap_us
-        info = request_history.arrival(
+        info = request_history.record_request_arrival(
             sequence_row, arrival_us, conversation_index, setup["synthetic_user"]
         )
         sequence_row += 1
@@ -94,14 +97,14 @@ def records(setup):
                 sequence_row=sequence_row - 1,
                 session=conversation_index,
                 policy_us=arrival_us,
-                features=info.shared(),
+                features=info.request_feature_values(),
                 warmup=request_index < setup["groups"],
             )
         )
     return earlier, measured
 
 
-def bound_requests(setup):
+def bind_features_to_request_ids(setup):
     """Associate each engine request ID with its features and session."""
     return {
         f"row{request_index}": dict(
@@ -109,7 +112,9 @@ def bound_requests(setup):
             policy_us=request_record["policy_us"],
             session=request_record["session"],
         )
-        for request_index, request_record in enumerate(records(setup)[1])
+        for request_index, request_record in enumerate(
+            build_request_feature_records(setup)[1]
+        )
     }
 
 
@@ -127,18 +132,20 @@ def block_keys(prompt):
     return block_hashes
 
 
-def eligibility(setup):
+def build_eligible_read_mask(setup):
     # Reconstruct independent offline-style reference stamps before any cache fill.
     """Mark repeated reads using the independent synthetic reference history."""
     last_session_by_block = {}
     for request_index in range(setup["max_reference_requests"]):
-        for block_hash in block_keys(tokens(setup, request_index)):
+        for block_hash in block_keys(build_prompt_tokens(setup, request_index)):
             last_session_by_block[block_hash] = request_index % setup["groups"]
     for request_index in range(setup["calibration_requests"]):
-        for block_hash in block_keys(tokens(setup, request_index, calibration=True)):
+        for block_hash in block_keys(
+            build_prompt_tokens(setup, request_index, calibration=True)
+        ):
             last_session_by_block[block_hash] = 10000 + request_index
     eligibility_by_request = []
-    for request_index, prompt in enumerate(prompts(setup)):
+    for request_index, prompt in enumerate(build_workload_prompts(setup)):
         group = (
             request_index
             if request_index < setup["groups"]

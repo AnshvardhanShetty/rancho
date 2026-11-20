@@ -12,7 +12,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from ssd_simulator.algorithm.training_data import EVICTION_RECORD_DTYPE
 from ssd_simulator.algorithm.settings import HOUR
-from ssd_simulator.algorithm.run import prepare, replay
+from ssd_simulator.algorithm.run import (
+    train_hourly_eviction_models,
+    replay_with_hourly_models,
+)
 
 repo = Path(__file__).resolve().parents[3]
 with tempfile.TemporaryDirectory(prefix="ssd-full-pipeline-") as tmp:
@@ -166,8 +169,8 @@ with tempfile.TemporaryDirectory(prefix="ssd-full-pipeline-") as tmp:
     path.write_text(json.dumps(manifest))
     out = root / "run"
     out.mkdir()
-    data, scores = prepare(path, out)
-    result = replay(path, data, scores, out, 5000, 10000)
+    data, scores = train_hourly_eviction_models(path, out)
+    result = replay_with_hourly_models(path, data, scores, out, 5000, 10000)
     assert result["writes"] <= 10000 and result["eligible_after_hbm"] > 0
     assert len(list((out / "models").iterdir())) == 96
     proof = dict(

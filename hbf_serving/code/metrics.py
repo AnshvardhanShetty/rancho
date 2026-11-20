@@ -4,7 +4,7 @@ import math
 import statistics
 
 
-def describe(values):
+def summarize_latency_samples(values):
     """Summarise a list of times and report its percentiles"""
     values = sorted(values)
     if not values:
@@ -26,7 +26,7 @@ def describe(values):
     )
 
 
-def summarise(records):
+def summarize_request_performance(records):
     """Compute throughput and delays for the measured requests"""
     if not records or any(
         request_record["status"] != "COMPLETE" for request_record in records
@@ -81,9 +81,9 @@ def summarise(records):
         first_arrival_to_last_completion_seconds=elapsed,
         completed_requests_per_second=len(records) / elapsed,
         output_tokens_per_second=generated_token_count / elapsed,
-        TTFT_seconds=describe(first_token_delays),
-        TPOT_seconds=describe(per_token_delays),
-        request_latency_seconds=describe(request_delays),
+        TTFT_seconds=summarize_latency_samples(first_token_delays),
+        TPOT_seconds=summarize_latency_samples(per_token_delays),
+        request_latency_seconds=summarize_latency_samples(request_delays),
         startup_and_teardown_excluded=True,
         zero_output_requests=sum(
             request_record["expected_output_tokens"] == 0 for request_record in records
@@ -91,7 +91,7 @@ def summarise(records):
     )
 
 
-def validate_pair(plan):
+def validate_comparison_settings(plan):
     """Check that the run configuration is complete and consistent."""
     if plan["execution"] != "real_GPU" or plan["simulation_only"] is not False:
         raise ValueError("This trial requires real GPU generation")

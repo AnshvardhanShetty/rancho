@@ -11,18 +11,19 @@
 #include "write_controller.hpp"
 
 // Read the prompt in order and stop at the first block missing from both caches
-static size_t read_cached_prefix(const std::vector<int32_t> &blocks, Cache &flash, Cache &hbm,
+static size_t read_cached_prefix(const std::vector<int32_t> &blocks,
+                                 Cache &flash, Cache &hbm,
                                  std::vector<uint8_t> &sources) {
   sources.assign(blocks.size(), 0);
   size_t first_missing = 0;
   for (; first_missing < blocks.size(); first_missing++) {
     int32_t block = blocks[first_missing];
-    if (flash.has(block)) {
+    if (flash.contains_block(block)) {
       sources[first_missing] = 1;
-      flash.touch(block);
-    } else if (hbm.has(block)) {
+      flash.mark_block_used(block);
+    } else if (hbm.contains_block(block)) {
       sources[first_missing] = 2;
-      hbm.touch(block);
+      hbm.mark_block_used(block);
     } else
       break;
   }
@@ -36,8 +37,9 @@ struct RequestHits {
 
 // Mark each block reused from this session once per request
 // Save the repeats HBM alone would miss for the later history update
-static void identify_session_reuse(const std::vector<int32_t> &blocks, size_t request,
-                                   int32_t session, size_t hbm_only_prefix,
+static void identify_session_reuse(const std::vector<int32_t> &blocks,
+                                   size_t request, int32_t session,
+                                   size_t hbm_only_prefix,
                                    std::vector<int32_t> &seen_in_request,
                                    std::vector<int32_t> &last_session,
                                    std::vector<uint8_t> &session_repeats,
@@ -58,9 +60,9 @@ static void identify_session_reuse(const std::vector<int32_t> &blocks, size_t re
 }
 
 // Count eligible reads and cache hits using the previously marked repeats.
-static RequestHits count_session_hits(const std::vector<uint8_t> &session_repeats,
-                                      size_t first_missing,
-                                      const std::vector<uint8_t> &sources) {
+static RequestHits
+count_session_hits(const std::vector<uint8_t> &session_repeats,
+                   size_t first_missing, const std::vector<uint8_t> &sources) {
   RequestHits hits;
   for (size_t position = 0; position < session_repeats.size(); position++) {
     if (!session_repeats[position])
@@ -80,8 +82,9 @@ struct SuffixOffer {
 };
 
 // Count distinct blocks and past reads then try the write to get its exact cost
-static SuffixOffer price_suffix(const std::vector<int32_t> &blocks, size_t first_missing,
-                                size_t request, Cache &flash,
+static SuffixOffer price_suffix(const std::vector<int32_t> &blocks,
+                                size_t first_missing, size_t request,
+                                Cache &flash,
                                 std::vector<int32_t> &seen_in_suffix,
                                 const std::vector<uint32_t> &reuse_counts) {
   SuffixOffer offer;
@@ -93,7 +96,10 @@ static SuffixOffer price_suffix(const std::vector<int32_t> &blocks, size_t first
       offer.earlier_reuses += reuse_counts[block];
     }
   }
-  offer.write_cost = first_missing < blocks.size() ? flash.dry_cost(blocks, first_missing) : 0;
+  offer.write_cost =
+      first_missing < blocks.size()
+          ? flash.measure_suffix_write_cost(blocks, first_missing)
+          : 0;
   return offer;
 }
 
@@ -104,22 +110,26 @@ struct AdmissionDecision {
   double score = INFINITY;
   AdmissionCutoff cutoff;
 
-  bool requested() const { return admitted || budget_denied; }
+  bool requested_flash_write() const { return admitted || budget_denied; }
 };
 
-// Combine predicted reuse and past reads then check the cutoff and the write budget
-static AdmissionDecision decide_admission(const SuffixOffer &offer, double prediction,
-                                          size_t request, int64_t now, uint64_t seed,
+// Combine predicted reuse and past reads then check the cutoff and the write
+// budget
+static AdmissionDecision decide_admission(const SuffixOffer &offer,
+                                          double prediction, size_t request,
+                                          int64_t now, uint64_t seed,
                                           const WriteController &controller) {
   AdmissionDecision decision;
   decision.score = offer.write_cost > 0
-                       ? prediction * double(offer.distinct_blocks) / double(offer.write_cost)
+                       ? prediction * double(offer.distinct_blocks) /
+                             double(offer.write_cost)
                        : INFINITY;
   if (offer.write_cost > 0 && offer.distinct_blocks > 0) {
-    const double boost = 1.0 + double(offer.earlier_reuses) / double(offer.distinct_blocks);
+    const double boost =
+        1.0 + double(offer.earlier_reuses) / double(offer.distinct_blocks);
     decision.score *= boost;
   }
-  decision.cutoff = controller.cutoff_for(offer.write_cost, now);
+  decision.cutoff = controller.select_admission_cutoff(offer.write_cost, now);
   if (offer.distinct_blocks == 0)
     decision.reason = AdmissionReason::NoSuffix;
   else if (offer.write_cost == 0) {
@@ -143,17 +153,18 @@ static AdmissionDecision decide_admission(const SuffixOffer &offer, double predi
 }
 
 // Apply the decision to both caches and return the flash write charge.
-static int64_t place_suffix(const std::vector<int32_t> &blocks, size_t first_missing,
-                            bool admitted, Cache &flash, Cache &hbm) {
+static int64_t store_suffix_in_cache_tiers(const std::vector<int32_t> &blocks,
+                                           size_t first_missing, bool admitted,
+                                           Cache &flash, Cache &hbm) {
   int64_t charged = 0;
   for (size_t position = first_missing; position < blocks.size(); position++) {
     int32_t block = blocks[position];
     if (admitted) {
-      charged += flash.put(block);
-      hbm.erase(block);
+      charged += flash.store_block(block);
+      hbm.remove_block(block);
     }
-    if (!flash.has(block))
-      hbm.put(block);
+    if (!flash.contains_block(block))
+      hbm.store_block(block);
   }
   return charged;
 }
@@ -191,8 +202,8 @@ class Simulator {
       seen_in_request[block] = int32_t(request);
       last_session[block] = input.sessions[request];
     }
-    output.record_request(request, input.times[request], int64_t(blocks.size()), 0, 0, 0, 0,
-                          false, false, 0);
+    output.record_request(request, input.times[request], int64_t(blocks.size()),
+                          0, 0, 0, 0, false, false, 0);
   }
 
   // Read and check the next request's block IDs.
@@ -207,8 +218,9 @@ class Simulator {
   }
 
   // Add one request's hit, write, and admission counts to the totals.
-  void add_metrics(size_t first_missing, const RequestHits &hits,
-                   const AdmissionDecision &decision, int64_t charged) {
+  void record_request_metrics(size_t first_missing, const RequestHits &hits,
+                              const AdmissionDecision &decision,
+                              int64_t charged) {
     evaluation.requests++;
     evaluation.positions += blocks.size();
     evaluation.fetched += first_missing;
@@ -216,7 +228,7 @@ class Simulator {
     evaluation.hbm_hits += hits.hbm;
     evaluation.eligible += hits.eligible;
     evaluation.writes += charged;
-    evaluation.requested += decision.requested();
+    evaluation.requested += decision.requested_flash_write();
     evaluation.admitted += decision.admitted;
     evaluation.budget_rejected += decision.budget_denied;
     evaluation.no_offer += first_missing == blocks.size();
@@ -225,29 +237,38 @@ class Simulator {
   // Read, identify reuse, count hits, decide/write, then apply history updates.
   void process_request(size_t request, size_t hbm_only_prefix) {
     size_t first_missing = read_cached_prefix(blocks, flash, hbm, sources);
-    identify_session_reuse(blocks, request, input.sessions[request], hbm_only_prefix,
-                           seen_in_request, last_session, session_repeats, pending_reuse);
-    RequestHits hits = count_session_hits(session_repeats, first_missing, sources);
+    identify_session_reuse(blocks, request, input.sessions[request],
+                           hbm_only_prefix, seen_in_request, last_session,
+                           session_repeats, pending_reuse);
+    RequestHits hits =
+        count_session_hits(session_repeats, first_missing, sources);
 
     AdmissionDecision decision;
     SuffixOffer offer;
     if (input.eligible[request]) {
-      offer = price_suffix(blocks, first_missing, request, flash, seen_in_suffix, reuse_counts);
-      require_condition(controller.spent == spent, "wallet/cache spending mismatch");
-      decision = decide_admission(offer, input.predicted_reuse[request], request,
-                                  input.times[request], settings.seed, controller);
-      output.record_decision({int64_t(request), input.times[request], offer.distinct_blocks,
-                              offer.write_cost, spent, input.predicted_reuse[request],
-                              decision.score, decision.cutoff.score,
-                              decision.cutoff.tie_probability, int64_t(decision.cutoff.ready),
-                              int64_t(decision.reason), int64_t(decision.admitted)});
-      offer_history[controller.next_history_slot] = {int64_t(request), offer.distinct_blocks,
-                                                     offer.write_cost, input.times[request]};
-      controller.observe(decision.score, offer.write_cost, input.times[request]);
+      offer = price_suffix(blocks, first_missing, request, flash,
+                           seen_in_suffix, reuse_counts);
+      require_condition(controller.spent == spent,
+                        "wallet/cache spending mismatch");
+      decision =
+          decide_admission(offer, input.predicted_reuse[request], request,
+                           input.times[request], settings.seed, controller);
+      output.record_decision(
+          {int64_t(request), input.times[request], offer.distinct_blocks,
+           offer.write_cost, spent, input.predicted_reuse[request],
+           decision.score, decision.cutoff.score,
+           decision.cutoff.tie_probability, int64_t(decision.cutoff.ready),
+           int64_t(decision.reason), int64_t(decision.admitted)});
+      offer_history[controller.next_history_slot] = {
+          int64_t(request), offer.distinct_blocks, offer.write_cost,
+          input.times[request]};
+      controller.record_priced_offer(decision.score, offer.write_cost,
+                                     input.times[request]);
     } else
       output.reason_counts[size_t(AdmissionReason::Ineligible)]++;
 
-    int64_t charged = place_suffix(blocks, first_missing, decision.admitted, flash, hbm);
+    int64_t charged = store_suffix_in_cache_tiers(
+        blocks, first_missing, decision.admitted, flash, hbm);
     require_condition(charged == (decision.admitted ? offer.write_cost : 0),
                       "dry/commit write mismatch");
     spent += charged;
@@ -257,22 +278,26 @@ class Simulator {
       require_condition(reuse_counts[block] < UINT32_MAX, "reuse overflow");
       ++reuse_counts[block];
     }
-    add_metrics(first_missing, hits, decision, charged);
-    output.record_request(request, input.times[request], int64_t(blocks.size()), first_missing,
-                          hits.flash, hits.hbm, charged, decision.requested(),
-                          decision.admitted, spent);
-    output.record_debug(request, first_missing, hits.flash, hits.hbm, charged, spent,
-                        decision.requested(), decision.admitted, flash, hbm);
+    record_request_metrics(first_missing, hits, decision, charged);
+    output.record_request(request, input.times[request], int64_t(blocks.size()),
+                          first_missing, hits.flash, hits.hbm, charged,
+                          decision.requested_flash_write(), decision.admitted,
+                          spent);
+    output.record_debug(request, first_missing, hits.flash, hits.hbm, charged,
+                        spent, decision.requested_flash_write(),
+                        decision.admitted, flash, hbm);
   }
 
 public:
   // Create independent caches and accounting for this replay.
   Simulator(const SimulationSettings &settings, const TraceInputs &input)
       : settings(settings), input(input),
-        flash(int32_t(settings.flash_capacity), int32_t(settings.block_id_limit)),
+        flash(int32_t(settings.flash_capacity),
+              int32_t(settings.block_id_limit)),
         hbm(int32_t(settings.hbm_capacity), int32_t(settings.block_id_limit)),
         controller(settings.budget, settings.start, settings.end),
-        output(settings, input.times.size()), last_session(size_t(settings.block_id_limit), -1),
+        output(settings, input.times.size()),
+        last_session(size_t(settings.block_id_limit), -1),
         seen_in_request(size_t(settings.block_id_limit), -1),
         seen_in_suffix(size_t(settings.block_id_limit), -1),
         reuse_counts(size_t(settings.block_id_limit), 0),
@@ -282,20 +307,22 @@ public:
   }
 
   // Process requests in arrival order and save the final results.
-  void run() {
+  void replay_requests() {
     for (size_t request = 0; request < input.times.size(); request++) {
       if (input.times[request] >= settings.end) {
         next_request = request;
         break;
       }
       if (!evaluation_started && input.times[request] >= settings.start) {
-        output.snapshot("warm", flash, hbm, request, block_cursor, spent);
+        output.save_cache_snapshot("warm", flash, hbm, request, block_cursor,
+                                   spent);
         output.record_cold_start();
         evaluation_started = true;
       }
       read_request(request);
       size_t hbm_only_prefix = size_t(input.hbm_prefix[request]);
-      require_condition(hbm_only_prefix <= blocks.size(), "shadow prefix outside row");
+      require_condition(hbm_only_prefix <= blocks.size(),
+                        "shadow prefix outside row");
       if (input.times[request] < settings.start)
         observe_before_evaluation(request, hbm_only_prefix);
       else
@@ -304,25 +331,29 @@ public:
       next_request = request + 1;
     }
     if (!evaluation_started)
-      output.snapshot("warm", flash, hbm, next_request, block_cursor, spent);
-    output.snapshot("final", flash, hbm, next_request, block_cursor, spent);
+      output.save_cache_snapshot("warm", flash, hbm, next_request, block_cursor,
+                                 spent);
+    output.save_cache_snapshot("final", flash, hbm, next_request, block_cursor,
+                               spent);
     std::vector<OfferHistory> chronological_history;
     for (int64_t j = 0; j < controller.history_count; j++)
       chronological_history.push_back(
-          offer_history[(controller.next_history_slot + WriteController::history_capacity -
+          offer_history[(controller.next_history_slot +
+                         WriteController::history_capacity -
                          controller.history_count + j) %
                         WriteController::history_capacity]);
-    output.finish(settings, evaluation, chronological_history, spent, controller.spent,
-                  controller.observations, next_request, block_cursor);
+    output.write_replay_results(
+        settings, evaluation, chronological_history, spent, controller.spent,
+        controller.observations, next_request, block_cursor);
   }
 };
 
 // Load settings and inputs, then start the replay.
 int main(int argc, char **argv) {
   try {
-    SimulationSettings settings = read_settings(argc, argv);
+    SimulationSettings settings = parse_simulation_settings(argc, argv);
     TraceInputs input(settings);
-    Simulator(settings, input).run();
+    Simulator(settings, input).replay_requests();
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

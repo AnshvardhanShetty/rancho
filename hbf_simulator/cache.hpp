@@ -2,8 +2,9 @@
 
 // One Cache keeps the block IDs in one tier and tracks when they were last used
 // has checks whether a block is present and touch moves it to the front
-// put makes room by removing the least recently used block when the cache is full
-// dry_cost tries a write and then undoes it so RANCHO can price the offer
+// put makes room by removing the least recently used block when the cache is
+// full measure_suffix_write_cost tries a write and then undoes it so RANCHO can
+// price the offer
 
 #include <algorithm>
 #include <cstdint>
@@ -61,65 +62,70 @@ struct Cache {
         nodes(capacity_blocks) {}
 
   // Check whether a block is present.
-  bool has(int32_t block_id) const { return cap && slots[block_id] >= 0; }
+  bool contains_block(int32_t block_id) const {
+    return cap && slots[block_id] >= 0;
+  }
 
   // Move a present block to the most recently used end.
-  void touch(int32_t block_id) {
-    require_condition(has(block_id), "touch absent block");
+  void mark_block_used(int32_t block_id) {
+    require_condition(contains_block(block_id), "touch absent block");
     int32_t slot = slots[block_id];
     if (slot != head) {
-      unlink(slot);
-      push(slot);
+      detach_from_use_order(slot);
+      move_to_most_recent(slot);
     }
   }
 
-  // Insert or touch; evict the tail if full. Return true only for a new insertion.
-  bool put(int32_t block_id) {
+  // Insert or touch; evict the tail if full. Return true only for a new
+  // insertion.
+  bool store_block(int32_t block_id) {
     if (!cap)
       return false;
-    if (has(block_id)) {
-      touch(block_id);
+    if (contains_block(block_id)) {
+      mark_block_used(block_id);
       return false;
     }
     if (used == cap)
-      erase(nodes[tail].block);
+      remove_block(nodes[tail].block);
     int32_t slot;
     if (free_head >= 0) {
       slot = free_head;
-      set(free_head, nodes[slot].next);
+      set_and_record_for_undo(free_head, nodes[slot].next);
     } else {
       slot = allocated;
       require_condition(allocated < cap, "slot overflow");
-      set(allocated, allocated + 1);
+      set_and_record_for_undo(allocated, allocated + 1);
     }
-    set(nodes[slot].block, block_id);
-    set(slots[block_id], slot);
-    set(used, used + 1);
-    push(slot);
+    set_and_record_for_undo(nodes[slot].block, block_id);
+    set_and_record_for_undo(slots[block_id], slot);
+    set_and_record_for_undo(used, used + 1);
+    move_to_most_recent(slot);
     return true;
   }
 
   // Remove a block and make its slot available again.
-  void erase(int32_t block_id) {
-    if (!has(block_id))
+  void remove_block(int32_t block_id) {
+    if (!contains_block(block_id))
       return;
     int32_t slot = slots[block_id];
-    unlink(slot);
-    set(slots[block_id], -1);
-    set(nodes[slot].block, -1);
-    set(nodes[slot].next, free_head);
-    set(free_head, slot);
-    set(used, used - 1);
+    detach_from_use_order(slot);
+    set_and_record_for_undo(slots[block_id], -1);
+    set_and_record_for_undo(nodes[slot].block, -1);
+    set_and_record_for_undo(nodes[slot].next, free_head);
+    set_and_record_for_undo(free_head, slot);
+    set_and_record_for_undo(used, used - 1);
   }
 
   // Trial-write pricing.
   // Trial the suffix, count insertions, then restore the original cache state.
-  int64_t dry_cost(const std::vector<int32_t> &request_blocks, size_t suffix_start) {
+  int64_t measure_suffix_write_cost(const std::vector<int32_t> &request_blocks,
+                                    size_t suffix_start) {
     require_condition(!logging && journal.empty(), "nested transaction");
     logging = true;
     int64_t blocks_written = 0;
-    for (size_t position = suffix_start; position < request_blocks.size(); position++)
-      blocks_written += put(request_blocks[position]);
+    for (size_t position = suffix_start; position < request_blocks.size();
+         position++)
+      blocks_written += store_block(request_blocks[position]);
     logging = false;
     for (auto change = journal.rbegin(); change != journal.rend(); ++change)
       *change->changed_field = change->value;
@@ -129,76 +135,81 @@ struct Cache {
 
   // Saved cache order.
   // Return IDs from most to least recently used, checking the list.
-  std::vector<int32_t> order() const {
+  std::vector<int32_t> blocks_most_recent_first() const {
     std::vector<int32_t> ordered_block_ids;
     int32_t previous_slot = -1;
     for (int32_t slot = head; slot >= 0; slot = nodes[slot].next) {
       require_condition(slot < allocated && nodes[slot].prev == previous_slot,
                         "broken LRU links");
       int32_t block_id = nodes[slot].block;
-      require_condition(block_id >= 0 && has(block_id) && slots[block_id] == slot,
+      require_condition(block_id >= 0 && contains_block(block_id) &&
+                            slots[block_id] == slot,
                         "broken LRU index");
       ordered_block_ids.push_back(block_id);
       previous_slot = slot;
       require_condition(ordered_block_ids.size() <= size_t(used), "LRU cycle");
     }
-    require_condition(ordered_block_ids.size() == size_t(used) && previous_slot == tail &&
-                          used <= cap,
+    require_condition(ordered_block_ids.size() == size_t(used) &&
+                          previous_slot == tail && used <= cap,
                       "broken LRU size");
     return ordered_block_ids;
   }
 
   // Internal list and undo helpers.
   // Change a field, saving its old value during a trial write.
-  void set(int32_t &field, int32_t new_value) {
+  void set_and_record_for_undo(int32_t &field, int32_t new_value) {
     if (logging)
       journal.push_back({&field, field});
     field = new_value;
   }
 
   // Detach a slot from the LRU list.
-  void unlink(int32_t slot) {
+  void detach_from_use_order(int32_t slot) {
     int32_t previous_slot = nodes[slot].prev, next_slot = nodes[slot].next;
     if (previous_slot >= 0)
-      set(nodes[previous_slot].next, next_slot);
+      set_and_record_for_undo(nodes[previous_slot].next, next_slot);
     else
-      set(head, next_slot);
+      set_and_record_for_undo(head, next_slot);
     if (next_slot >= 0)
-      set(nodes[next_slot].prev, previous_slot);
+      set_and_record_for_undo(nodes[next_slot].prev, previous_slot);
     else
-      set(tail, previous_slot);
+      set_and_record_for_undo(tail, previous_slot);
   }
 
   // Attach a slot at the most recently used end.
-  void push(int32_t slot) {
-    set(nodes[slot].prev, -1);
-    set(nodes[slot].next, head);
+  void move_to_most_recent(int32_t slot) {
+    set_and_record_for_undo(nodes[slot].prev, -1);
+    set_and_record_for_undo(nodes[slot].next, head);
     if (head >= 0)
-      set(nodes[head].prev, slot);
+      set_and_record_for_undo(nodes[head].prev, slot);
     else
-      set(tail, slot);
-    set(head, slot);
+      set_and_record_for_undo(tail, slot);
+    set_and_record_for_undo(head, slot);
   }
 };
 
 // Binary-file utilities.
 // Load an array from a binary file and check its size.
-template <class T> static std::vector<T> read_binary_array(const std::string &path) {
+template <class T>
+static std::vector<T> read_binary_array(const std::string &path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   require_condition(bool(file), "cannot open " + path);
   auto bytes = file.tellg();
-  require_condition(bytes >= 0 && bytes % sizeof(T) == 0, "unaligned input " + path);
+  require_condition(bytes >= 0 && bytes % sizeof(T) == 0,
+                    "unaligned input " + path);
   std::vector<T> values(size_t(bytes) / sizeof(T));
   file.seekg(0);
   if (bytes)
-    require_condition(bool(file.read(reinterpret_cast<char *>(values.data()), bytes)),
-                      "short input " + path);
+    require_condition(
+        bool(file.read(reinterpret_cast<char *>(values.data()), bytes)),
+        "short input " + path);
   return values;
 }
 
 // Save an array in the simulator's binary format.
 template <class T>
-static void write_binary_array(const fs::path &path, const std::vector<T> &values) {
+static void write_binary_array(const fs::path &path,
+                               const std::vector<T> &values) {
   std::ofstream file(path, std::ios::binary);
   require_condition(bool(file), "cannot create " + path.string());
   file.write(reinterpret_cast<const char *>(values.data()),

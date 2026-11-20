@@ -24,7 +24,7 @@ class PhysicalBudget:
         self.total = self.startup = self.measured = 0
         self.last = origin_ns
 
-    def limit(self, now_ns, warmup, measurement_begin_ns=None):
+    def available_write_pages(self, now_ns, warmup, measurement_begin_ns=None):
         """Return how many more pages may be written at this time."""
         if (
             type(now_ns) is not int
@@ -52,7 +52,7 @@ class PhysicalBudget:
         earned = self.capacity * (now_ns - self.begin) // DAY_NS
         return max(0, min(remaining, earned - self.measured))
 
-    def charge(self, cost, warmup, allowance):
+    def charge_write_pages(self, cost, warmup, allowance):
         """Charge an accepted write without exceeding its available allowance."""
         if (
             type(cost) is not int
@@ -67,7 +67,9 @@ class PhysicalBudget:
         else:
             self.measured += cost
 
-    def summary(self, end_ns, measurement_begin_ns, window_and_drain_seconds):
+    def summarize_write_spending(
+        self, end_ns, measurement_begin_ns, window_and_drain_seconds
+    ):
         """Report startup and measured spending separately."""
         if (
             not self.origin <= measurement_begin_ns <= end_ns

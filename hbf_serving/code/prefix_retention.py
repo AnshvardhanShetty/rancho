@@ -5,7 +5,7 @@ The caller supplies the shared-prefix length and waits for GPU computation
 before retaining pages. This is the benchmark's prefix-retaining baseline."""
 
 
-def completed_shared_candidates(scheduled_ids, requests, tables, seen, shared_pages):
+def find_completed_shared_prefixes(scheduled_ids, requests, tables, seen, shared_pages):
     """Called only at synchronous GPU completion; exclude unique and output pages."""
     candidates = []
     complete = []
@@ -45,7 +45,7 @@ class PrefixRetention:
 
         pool._maybe_evict_cached_block = guarded_evict
 
-    def retain(self, candidates, *, gpu_completed):
+    def retain_shared_prefix_blocks(self, candidates, *, gpu_completed):
         """Candidates are (physical block, hash captured after scheduling) pairs."""
         if gpu_completed is not True:
             raise ValueError("Cannot retain uncomputed KV")
@@ -68,7 +68,7 @@ class PrefixRetention:
             added.append(dict(block_id=block.block_id, block_hash=repr(expected_hash)))
         return added
 
-    def verify(self):
+    def verify_retained_prefixes(self):
         """Full invariant check at new pin events and completion, not every token."""
         free_ids = {
             b.block_id for b in self.pool.free_block_queue.get_all_free_blocks()

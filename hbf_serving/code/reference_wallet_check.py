@@ -2,14 +2,14 @@
 
 import array, math, struct
 from pathlib import Path
-from controllers_reference import Wallet, Observation, hash01
+from controllers_reference import Wallet, Observation, seeded_tie_break_value
 
 DECISION_RECORD_LAYOUT = struct.Struct("<qqqqqddddqqq")
 REUSE_HISTORY_RECORD_LAYOUT = struct.Struct("<qq")
 OFFER_HISTORY_RECORD_LAYOUT = struct.Struct("<qqqq")
 
 
-def eq(a, b):
+def scores_match(a, b):
     return a == b or (
         math.isfinite(a)
         and math.isfinite(b)
@@ -17,7 +17,7 @@ def eq(a, b):
     )
 
 
-def effective_cutoff(threshold, have, spent, budget, now, split, end, enabled):
+def compute_effective_cutoff(threshold, have, spent, budget, now, split, end, enabled):
     """Use exact integer time/spending comparison, with no forced admission."""
     return (
         threshold / 2
@@ -29,9 +29,9 @@ def effective_cutoff(threshold, have, spent, budget, now, split, end, enabled):
 class BandWallet(Wallet):
     """Compute rank boundaries independently, then compare every live decision."""
 
-    def recompute(self, now):
+    def update_admission_cutoffs(self, now):
         """Rebuild the score cutoff for each group of similar write sizes"""
-        super().recompute(now)
+        super().update_admission_cutoffs(now)
         priced = [
             offer
             for offer in self.offer_history
@@ -88,7 +88,7 @@ class BandWallet(Wallet):
                 above += weight
 
 
-def audit(
+def audit_admission_decisions(
     native,
     density_path,
     seed,
@@ -157,7 +157,7 @@ def audit(
             assert history_distinct_blocks == distinct and past >= 0
             assert previous_request_row < row and previous_arrival_us <= time < end
             previous_request_row, previous_arrival_us = row, time
-            reference_controller.phase(time)
+            reference_controller.release_reserved_budget_if_due(time)
             assert predicted_reuse == density[row]
             expected = (
                 density[row] * float(distinct) / float(cost) if cost else math.inf
@@ -168,7 +168,7 @@ def audit(
                 boost = math.sqrt(boost)
             if cost and distinct:
                 expected *= boost
-            assert eq(score, expected), (row, "score", score, expected)
+            assert scores_match(score, expected), (row, "score", score, expected)
             cutoff, coin = (
                 getattr(reference_controller, "cutoffs_by_cost_band", {}).get(
                     cost.bit_length() - 1,
@@ -191,7 +191,7 @@ def audit(
                 < budget * (time - split)
             ):
                 discounted_offers += 1
-                cutoff = effective_cutoff(
+                cutoff = compute_effective_cutoff(
                     cutoff,
                     reference_controller.cutoff_ready,
                     reference_controller.blocks_written,
@@ -204,8 +204,8 @@ def audit(
             assert (
                 before == reference_controller.blocks_written
                 and bool(have) == reference_controller.cutoff_ready
-                and eq(threshold, cutoff)
-                and eq(tie, coin)
+                and scores_match(threshold, cutoff)
+                and scores_match(tie, coin)
             ), (row, "controller")
             why = (
                 1
@@ -229,7 +229,10 @@ def audit(
                                     if expected > cutoff
                                     or (
                                         expected == cutoff
-                                        and hash01(row, seed ^ 0x5BF03635) < coin
+                                        and seeded_tie_break_value(
+                                            row, seed ^ 0x5BF03635
+                                        )
+                                        < coin
                                     )
                                     else 5
                                 )
@@ -256,7 +259,7 @@ def audit(
                     probability = min(1.0, (reserve - random_spend) / projected)
                     counts["coin_trials"] += 1
                     day["trials"] += 1
-                    if hash01(row, seed ^ 0x72A11D) < probability:
+                    if seeded_tie_break_value(row, seed ^ 0x72A11D) < probability:
                         why = 7
                         random_spend += cost
                         counts["coin_paid"] += 1
@@ -282,7 +285,7 @@ def audit(
             boost_sum += boost
             boost_max = max(boost_max, boost)
             boosted += boost > 1
-            reference_controller._observe(
+            reference_controller._record_offer(
                 Observation(row, expected, cost, time, distinct)
             )
             if accept:
@@ -300,7 +303,7 @@ def audit(
     )
     assert history == [
         (v.event_id, v.distinct, v.cost, v.time_us)
-        for v in reference_controller.chronological()
+        for v in reference_controller.offers_in_arrival_order()
     ]
     assert regular_spend + random_spend == reference_controller.blocks_written
     counts.update(regular_blocks=regular_spend, rescue_blocks=random_spend)

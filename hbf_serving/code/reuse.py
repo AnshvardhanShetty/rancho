@@ -5,7 +5,7 @@ An existing immutable copy requires no further write. Reference updates use
 the single synchronous scheduler."""
 
 
-def existing_hbf(tiers, source_id):
+def find_existing_hbf_copy(tiers, source_id):
     """Find a saved HBF copy of this page if there is one"""
     source = tiers.pool.blocks[source_id]
     if source.block_hash is None:
@@ -17,12 +17,12 @@ def existing_hbf(tiers, source_id):
         else ([] if entry is None else [entry])
     )
     for block in values:
-        if tiers.is_hbf(block.block_id):
+        if tiers.is_hbf_page(block.block_id):
             return block.block_id
     return None
 
 
-def commit_existing(tiers, pairs, *, gpu_completed):
+def remap_to_existing_hbf_copies(tiers, pairs, *, gpu_completed):
     """Move active references to an HBF copy we already have"""
     if gpu_completed is not True:
         raise ValueError("Prefill GPU work must complete before remapping")
@@ -35,7 +35,9 @@ def commit_existing(tiers, pairs, *, gpu_completed):
     tables = tiers.managers[0].req_to_blocks
     references = {}
     for source_page_id, target_page_id in pairs:
-        if not tiers.is_hbm(source_page_id) or not tiers.is_hbf(target_page_id):
+        if not tiers.is_hbm_page(source_page_id) or not tiers.is_hbf_page(
+            target_page_id
+        ):
             raise ValueError("Wrong reuse tier")
         source_block, target_block = (
             pool.blocks[source_page_id],

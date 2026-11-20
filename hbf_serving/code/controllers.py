@@ -21,7 +21,7 @@ SNAPSHOT_KEYS = {
 }
 
 
-def hash01(event_id, seed):
+def seeded_tie_break_value(event_id, seed):
     hashed_value = ((event_id * 0x9E3779B97F4A7C15) & MASK64) ^ seed
     hashed_value ^= hashed_value >> 33
     hashed_value = (hashed_value * 0xFF51AFD7ED558CCD) & MASK64
@@ -91,7 +91,7 @@ class Wallet:
         self.last_id, self.last_us = -1, -(1 << 63)
         self.warm_provenance = None
 
-    def phase(self, now_us):
+    def release_reserved_budget_if_due(self, now_us):
         if not self.released and now_us >= self.release_us:
             self.current_spending_limit, self.released, self.cutoff_ready = (
                 self.budget,
@@ -99,7 +99,7 @@ class Wallet:
                 False,
             )
 
-    def chronological(self):
+    def offers_in_arrival_order(self):
         if len(self.offer_history) < self.history_capacity:
             return list(self.offer_history)
         return (
@@ -107,11 +107,11 @@ class Wallet:
             + self.offer_history[: self.next_history_slot]
         )
 
-    def recompute(self, now_us):
+    def update_admission_cutoffs(self, now_us):
         """Estimate future writes and recalculate the score cutoff"""
         if self.design == "ssd":
-            self.phase(now_us)
-            values = self.chronological()
+            self.release_reserved_budget_if_due(now_us)
+            values = self.offers_in_arrival_order()
             if len(values) < 100:
                 self.threshold, self.tie_probability, self.cutoff_ready = (
                     -math.inf,
@@ -202,7 +202,7 @@ class Wallet:
                 )
         self.cutoff_ready = True
 
-    def _observe(self, v):
+    def _record_offer(self, v):
         """Save this offer and record what the policy decided"""
         if len(self.offer_history) < self.history_capacity:
             self.offer_history.append(v)
@@ -211,9 +211,9 @@ class Wallet:
         self.next_history_slot = (self.next_history_slot + 1) % self.history_capacity
         self.observations += 1
         if self.observations % self.update == 0:
-            self.recompute(v.time_us)
+            self.update_admission_cutoffs(v.time_us)
 
-    def decide(
+    def decide_write_admission(
         self,
         event_id,
         now_us,
@@ -263,7 +263,7 @@ class Wallet:
             else (math.inf if self.design == "hbf" else prediction)
         )
         if not (self.design == "ssd" and forced_warm is not None):
-            self.phase(now_us)
+            self.release_reserved_budget_if_due(now_us)
         if forced_warm is not None:
             admit = forced_warm
             if admit and (
@@ -285,7 +285,7 @@ class Wallet:
                         or score > self.threshold
                         or (
                             score == self.threshold
-                            and hash01(event_id, self.seed ^ 0x5BF03635)
+                            and seeded_tie_break_value(event_id, self.seed ^ 0x5BF03635)
                             < self.tie_probability
                         )
                     )
@@ -297,18 +297,20 @@ class Wallet:
             admit = admit and cost <= payment_limit
         observation = Observation(event_id, score, cost, now_us, distinct)
         if self.design == "hbf":
-            self._observe(observation)
+            self._record_offer(observation)
             if admit:
                 self.blocks_written += cost
         else:
             if admit:
                 self.blocks_written += 1
-            self._observe(observation)
+            self._record_offer(observation)
         return admit
 
-    def reprice(self, event_ids, predictions, cut_us, *, initialization=False):
+    def refresh_offer_scores(
+        self, event_ids, predictions, cut_us, *, initialization=False
+    ):
         """Re-score the exact retained past history without changing past actions."""
-        values = self.chronological()
+        values = self.offers_in_arrival_order()
         if list(event_ids) != [v.event_id for v in values] or len(predictions) != len(
             values
         ):
@@ -339,9 +341,9 @@ class Wallet:
             for v in self.offer_history
         ]
         self.cutoff_ready, self.threshold, self.tie_probability = False, -math.inf, 1.0
-        self.recompute(cut_us)
+        self.update_admission_cutoffs(cut_us)
 
-    def snapshot(self):
+    def snapshot_controller_state(self):
         """Full state including physical ring position; provenance is external."""
         state = {
             SNAPSHOT_KEYS.get(field, field): value
@@ -350,19 +352,19 @@ class Wallet:
         }
         state["ring"] = [asdict(v) for v in self.offer_history]
 
-        def encode(x):
+        def encode_infinite_values(x):
             if isinstance(x, float) and math.isinf(x):
                 return "+inf" if x > 0 else "-inf"
             if isinstance(x, dict):
-                return {k: encode(v) for k, v in x.items()}
+                return {k: encode_infinite_values(v) for k, v in x.items()}
             if isinstance(x, list):
-                return [encode(v) for v in x]
+                return [encode_infinite_values(v) for v in x]
             return x
 
-        return encode(state)
+        return encode_infinite_values(state)
 
     @classmethod
-    def restore(cls, state, expected_sha256):
+    def restore_controller_state(cls, state, expected_sha256):
         """Restore controller fields from a checked saved state."""
         raw = json.dumps(
             state, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -370,18 +372,18 @@ class Wallet:
         if hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise ValueError("Controller snapshot hash mismatch")
 
-        def decode(x):
+        def decode_infinite_values(x):
             if x == "+inf":
                 return math.inf
             if x == "-inf":
                 return -math.inf
             if isinstance(x, dict):
-                return {k: decode(v) for k, v in x.items()}
+                return {k: decode_infinite_values(v) for k, v in x.items()}
             if isinstance(x, list):
-                return [decode(v) for v in x]
+                return [decode_infinite_values(v) for v in x]
             return x
 
-        saved_fields = decode(state)
+        saved_fields = decode_infinite_values(state)
         controller = cls(
             saved_fields["design"],
             saved_fields["budget"],

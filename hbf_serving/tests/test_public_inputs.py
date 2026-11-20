@@ -7,7 +7,11 @@ import json
 from pathlib import Path
 import unittest
 
-from controlled_workload import prompts, records, eligibility
+from controlled_workload import (
+    build_workload_prompts,
+    build_request_feature_records,
+    build_eligible_read_mask,
+)
 from updated_policy import BandWallet, FilteredHistory
 from reference_wallet_check import BandWallet as ReferenceWallet
 
@@ -17,9 +21,9 @@ class PublicInputs(unittest.TestCase):
         setup = json.loads(
             (Path(__file__).resolve().parents[1] / "synthetic_setup.json").read_text()
         )
-        payload = prompts(setup)
-        earlier, requests = records(setup)
-        bits = eligibility(setup)
+        payload = build_workload_prompts(setup)
+        earlier, requests = build_request_feature_records(setup)
+        bits = build_eligible_read_mask(setup)
         self.assertEqual(len(payload), 1208)
         self.assertEqual(len(earlier), 128)
         self.assertEqual(len(requests), len(payload))
@@ -30,15 +34,18 @@ class PublicInputs(unittest.TestCase):
 
     def test_history_updates_after_decision(self):
         history = FilteredHistory(1)
-        first = history.prepare("first", ["A", "B"], 1, 0)
+        first = history.collect_request_reuse("first", ["A", "B"], 1, 0)
         self.assertEqual(first["past_filtered_reuses"], 0)
-        history.commit(first)
-        second = history.prepare("second", ["A", "B"], 1, 0)
+        history.record_request_reuse(first)
+        second = history.collect_request_reuse("second", ["A", "B"], 1, 0)
         self.assertEqual(second["past_filtered_reuses"], 0)
         self.assertEqual(second["pending"], ["A", "B"])
-        history.commit(second)
+        history.record_request_reuse(second)
         self.assertEqual(
-            history.prepare("third", ["A", "B"], 1, 0)["past_filtered_reuses"], 2
+            history.collect_request_reuse("third", ["A", "B"], 1, 0)[
+                "past_filtered_reuses"
+            ],
+            2,
         )
 
     def test_cutoffs_match_independent_reference(self):
@@ -51,10 +58,10 @@ class PublicInputs(unittest.TestCase):
         )
         for i in range(1200):
             values = (i, float(i % 37), 1 << (i % 4), i * 1000000, 1 << (i % 4))
-            live._observe(Observation(*values))
-            reference._observe(ReferenceObservation(*values))
-        live.recompute(1200000000)
-        reference.recompute(1200000000)
+            live._record_offer(Observation(*values))
+            reference._record_offer(ReferenceObservation(*values))
+        live.update_admission_cutoffs(1200000000)
+        reference.update_admission_cutoffs(1200000000)
         self.assertEqual(live.cutoffs_by_cost_band, reference.cutoffs_by_cost_band)
         self.assertEqual(
             (live.threshold, live.tie_probability),

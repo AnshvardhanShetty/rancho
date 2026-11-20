@@ -6,11 +6,11 @@ are constrained not to lower predictions. Raw-label squared error is the selecte
 
 import time
 import numpy as np
-from .training_data import chronological_inner_cut, validation_mask
-from .settings import normalize
+from .training_data import validation_start_time, select_validation_rows
+from .settings import validate_recorded_settings
 
 
-def vocab_fit(feature_values, category_columns):
+def build_category_values(feature_values, category_columns):
     """Remember category values seen in the training examples."""
     return [
         (
@@ -28,7 +28,7 @@ def vocab_fit(feature_values, category_columns):
     ]
 
 
-def vocab_encode(feature_values, vocab):
+def encode_tree_features(feature_values, vocab):
     """Use the same category codes during fitting and prediction."""
     encoded_features = np.where(
         np.isfinite(feature_values) & (feature_values >= 0), feature_values, np.nan
@@ -54,7 +54,7 @@ def vocab_encode(feature_values, vocab):
     return encoded_features
 
 
-def predict(model, feature_values):
+def predict_saved_reads(model, feature_values):
     """Predict marginal reuse from the supplied feature rows."""
     eviction_count, average_reuse, kind = (
         len(feature_values),
@@ -65,7 +65,7 @@ def predict(model, feature_values):
         predicted_reuse = np.full(eviction_count, average_reuse)
     elif kind == "tree":
         predicted_reuse = model["fit"].predict(
-            vocab_encode(feature_values, model["vocab"]), num_threads=1
+            encode_tree_features(feature_values, model["vocab"]), num_threads=1
         )
         if model["target"] == "log1p":
             predicted_reuse = np.expm1(np.minimum(predicted_reuse, 700))
@@ -80,10 +80,10 @@ def predict(model, feature_values):
     return predicted_reuse
 
 
-def fit_model(data, cutoff, config):
+def fit_eviction_reuse_model(data, cutoff, config):
     """Choose a tree count on earlier data, then fit all usable examples."""
     started = time.monotonic()
-    config = normalize(config)
+    config = validate_recorded_settings(config)
     example_ids, observed_reuse, weights = data.training_examples(cutoff, config)
     feature_values, category_columns = (
         data.feature_table(example_ids, config),
@@ -132,13 +132,13 @@ def fit_model(data, cutoff, config):
             feature_fraction=1.0,
         )
         params["monotone_constraints"] = config["monotone_constraints"]
-        inner = chronological_inner_cut(
+        inner = validation_start_time(
             cutoff, config["cohort_lag_hours"], config["inner_validation_hours"]
         )
         earlier_ids, earlier_reuse, earlier_weights = data.training_examples(
             inner, config
         )
-        validation_rows = validation_mask(
+        validation_rows = select_validation_rows(
             example_times, cutoff, inner, config["cohort_lag_hours"]
         )
         if np.intersect1d(example_ids[validation_rows], earlier_ids).size:
@@ -150,15 +150,15 @@ def fit_model(data, cutoff, config):
             and (earlier_reuse.sum() > 0)
         ):
             earlier_features = data.feature_table(earlier_ids, config)
-            vocab = vocab_fit(earlier_features, category_columns)
+            vocab = build_category_values(earlier_features, category_columns)
             estimator = lgb.LGBMRegressor(n_estimators=config["max_rounds"], **params)
             estimator.fit(
-                vocab_encode(earlier_features, vocab),
+                encode_tree_features(earlier_features, vocab),
                 transform(earlier_reuse),
                 sample_weight=earlier_weights,
                 eval_set=[
                     (
-                        vocab_encode(feature_values[validation_rows], vocab),
+                        encode_tree_features(feature_values[validation_rows], vocab),
                         transform(observed_reuse[validation_rows]),
                     )
                 ],
@@ -171,10 +171,10 @@ def fit_model(data, cutoff, config):
                 raise ValueError("Nonfinite inner validation loss")
             tree_count = int(np.argmin(validation_errors)) + 1
         if len(example_ids) >= 2 * config["minimum"] and observed_reuse.sum() > 0:
-            vocab = vocab_fit(feature_values, category_columns)
+            vocab = build_category_values(feature_values, category_columns)
             estimator = lgb.LGBMRegressor(n_estimators=tree_count, **params)
             estimator.fit(
-                vocab_encode(feature_values, vocab),
+                encode_tree_features(feature_values, vocab),
                 transform(observed_reuse),
                 sample_weight=weights,
                 categorical_feature=category_columns,
@@ -206,7 +206,7 @@ def fit_model(data, cutoff, config):
     probe = np.arange(
         0, len(example_ids), max(1, len(example_ids) // 50000), dtype=np.int64
     )
-    predicted = predict(model, feature_values[probe])
+    predicted = predict_saved_reads(model, feature_values[probe])
     record["prediction_bins"] = (
         np.unique(np.quantile(predicted, np.arange(0.1, 1, 0.1))).tolist()
         if len(predicted)
@@ -216,12 +216,12 @@ def fit_model(data, cutoff, config):
     return (model, record)
 
 
-def predict_events(data, model, indices):
+def predict_reuse_for_evictions(data, model, indices):
     """Score eviction rows directly; an empty hour has no predictions."""
     example_ids = np.asarray(indices, dtype=np.int64)
     if not len(example_ids):
         return (np.empty(0, dtype=np.float64), 0)
     return (
-        predict(model, data.feature_table(example_ids, model["config"])),
+        predict_saved_reads(model, data.feature_table(example_ids, model["config"])),
         len(example_ids),
     )

@@ -68,7 +68,9 @@ class Checks(unittest.TestCase):
             self.assertEqual(expected, [b.block_id for b in new.get_all_free_blocks()])
             self.assertEqual(list(new.hbm), [i for i in expected if i <= 91])
             self.assertEqual(list(new.hbf), [i for i in expected if i > 91])
-            self.assertEqual([b.block_id for b in new.first_hbm(4)], list(new.hbm)[:4])
+            self.assertEqual(
+                [b.block_id for b in new.first_free_hbm_blocks(4)], list(new.hbm)[:4]
+            )
 
 
 if __name__ == "__main__":

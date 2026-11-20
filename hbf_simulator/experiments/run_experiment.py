@@ -90,7 +90,7 @@ def run_hourly_models(
     data = model_training.RequestData(label_directory)
     predictions_by_request = np.zeros(data.request_count, dtype="<f8")
     for hour in range(first_hour, end_hour):
-        predictions, first_row, stop_row = model_training.fit_hourly_model(
+        predictions, first_row, stop_row = model_training.fit_and_predict_one_hour(
             data,
             hour * H,
             output_directory / "fits" / predictions_path.name / str(hour),

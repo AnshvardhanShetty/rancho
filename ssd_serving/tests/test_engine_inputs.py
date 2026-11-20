@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 from collections import OrderedDict
 
-from serve import validate
+from serve import validate_serving_inputs
 from ssd_policy import Offer, accept_fixture, reject_fixture
 
 HERE = Path(__file__).resolve().parents[1]
@@ -50,7 +50,7 @@ class Inputs(unittest.TestCase):
 
     def test_example_is_valid_and_contains_no_storage_path(self):
         plan = self.plan()
-        validate(plan)
+        validate_serving_inputs(plan)
         self.assertEqual(len(plan["requests"]), 12)
         self.assertNotIn("ssd_directory", plan)
 
@@ -58,14 +58,14 @@ class Inputs(unittest.TestCase):
         plan = self.plan()
         plan["hbm_pages"] = 1
         with self.assertRaises(ValueError):
-            validate(plan)
+            validate_serving_inputs(plan)
 
     def test_rejects_unordered_arrivals(self):
         plan = self.plan()
         plan["requests"]["row4"]["arrival_seconds"] = 0.2
         plan["requests"]["row5"]["arrival_seconds"] = 0.1
         with self.assertRaises(ValueError):
-            validate(plan)
+            validate_serving_inputs(plan)
 
     def test_fixture_policies_do_not_need_future_reads(self):
         offer = Offer(b"key", 0, 0, 1.0, 16, 0, 1, 1, 0, 2, 1.0, 0.0, "row0", {})
@@ -98,30 +98,30 @@ class Eviction(unittest.TestCase):
         if already_saved:
             store.slots[b"key"] = 0
 
-        def put(key, page):
+        def write_block_to_ssd(key, page):
             store.slots[key] = page
             store.writes += 1
 
-        store.put = put
+        store.write_block_to_ssd = write_block_to_ssd
         self.backend.store = store
         block = types.SimpleNamespace(block_id=1, ref_cnt=0, block_hash=(b"key", 0))
         return connector, store, block
 
     def test_accepts_only_within_hard_write_budget(self):
         connector, store, block = self.make_connector()
-        connector.evict(block)
+        connector.handle_hbm_eviction(block)
         self.assertEqual(store.writes, 1)
         self.assertEqual(connector.offers[0].prior_touch_count, 2)
         self.assertEqual(connector.offers[0].prior_eviction_count, 0)
         connector, store, block = self.make_connector(written=1)
-        connector.evict(block)
+        connector.handle_hbm_eviction(block)
         self.assertEqual(store.writes, 1)
         self.assertEqual(len(connector.offers), 1)
         self.assertEqual(connector.rejected, 1)
 
     def test_existing_copy_needs_no_new_write_or_decision(self):
         connector, store, block = self.make_connector(already_saved=True)
-        connector.evict(block)
+        connector.handle_hbm_eviction(block)
         self.assertEqual(store.writes, 0)
         self.assertEqual(connector.offers, [])
         self.assertEqual(connector.retained, 1)
@@ -130,12 +130,12 @@ class Eviction(unittest.TestCase):
         connector, store, block = self.make_connector()
         block.ref_cnt = 1
         with self.assertRaises(AssertionError):
-            connector.evict(block)
+            connector.handle_hbm_eviction(block)
         self.assertEqual(store.writes, 0)
         connector, store, block = self.make_connector()
         connector.new_pages.add(1)
         with self.assertRaises(RuntimeError):
-            connector.evict(block)
+            connector.handle_hbm_eviction(block)
         self.assertEqual(store.writes, 0)
 
 
