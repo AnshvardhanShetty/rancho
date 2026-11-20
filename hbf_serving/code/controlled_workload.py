@@ -1,9 +1,4 @@
-"""Generate synthetic conversations with shared prefixes and unique endings.
-
-Earlier references establish conversation features and reuse eligibility.
-Each engine starts empty and computes one warm-up prompt per conversation.
-Full blocks use chained hashes, so their identities include preceding tokens.
-Cache hits are counted from actual lookups."""
+"""Make synthetic chats with shared prompt blocks and unique endings"""
 
 import hashlib, struct
 from features import RequestHistory

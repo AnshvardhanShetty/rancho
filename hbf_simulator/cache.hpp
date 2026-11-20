@@ -1,9 +1,9 @@
 #pragma once
 
-// One Cache tracks block IDs and least-recently-used order for one tier.
-// rancho.cpp creates separate flash/HBM caches and decides what to admit.
-// has()/touch(): read; put()/erase(): update; dry_cost(): try and undo a write.
-// order() checks/saves contents; lower helpers maintain links and read/write arrays.
+// One Cache keeps the block IDs in one tier and tracks when they were last used
+// has checks whether a block is present and touch moves it to the front
+// put makes room by removing the least recently used block when the cache is full
+// dry_cost tries a write and then undoes it so RANCHO can price the offer
 
 #include <algorithm>
 #include <cstdint>
@@ -194,12 +194,10 @@ template <class T> static std::vector<T> read_binary_array(const std::string &p)
 }
 
 // Save an array in the simulator's binary format.
-template <class T>
-static void write_binary_array(const fs::path &p, const std::vector<T> &a) {
+template <class T> static void write_binary_array(const fs::path &p, const std::vector<T> &a) {
   std::ofstream f(p, std::ios::binary);
   require_condition(bool(f), "cannot create " + p.string());
-  f.write(reinterpret_cast<const char *>(a.data()),
-          std::streamsize(a.size() * sizeof(T)));
+  f.write(reinterpret_cast<const char *>(a.data()), std::streamsize(a.size() * sizeof(T)));
   f.close();
   require_condition(bool(f), "output failed " + p.string());
 }

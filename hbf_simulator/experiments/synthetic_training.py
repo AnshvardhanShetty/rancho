@@ -22,13 +22,17 @@ class SyntheticTrainingData(model_training.RequestData):
         self.ts = np.asarray(times, dtype=np.int64)
         self.n = len(times)
         self.features = {name: features[:, i] for i, name in enumerate(names)}
-        self.schema = {name: {"encoding": "categorical" if i == 0 else "numeric"}
-                       for i, name in enumerate(names)}
+        self.schema = {
+            name: {"encoding": "categorical" if i == 0 else "numeric"}
+            for i, name in enumerate(names)
+        }
         self.c = np.zeros(self.n, dtype=np.int32)
         self.Y = np.zeros((168, self.n), dtype=np.uint64)
         self.latest = 0
         self.observed = np.zeros(self.n, dtype=np.int64)
-        self.label_kind = "offered_suffix" if offered is not None else "original_increment"
+        self.label_kind = (
+            "offered_suffix" if offered is not None else "original_increment"
+        )
         if len(rows) != self.n or len(sessions) != self.n or len(features) != self.n:
             raise ValueError("Training arrays describe different request counts")
         if np.any(self.ts < 0) or np.any(self.ts[1:] < self.ts[:-1]):
@@ -69,8 +73,12 @@ class SyntheticTrainingData(model_training.RequestData):
 def fit_research_model(data, cut, settings):
     """Call the research fit, silencing only LightGBM's renamed-argument notice."""
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="The argument 'eval_set' is deprecated.*",
-                                category=FutureWarning, module="lightgbm.sklearn")
+        warnings.filterwarnings(
+            "ignore",
+            message="The argument 'eval_set' is deprecated.*",
+            category=FutureWarning,
+            module="lightgbm.sklearn",
+        )
         return model_training.fit_tree_model(data, cut, settings)
 
 

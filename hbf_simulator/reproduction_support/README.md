@@ -1,12 +1,12 @@
-# Building reuse labels
+# Counting reuse for training
 
-These tools build training counts from request sequences and recorded cache decisions.
+A training label says how often the blocks in one write offer were read again. These tools produce those counts from a prepared trace.
 
-1. `training/initial_reuse_counts.c` counts later accesses to newly introduced KV.
-2. `training/record_write_offers.cpp` records the recomputed suffix considered for each write, including rejected writes.
-3. `training/reuse_index.cpp` indexes repeated accesses by block and request.
-4. `training/suffix_reuse_counts.cpp` counts later accesses to each offered suffix and checks the counts with a separate calculation.
+1. [initial_reuse_counts.c](training/initial_reuse_counts.c) counts later reads of blocks introduced by each request. These counts fit the first predictor.
+2. [record_write_offers.cpp](training/record_write_offers.cpp) replays the first predictor and saves which suffix the cache offered to write on each request. It saves declined offers too.
+3. [reuse_index.cpp](training/reuse_index.cpp) records where each block is read again in the same chat.
+4. [suffix_reuse_counts.cpp](training/suffix_reuse_counts.cpp) uses the index to count later reads of each offered suffix. It checks those counts with a separate calculation.
 
-The output records the number of blocks per offer in `c.i32` and later accesses by hour in `Y.u64`. Training uses the hours completed before each fit.
+`c.i32` has the number of distinct blocks in each offer. `Y.u64` has the number of later reads in each hour. The trainer adds only the hours that ended before the fit starts.
 
-For the small CPU demo, [synthetic_training.py](../experiments/synthetic_training.py) builds these counts in memory. The cache decisions come from [rancho.cpp](../rancho.cpp).
+The [CPU demo](../examples/README.md) builds the same kind of counts in memory from its synthetic requests.

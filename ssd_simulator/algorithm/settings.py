@@ -1,4 +1,4 @@
-"""Freeze the recorded model settings; only the documented raw-loss override is used."""
+"""Use the saved settings and apply the loss override from the recorded runner"""
 
 import json
 from pathlib import Path

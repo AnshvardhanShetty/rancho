@@ -1,11 +1,12 @@
-"""Copy completed KV into HBF when RANCHO accepts the write.
+"""Move completed KV to HBF when RANCHO accepts a write
 
-HBFScheduler identifies pages already present and protects their stored copies.
-HBFConnector waits for GPU computation, asks RANCHO, then copies accepted pages.
-update_from_output() publishes completed copies so later requests can reuse them.
+The scheduler finds full pages and protects any copies already on HBF
+The worker waits for prefill to finish then makes the accepted copies
+The scheduler updates the cache after those copies finish
 
-Assumes synchronous execution and full KV pages. HBF uses GPU memory; only writes
-are bandwidth-limited. Reuse observations are committed after admission."""
+HBF is emulated in GPU memory and the run limits write speed
+Reuse from the current request is added after its write decision
+"""
 
 import time
 from direct_backend import DirectConnector, DirectScheduler, Copied, log_event
@@ -23,7 +24,7 @@ class HBFConnector(DirectConnector):
             self.history = FilteredHistory(self.config["HBM_pages"])
 
     def wait_for_save(self):
-        """Score completed KV, copy accepted pages and defer reuse-history updates."""
+        """Check each completed request and copy the KV that RANCHO accepts"""
         import torch
 
         metadata = self._get_connector_metadata()
@@ -43,6 +44,7 @@ class HBFConnector(DirectConnector):
             )
             history_prepare_ns = time.perf_counter_ns() - history_start
             try:
+                # Reuse any pages already copied so only new pages cost a write
                 all_sources = list(candidate["sources"])
                 reuse = list(candidate["reuse"])
                 reused_sources = {src for src, dst in reuse}
@@ -83,6 +85,7 @@ class HBFConnector(DirectConnector):
                 self.now_us = max(self.now_us, candidate["policy_us"])
                 if self.config.get("physical_write_accounting"):
                     self.policy.set_request_context(candidate["request_id"])
+                # Score using only reuse from before this request
                 self.policy.set_past(hist["past_filtered_reuses"])
                 decision = self.policy.hbf_prefill_complete(
                     self.event_id,
@@ -103,6 +106,7 @@ class HBFConnector(DirectConnector):
                     event["action"] = "POLICY_REJECT"
                     self.output.events.append(event)
                     continue
+                # Copy in chunks that fit the buffer and wait for the write time
                 targets = destinations[:cost]
                 del destinations[:cost]
                 size = self.config["native_block_bytes"]
@@ -144,6 +148,7 @@ class HBFConnector(DirectConnector):
                 )
                 self.output.events.append(event)
             finally:
+                # Record this request for future offers even if the write was declined
                 history_start = time.perf_counter_ns()
                 self.history.commit(hist)
                 event["history_cpu_ns"] = (

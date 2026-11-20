@@ -1,11 +1,9 @@
-"""Apply RANCHO's reuse score and write-budget rule to completed requests.
+"""Decide whether to save completed KV to HBF
 
-BandWallet chooses cutoffs and checks whether a write fits the budget.
-FilteredHistory tracks earlier same-session reuse using a separate HBM-only cache.
-UpdatedAdmission calls the predictor, then asks BandWallet for the decision.
-
-Assumes requests are handled in GPU-completion order. Reuse from the current
-request is added after its decision. The physical write limit is supplied separately."""
+FilteredHistory counts earlier reuse that GPU memory alone would miss
+UpdatedAdmission combines the prediction with that history
+BandWallet adjusts the cutoff and keeps track of writes
+"""
 
 from collections import OrderedDict
 import math, time

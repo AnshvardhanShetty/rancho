@@ -1,4 +1,4 @@
-"""File helpers used by the hourly predictor in the artifact."""
+"""Read model records and check which files a run used"""
 
 import hashlib
 import json

@@ -1,7 +1,7 @@
-"""Start the simulator with caller-supplied files, capacities, and write allowance.
+"""Pass prepared inputs to the C++ cache simulator
 
-No trace data or lab locations are bundled. run_cache_simulation() returns the
-hit/write counters saved by the C++ program; it does not train models.
+The caller supplies the request files and predictions
+The simulator saves the hit and write counts and this file reads them back
 """
 
 import hashlib

@@ -10,6 +10,8 @@ from prefix_retention import PrefixRetention, completed_shared_candidates
 
 
 class RetainedPrefixScheduler(DirectScheduler):
+    """Keep shared prefixes in HBM once the model has computed them"""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         cfg = self.direct_plan
@@ -88,4 +90,6 @@ class RetainedPrefixScheduler(DirectScheduler):
 
 
 class RetainedBaselineScheduler(Observer, RetainedPrefixScheduler):
+    """Use the shared prefix scheduler for the HBM comparison"""
+
     pass

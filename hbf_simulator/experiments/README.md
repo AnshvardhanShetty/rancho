@@ -1,10 +1,9 @@
-# Experiment helpers
+# From requests to a cache replay
 
-The CPU demo starts at [examples/serving_replay.py](../examples/serving_replay.py).
+Start at the [three-request demo](../examples/demo.py) to see these files work together.
 
-| File | Purpose |
-| --- | --- |
-| [synthetic_training.py](synthetic_training.py) | Build reuse labels from earlier synthetic requests and fit the predictor. |
-| [trace_reader.py](trace_reader.py) | Read requests, sort by arrival time and save arrays for the simulator. |
-| [run_experiment.py](run_experiment.py) | Calculate request features and train hourly predictors on supplied data. |
-| [run_simulation.py](run_simulation.py) | Run the C++ simulator and read its counts. |
+1. [trace_reader.py](trace_reader.py) reads one request per JSONL line, selects the model we want and saves the requests in arrival order.
+2. [run_experiment.py](run_experiment.py) builds four inputs per request and calls the model code for each requested hour.
+3. [run_simulation.py](run_simulation.py) passes the prepared requests, predictions, cache sizes and write allowance to the C++ simulator. It reads back the counts the simulator saves.
+
+The [larger CPU demo](../examples/serving_replay.py) makes its own requests. [synthetic_training.py](synthetic_training.py) builds reuse examples from those earlier requests and uses the same tree trainer.

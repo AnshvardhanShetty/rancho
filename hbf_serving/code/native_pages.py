@@ -1,8 +1,4 @@
-"""Copy the per-layer KV pages described by vLLM's native cache layout.
-
-Transfers use the registered cache groups and tensors. Attention pages include
-padding; recurrent pages include convolution and temporal state. Each group
-receives its own native block IDs."""
+"""Find and copy KV pages using vLLM's actual cache layout"""
 
 from dataclasses import dataclass
 from collections.abc import Mapping
@@ -12,6 +8,8 @@ import json
 
 @dataclass(frozen=True)
 class Snapshot:
+    """Cache layout and memory details reported by the worker"""
+
     layout_sha256: str
     rows_per_group: tuple[tuple[int, int], ...]
     pages: Mapping
@@ -19,6 +17,8 @@ class Snapshot:
 
 
 class NativeCachePages:
+    """Access the same cache page across every model layer"""
+
     def __init__(self, config, caches):
         import torch
         from vllm.v1.kv_cache_interface import (
@@ -103,6 +103,7 @@ class NativeCachePages:
         ).hexdigest()
 
     def _ids(self, blocks):
+        """Check page IDs and prepare them for GPU indexing"""
         if set(blocks) != self.groups:
             raise ValueError("Every hybrid cache group must be included")
         selected = {}

@@ -30,6 +30,7 @@ class BandWallet(Wallet):
     """Compute rank boundaries independently, then compare every live decision."""
 
     def recompute(self, now):
+        """Rebuild the score cutoff for each group of similar write sizes"""
         super().recompute(now)
         priced = [v for v in self.ring if v.cost > 0 and math.isfinite(v.score)]
         if len(priced) < 100:
@@ -82,6 +83,7 @@ def audit(
     half_behind=False,
     mode="control",
 ):
+    """Replay the recorded offers and compare each cutoff and decision"""
     native = Path(native)
     density = array.array("d")
     density.frombytes(Path(density_path).read_bytes())

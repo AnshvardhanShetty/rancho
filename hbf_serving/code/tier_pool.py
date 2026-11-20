@@ -8,6 +8,8 @@ from indexed_queue import IndexedQueue
 
 
 class TierPool:
+    """Give vLLM separate sets of page IDs for HBM and HBF"""
+
     def __new__(cls, *args, **kwargs):
         if __import__("os").environ.get("RANCHO_DIAGNOSTIC_QUEUE") == "legacy":
             from legacy_tier_pool import TierPool as Legacy
@@ -60,6 +62,7 @@ class TierPool:
         ) / (self.hbm_pages + self.hbf_pages)
 
     def allocate_hbm(self, count):
+        """Keep new allocations in the HBM page range"""
         if type(count) is not int or count < 0:
             raise ValueError("Invalid allocation count")
         selected = self.pool.free_block_queue.first_hbm(count)
@@ -81,6 +84,7 @@ class TierPool:
         return list(self.pool.free_block_queue.hbf)
 
     def commit_completed_copies(self, pairs, *, gpu_completed):
+        """Apply copies to the current cache tables"""
         if gpu_completed is not True:
             raise ValueError("Cannot publish a pending GPU copy")
         pairs = list(pairs)
@@ -128,6 +132,7 @@ class TierPool:
         )
 
     def refresh_worker_tables(self, output):
+        """Tell the worker where the active pages are now"""
         cached = output.scheduled_cached_reqs
         tables = self.managers[0].req_to_blocks
         for i, rid in enumerate(cached.req_ids):

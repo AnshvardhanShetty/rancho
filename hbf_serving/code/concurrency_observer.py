@@ -1,14 +1,12 @@
-"""Record active requests, cache occupancy and allocation failures per GPU step.
-
-The observer reads scheduler counters and leaves scheduling decisions to vLLM.
-An allocation refusal means the next request does not fit the available KV
-space. HBF occupancy is sampled every 64 steps and when residency changes."""
+"""Record active requests and cache use at each scheduler step"""
 
 import json, time
 from pathlib import Path
 
 
 class Observer:
+    """Wrap the scheduler so both runs collect the same observations"""
+
     def __init__(self, *args, **kwargs):
         self.observer_preemptions = 0
         super().__init__(*args, **kwargs)
@@ -40,6 +38,7 @@ class Observer:
         return super()._preempt_request(*args, **kwargs)
 
     def schedule(self, *args, **kwargs):
+        """Record the requests and cache space used for this step"""
         started = time.monotonic_ns()
         self.observer_step_refusals = []
         free_before = self.tiers.hbm_free_count()
@@ -84,6 +83,7 @@ class Observer:
         return output
 
     def update_from_output(self, *args, **kwargs):
+        """Record finished work after the model step"""
         host_start = time.monotonic_ns()
         result = super().update_from_output(*args, **kwargs)
         host_update_ns = time.monotonic_ns() - host_start

@@ -1,14 +1,14 @@
-# Reuse prediction
+# Predicting KV reuse
 
-The predictor estimates how often later requests will access a request's KV. It uses user ID, request position in the conversation, conversation age and time since the previous request.
+The model gives each request one estimate: the average number of later reads per block offered for writing. Its four inputs are user ID, turn number, chat age and time since the previous request in the chat.
 
-[model_training.py](model_training.py) prepares the observed reuse labels, fits gradient-boosted trees and makes predictions. Each fit uses accesses observed before its cutoff. The tree count is chosen using an earlier validation period.
+Start in [model_training.py](model_training.py) and read these in order:
 
-- `RequestData.training_examples()` selects earlier requests and their reuse labels.
-- `fit_tree_model()` trains the model with the settings in [model_settings.json](model_settings.json).
-- `predict_reuse()` applies the fitted model to request features.
-- `fit_hourly_model()` saves a model and predictions for the next hour.
+1. `RequestData.training_examples()` selects earlier offers and counts the reads seen by the training cutoff. It divides the count for each offer by the number of distinct blocks offered.
+2. `fit_tree_model()` tries tree counts on an earlier six-hour window. It then fits that many trees using the examples available at the current cutoff.
+3. `predict_reuse()` takes the four inputs and returns one prediction per request.
+4. `fit_hourly_model()` puts those steps together and saves the model and its predictions for the next hour.
 
-[tree_encoding.py](tree_encoding.py) handles categorical user IDs. [file_helpers.py](file_helpers.py) reads and writes model records.
+[tree_encoding.py](tree_encoding.py) maps known user IDs to category codes so the model treats each ID as a name. [model_settings.json](model_settings.json) has the settings used for fitting. [file_helpers.py](file_helpers.py) reads and saves the model's records.
 
-The [CPU demo](../examples/README.md) trains this model on synthetic requests using [synthetic_training.py](../experiments/synthetic_training.py).
+[run_experiment.py](../experiments/run_experiment.py) calls the fitting code once per hour. The [CPU demo](../examples/README.md) supplies synthetic training data.

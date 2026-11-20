@@ -1,8 +1,4 @@
-"""Apply elapsed-time write credits to HBF admissions.
-
-The wrapper uses a monotonic clock and the recorded measurement start.
-Predictor features retain their conversation timestamps. The physical ledger
-checks payment before the controller charges an accepted write."""
+"""Check that a write fits both the full run budget and the credits earned so far"""
 
 import json
 import re
@@ -89,6 +85,8 @@ class PhysicalTimedPolicy:
 
 
 class HBFConnector(NativeHBFConnector):
+    """Wrap the prefill policy with the elapsed time budget"""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.policy is not None:
@@ -98,6 +96,8 @@ class HBFConnector(NativeHBFConnector):
 
 
 class PhysicalCalibrationConnector(DirectConnector):
+    """Account for writes during the calibration run"""
+
     def wait_for_save(self):
         super().wait_for_save()
         if self.output is not None and self.output.events:

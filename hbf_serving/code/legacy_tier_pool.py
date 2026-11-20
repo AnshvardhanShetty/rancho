@@ -6,6 +6,8 @@ The caller finishes GPU copies before updating block locations."""
 
 
 class TierPool:
+    """Assign pages to HBM or HBF for the older cache manager"""
+
     def __init__(self, pool, managers, hbm_pages, hbf_pages):
         if type(hbm_pages) is not int or hbm_pages <= 0:
             raise ValueError("Explicit positive HBM page count required")
@@ -50,6 +52,7 @@ class TierPool:
         )
 
     def allocate_hbm(self, count):
+        """Allocate new pages from HBM"""
         if type(count) is not int or count < 0:
             raise ValueError("Invalid allocation count")
         selected = [b for b in self.free_order() if self.is_hbm(b.block_id)][:count]
@@ -71,6 +74,7 @@ class TierPool:
         return [b.block_id for b in self.free_order() if self.is_hbf(b.block_id)]
 
     def commit_completed_copies(self, pairs, *, gpu_completed):
+        """Update page locations after the worker completes each copy"""
         if gpu_completed is not True:
             raise ValueError("Cannot publish a pending GPU copy")
         pairs = list(pairs)
@@ -118,6 +122,7 @@ class TierPool:
         )
 
     def refresh_worker_tables(self, output):
+        """Update the page locations the worker sees"""
         cached = output.scheduled_cached_reqs
         tables = self.managers[0].req_to_blocks
         for i, rid in enumerate(cached.req_ids):

@@ -1,9 +1,8 @@
-// Record suffix offers using the original data-collection replay.
-// Caller-supplied initial predictions drive the offer-collection replay.
-// It saves rows.i64 and decisions.bin, including declined offers, for suffix_reuse_counts.
-// This collector retains its historical modes to preserve the recorded label inputs.
-// The current evaluation simulator is simulator/rancho.cpp.
-// Sections: binary/cache helpers -> counters -> write controller -> replay in main().
+// Use the first predictor to replay the cache and see which suffix each request offers
+// Save the readable prefix and the write decision including declined offers
+// suffix_reuse_counts uses these files to build the final reuse labels
+// rancho.cpp in the HBF simulator folder is the evaluation replay
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -20,10 +19,12 @@
 
 using I = int64_t;
 namespace fs = std::filesystem;
+
 static void require_condition(bool b, const std::string &s) {
   if (!b)
     throw std::runtime_error(s);
 }
+
 template <class T> static std::vector<T> read_binary_array(const std::string &p) {
   std::ifstream f(p, std::ios::binary | std::ios::ate);
   require_condition(bool(f), "cannot open " + p);
@@ -36,36 +37,42 @@ template <class T> static std::vector<T> read_binary_array(const std::string &p)
                       "short input " + p);
   return a;
 }
-template <class T>
-static void write_binary_array(const fs::path &p, const std::vector<T> &a) {
+
+template <class T> static void write_binary_array(const fs::path &p, const std::vector<T> &a) {
   std::ofstream f(p, std::ios::binary);
   require_condition(bool(f), "cannot create " + p.string());
-  f.write(reinterpret_cast<const char *>(a.data()),
-          std::streamsize(a.size() * sizeof(T)));
+  f.write(reinterpret_cast<const char *>(a.data()), std::streamsize(a.size() * sizeof(T)));
   f.close();
   require_condition(bool(f), "output failed " + p.string());
 }
+
 // CACHE STORAGE: IDs and links ordered from most to least recently used.
 struct Node {
   int32_t block = -1, prev = -1, next = -1;
 };
+
 struct Change {
   int32_t *p;
   int32_t value;
 };
+
 struct Cache {
   int32_t cap, used = 0, allocated = 0, free_head = -1, head = -1, tail = -1;
   std::vector<int32_t> slots;
   std::vector<Node> nodes;
   std::vector<Change> journal;
   bool logging = false;
+
   Cache(int32_t c, int32_t n) : cap(c), slots(c ? n : 0, -1), nodes(c) {}
+
   bool has(int32_t b) const { return cap && slots[b] >= 0; }
+
   void set(int32_t &x, int32_t v) {
     if (logging)
       journal.push_back({&x, x});
     x = v;
   }
+
   void unlink(int32_t s) {
     int32_t p = nodes[s].prev, n = nodes[s].next;
     if (p >= 0)
@@ -77,6 +84,7 @@ struct Cache {
     else
       set(tail, p);
   }
+
   void push(int32_t s) {
     set(nodes[s].prev, -1);
     set(nodes[s].next, head);
@@ -86,6 +94,7 @@ struct Cache {
       set(tail, s);
     set(head, s);
   }
+
   void touch(int32_t b) {
     require_condition(has(b), "touch absent block");
     int32_t s = slots[b];
@@ -94,6 +103,7 @@ struct Cache {
       push(s);
     }
   }
+
   void erase(int32_t b) {
     if (!has(b))
       return;
@@ -105,6 +115,7 @@ struct Cache {
     set(free_head, s);
     set(used, used - 1);
   }
+
   bool put(int32_t b) {
     if (!cap)
       return false;
@@ -129,6 +140,7 @@ struct Cache {
     push(s);
     return true;
   }
+
   I dry_cost(const std::vector<int32_t> &row, size_t first) {
     require_condition(!logging && journal.empty(), "nested transaction");
     logging = true;
@@ -141,6 +153,7 @@ struct Cache {
     journal.clear();
     return w;
   }
+
   std::vector<int32_t> order() const {
     std::vector<int32_t> a;
     int32_t prev = -1;
@@ -157,19 +170,21 @@ struct Cache {
     return a;
   }
 };
+
 // REPLAY COUNTERS: requests, eligible hits, writes, and admission outcomes.
 struct Metrics {
   I requests = 0, positions = 0, fetched = 0, hbf_hits = 0, hbm_hits = 0, eligible = 0,
     writes = 0;
   I requested = 0, admitted = 0, budget_rejected = 0, no_offer = 0;
+
   void json(std::ostream &f) const {
     f << "{\"requests\":" << requests << ",\"positions\":" << positions
       << ",\"fetched_prefix_positions\":" << fetched << ",\"hbf_hits\":" << hbf_hits
       << ",\"hbm_hits\":" << hbm_hits << ",\"credited_hits\":" << hbf_hits + hbm_hits
       << ",\"eligible_first_distinct\":" << eligible << ",\"writes\":" << writes
       << ",\"requested_admissions\":" << requested << ",\"admitted\":" << admitted
-      << ",\"budget_rejections\":" << budget_rejected
-      << ",\"no_offer_requests\":" << no_offer << "}";
+      << ",\"budget_rejections\":" << budget_rejected << ",\"no_offer_requests\":" << no_offer
+      << "}";
   }
 };
 
@@ -181,22 +196,24 @@ static uint64_t mix_hash(uint64_t v) {
   v ^= v >> 33;
   return v;
 }
+
 static double random_value_for_request(uint64_t row, uint64_t seed) {
-  return double(mix_hash(row * 0x9E3779B97F4A7C15ULL ^ seed) >> 11) /
-         9007199254740992.0;
+  return double(mix_hash(row * 0x9E3779B97F4A7C15ULL ^ seed) >> 11) / 9007199254740992.0;
 }
+
 // WRITE CONTROLLER: earlier offers and the remaining write allowance.
 struct Observation {
   double score = 0;
   int64_t cost = 0, time = 0;
 };
+
 struct Wallet {
   int64_t budget, lo, hi, release, update, ring_size;
   double rho, release_fraction, threshold = -INFINITY, tie = 1;
   int64_t W = 0, cap, rn = 0, rp = 0, decisions = 0;
   bool released = false, have_threshold = false;
-  int64_t positive = 0, free_admitted = 0, rej_budget = 0, rej_reserve = 0,
-          rej_threshold = 0, zero_offer = 0;
+  int64_t positive = 0, free_admitted = 0, rej_budget = 0, rej_reserve = 0, rej_threshold = 0,
+          zero_offer = 0;
   std::vector<Observation> ring;
   // Post-warm controller choices do not alter the stored ring or cache physics.
   // These fields are deliberately not checkpointed: tuned runs restart from
@@ -209,6 +226,7 @@ struct Wallet {
   int tie_order = 0; // 0 legacy hash-only, 1 lower exact cost, 2 higher exact cost
   int64_t secondary_cost = 0;
   bool secondary_active = false;
+
   bool accepts_tied(double score, int64_t cost, int64_t row, uint64_t seed) const {
     if (score > threshold)
       return true;
@@ -218,13 +236,16 @@ struct Wallet {
       return tie_order == 1 ? cost < secondary_cost : cost > secondary_cost;
     return random_value_for_request(row, seed ^ 0x5bf03635ULL) < tie;
   }
+
   void recompute_ties(int64_t now) {
     if (rn == 0)
       return;
+
     struct Weighted {
       double score;
       int64_t cost;
     };
+
     std::vector<Weighted> values;
     int64_t take = recent_history > 0 ? std::min(rn, recent_history) : rn;
     double sum = 0;
@@ -241,14 +262,14 @@ struct Wallet {
     }
     if (values.size() < 100)
       return;
-    double span = std::max(double(thi - tlo) / 1e6, 1.0),
-           rate = double(values.size()) / span, mean = sum / values.size();
+    double span = std::max(double(thi - tlo) / 1e6, 1.0), rate = double(values.size()) / span,
+           mean = sum / values.size();
     double end = double(released ? hi : release),
            horizon = std::max((end - double(now)) / 1e6, 1.0),
            remain = std::max(double(cap - W), 0.0);
-    double p = std::max(
-        0.0, std::min(1.0, demand_multiplier *
-                               (remain / std::max(rate * horizon * mean, 1e-9))));
+    double p =
+        std::max(0.0, std::min(1.0, demand_multiplier *
+                                        (remain / std::max(rate * horizon * mean, 1e-9))));
     secondary_active = false;
     secondary_cost = 0;
     if (p <= 0) {
@@ -258,12 +279,10 @@ struct Wallet {
       threshold = -INFINITY;
       tie = 1;
     } else {
-      std::sort(values.begin(), values.end(),
-                [&](const Weighted &a, const Weighted &b) {
-                  return a.score != b.score
-                             ? a.score > b.score
-                             : (tie_order == 1 ? a.cost < b.cost : a.cost > b.cost);
-                });
+      std::sort(values.begin(), values.end(), [&](const Weighted &a, const Weighted &b) {
+        return a.score != b.score ? a.score > b.score
+                                  : (tie_order == 1 ? a.cost < b.cost : a.cost > b.cost);
+      });
       double wanted = p * sum, above = 0, equal = 0;
       for (size_t i = 0; i < values.size();) {
         size_t j = i;
@@ -286,10 +305,12 @@ struct Wallet {
     }
     have_threshold = true;
   }
+
   Wallet(int64_t b, double r, double f, int64_t u, int64_t n, int64_t l, int64_t h)
       : budget(b), lo(l), hi(h), release(l + int64_t(f * double(h - l))), update(u),
-        ring_size(n), rho(r), release_fraction(f),
-        cap(int64_t(floor((1 - r) * double(b)))), ring(n) {}
+        ring_size(n), rho(r), release_fraction(f), cap(int64_t(floor((1 - r) * double(b)))),
+        ring(n) {}
+
   void refresh_release(int64_t now) {
     if (!released && now >= release) {
       cap = budget;
@@ -297,6 +318,7 @@ struct Wallet {
       have_threshold = false;
     }
   }
+
   void observe(double score, int64_t cost, int64_t now) {
     ring[rp] = {score, cost, now};
     rp = (rp + 1) % ring_size;
@@ -307,6 +329,7 @@ struct Wallet {
       return;
     recompute(now);
   }
+
   void recompute(int64_t now) {
     if (tie_order) {
       recompute_ties(now);
@@ -318,10 +341,12 @@ struct Wallet {
     }
     if (rn == 0)
       return;
+
     struct Weighted {
       double score;
       int64_t cost;
     };
+
     std::vector<Weighted> weighted;
     weighted.reserve(rn);
     double sum = 0;
@@ -336,13 +361,12 @@ struct Wallet {
     }
     if (weighted.size() < 100)
       return;
-    double span = std::max(double(thi - tlo) / 1e6, 1.0),
-           rate = double(weighted.size()) / span, mean = sum / weighted.size();
+    double span = std::max(double(thi - tlo) / 1e6, 1.0), rate = double(weighted.size()) / span,
+           mean = sum / weighted.size();
     double end = double(released ? hi : release),
            horizon = std::max((end - double(now)) / 1e6, 1.0),
            remain = std::max(double(cap - W), 0.0);
-    double p =
-        std::max(0.0, std::min(1.0, remain / std::max(rate * horizon * mean, 1e-9)));
+    double p = std::max(0.0, std::min(1.0, remain / std::max(rate * horizon * mean, 1e-9)));
     if (p <= 0) {
       threshold = INFINITY;
       tie = 0;
@@ -373,13 +397,16 @@ struct Wallet {
     }
     have_threshold = true;
   }
+
   void recompute_tuned(int64_t now) {
     if (rn == 0)
       return;
+
     struct Weighted {
       double score;
       int64_t cost;
     };
+
     std::vector<Weighted> values;
     int64_t take = recent_history > 0 ? std::min(rn, recent_history) : rn;
     double sum = 0;
@@ -398,14 +425,14 @@ struct Wallet {
     }
     if (values.size() < 100)
       return;
-    double span = std::max(double(thi - tlo) / 1e6, 1.0),
-           rate = double(values.size()) / span, mean = sum / values.size();
+    double span = std::max(double(thi - tlo) / 1e6, 1.0), rate = double(values.size()) / span,
+           mean = sum / values.size();
     double end = double(released ? hi : release),
            horizon = std::max((end - double(now)) / 1e6, 1.0),
            remain = std::max(double(cap - W), 0.0);
-    double p = std::max(
-        0.0, std::min(1.0, demand_multiplier *
-                               (remain / std::max(rate * horizon * mean, 1e-9))));
+    double p =
+        std::max(0.0, std::min(1.0, demand_multiplier *
+                                        (remain / std::max(rate * horizon * mean, 1e-9))));
     if (p <= 0) {
       threshold = INFINITY;
       tie = 0;
@@ -419,8 +446,7 @@ struct Wallet {
         // Historical request-count quantile and tie convention; only the
         // demand/window knobs above are new, explicitly named choices.
         int64_t m = values.size(),
-                want = std::max<int64_t>(
-                    1, std::min<int64_t>(m, std::llround(p * double(m))));
+                want = std::max<int64_t>(1, std::min<int64_t>(m, std::llround(p * double(m))));
         threshold = values[want - 1].score;
         int64_t above = 0, equal = 0;
         for (const auto &v : values) {
@@ -459,12 +485,15 @@ struct Wallet {
 struct History {
   I row = -1, distinct = 0, cost = 0, time = 0;
 };
+
 struct Decision {
   I row, time, distinct, cost, W;
   double density, score, threshold, tie;
   I have, reason, admit;
 };
+
 static_assert(sizeof(Decision) == 96, "decision record layout");
+
 // REPLAY: load inputs, process cache reads/offers in arrival order, and save logs.
 int main(int argc, char **argv) {
   try {
@@ -480,17 +509,15 @@ int main(int argc, char **argv) {
     bool debug_mode = (argc == 13 && std::string(argv[12]) == "--debug") ||
                       (argc == 17 && std::string(argv[16]) == "--debug") ||
                       (argc == 19 && std::string(argv[18]) == "--debug");
-    require_condition(argc == 12 || argc == 13 || argc == 16 || argc == 17 ||
-                          argc == 18 || argc == 19,
+    require_condition(argc == 12 || argc == 13 || argc == 16 || argc == 17 || argc == 18 ||
+                          argc == 19,
                       "arguments");
-    require_condition((argc != 13 && argc != 17 && argc != 19) || debug_mode,
-                      "debug flag");
+    require_condition((argc != 13 && argc != 17 && argc != 19) || debug_mode, "debug flag");
     require_condition(!live || std::string(argv[12]) == "--live-rancho", "live flag");
     require_condition(!initial_history || std::string(argv[16]) == "--initial-history",
                       "history flag");
     uint64_t seed = live ? std::stoull(argv[13]) : 0;
-    auto policy_eligible =
-        live ? read_binary_array<uint8_t>(argv[14]) : std::vector<uint8_t>{};
+    auto policy_eligible = live ? read_binary_array<uint8_t>(argv[14]) : std::vector<uint8_t>{};
     auto density = live ? read_binary_array<double>(argv[15]) : std::vector<double>{};
     std::string stream = argv[1];
     I ni = std::stoll(argv[2]), cfi = std::stoll(argv[3]), chi = std::stoll(argv[4]);
@@ -498,8 +525,8 @@ int main(int argc, char **argv) {
     // argv[10] is a reserved format version, so an old invocation fails closed.
     require_condition(std::string(argv[10]) == "v1", "format version");
     fs::path out = argv[11];
-    require_condition(ni > 0 && ni <= INT32_MAX && cfi >= 0 && cfi <= INT32_MAX &&
-                          chi >= 0 && chi <= INT32_MAX,
+    require_condition(ni > 0 && ni <= INT32_MAX && cfi >= 0 && cfi <= INT32_MAX && chi >= 0 &&
+                          chi <= INT32_MAX,
                       "geometry");
     require_condition(B >= 0 && split > 0 && end > split, "time or budget");
     auto counts = read_binary_array<int32_t>(stream + "_nb.i32"),
@@ -616,16 +643,14 @@ int main(int argc, char **argv) {
             }
             wallet.rn = I(loaded.size());
             wallet.rp = wallet.rn % wallet.ring_size;
-            wallet.decisions =
-                0; // Same measured 1000-observation update phase as cold arm.
+            wallet.decisions = 0; // Same measured 1000-observation update phase as cold arm.
           }
           std::ofstream hist(out / "warm_history.bin", std::ios::binary);
           for (I k = 0; k < wallet.rn; k++) {
             const auto &v = history[k];
             require_condition(v.row >= 0 && v.time < split, "warm history chronology");
             wallet.ring[k].score =
-                v.cost > 0 ? density[v.row] * double(v.distinct) / double(v.cost)
-                           : INFINITY;
+                v.cost > 0 ? density[v.row] * double(v.distinct) / double(v.cost) : INFINITY;
             hist.write(reinterpret_cast<const char *>(&v), sizeof(v));
           }
           hist.close();
@@ -731,8 +756,7 @@ int main(int argc, char **argv) {
           used_tie = wallet.tie;
           used_have = wallet.have_threshold;
           if (early_half && wallet.have_threshold &&
-              __int128(W) * __int128(end - split) <
-                  __int128(B) * __int128(times[r] - split))
+              __int128(W) * __int128(end - split) < __int128(B) * __int128(times[r] - split))
             used_threshold /= 2.0;
           requested = false;
           if (distinct == 0)
@@ -825,8 +849,7 @@ int main(int argc, char **argv) {
         debug << "{\"row\":" << r << ",\"first\":" << first << ",\"hbf_hits\":" << fh
               << ",\"hbm_hits\":" << hh << ",\"writes\":" << actual << ",\"W\":" << W
               << ",\"requested\":" << requested << ",\"admitted\":" << admit;
-        for (auto item :
-             {std::make_pair("hbf", F.order()), std::make_pair("hbm", H.order())}) {
+        for (auto item : {std::make_pair("hbf", F.order()), std::make_pair("hbm", H.order())}) {
           debug << ",\"" << item.first << "\":[";
           for (size_t j = 0; j < item.second.size(); j++)
             debug << (j ? "," : "") << item.second[j];
@@ -860,8 +883,7 @@ int main(int argc, char **argv) {
         diag << (j ? "," : "") << reasons[j];
       diag << "],\"offered_write_cost\":" << offered_cost
            << ",\"threshold_rejected_write_cost\":" << threshold_cost
-           << ",\"wallet_W\":" << wallet.W
-           << ",\"wallet_observations\":" << wallet.decisions
+           << ",\"wallet_W\":" << wallet.W << ",\"wallet_observations\":" << wallet.decisions
            << ",\"remaining_budget\":" << B - W << "}\n";
     }
     rows.close();
@@ -880,18 +902,17 @@ int main(int argc, char **argv) {
               "\"N\":"
            << ni << ",\"hbf_capacity\":" << cfi << ",\"hbm_capacity\":" << chi
            << ",\"budget\":" << B << ",\"split_us\":" << split << ",\"end_us\":" << end
-           << ",\"W_pre\":" << Wpre << ",\"W_test\":" << eval.writes
-           << ",\"writes\":" << W << ",\"remaining_after_warm\":" << B - Wpre
-           << ",\"next_row\":" << next << ",\"id_cursor\":" << cursor << ",\"warm\":";
+           << ",\"W_pre\":" << Wpre << ",\"W_test\":" << eval.writes << ",\"writes\":" << W
+           << ",\"remaining_after_warm\":" << B - Wpre << ",\"next_row\":" << next
+           << ",\"id_cursor\":" << cursor << ",\"warm\":";
     warm.json(result);
     result << ",\"evaluation\":";
     eval.json(result);
     result << "}\n";
     result.close();
     require_condition(bool(result), "close metrics");
-    std::cout << "{\"status\":\"PASS\",\"evaluation_hits\":"
-              << eval.hbf_hits + eval.hbm_hits << ",\"W_pre\":" << Wpre
-              << ",\"writes\":" << W << "}\n";
+    std::cout << "{\"status\":\"PASS\",\"evaluation_hits\":" << eval.hbf_hits + eval.hbm_hits
+              << ",\"W_pre\":" << Wpre << ",\"writes\":" << W << "}\n";
   } catch (const std::exception &e) {
     std::cerr << e.what() << "\n";
     return 1;

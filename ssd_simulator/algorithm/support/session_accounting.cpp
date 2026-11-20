@@ -1,7 +1,7 @@
-// Build and independently check the same-session reuse index.
-// credit() assigns eligible reads; rescore() applies that index to replay rows.
-// Inputs are explicit command arguments. No private trace is distributed.
-// See the algorithm README before using the additional analysis commands.
+// Build and check the index of reads that count as reuse in the same session
+// credit builds the index from prepared requests
+// rescore uses it to count eligible hits in completed replay rows
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -20,35 +20,41 @@ using I = int64_t;
 using U = uint32_t;
 using Q = uint64_t;
 namespace fs = std::filesystem;
+
 void ck(bool x, const std::string &s) {
   if (!x)
     throw std::runtime_error(s);
 }
+
 struct File {
   int fd;
   size_t bytes;
   void *p = nullptr;
   struct stat before{};
+
   explicit File(const fs::path &path) {
     fd = open(path.c_str(), O_RDONLY);
-    ck(fd >= 0 && fstat(fd, &before) == 0 && S_ISREG(before.st_mode),
-       "input " + path.string());
+    ck(fd >= 0 && fstat(fd, &before) == 0 && S_ISREG(before.st_mode), "input " + path.string());
     bytes = size_t(before.st_size);
     if (bytes) {
       p = mmap(nullptr, bytes, PROT_READ, MAP_PRIVATE, fd, 0);
       ck(p != MAP_FAILED, "mmap");
     }
   }
+
   ~File() {
     if (bytes)
       munmap(p, bytes);
     close(fd);
   }
+
   template <class T> const T *as() const {
     ck(bytes % sizeof(T) == 0, "alignment");
     return static_cast<const T *>(p);
   }
+
   template <class T> size_t n() const { return bytes / sizeof(T); }
+
   void stable() const {
     struct stat s{};
     ck(fstat(fd, &s) == 0 && s.st_ino == before.st_ino && s.st_size == before.st_size &&
@@ -56,15 +62,16 @@ struct File {
        "input changed");
   }
 };
+
 template <class T> void write(const fs::path &p, const std::vector<T> &v) {
   ck(!fs::exists(p), "existing output");
   std::ofstream f(p, std::ios::binary);
   ck(bool(f), "output");
-  f.write(reinterpret_cast<const char *>(v.data()),
-          std::streamsize(v.size() * sizeof(T)));
+  f.write(reinterpret_cast<const char *>(v.data()), std::streamsize(v.size() * sizeof(T)));
   f.close();
   ck(bool(f), "flush");
 }
+
 void report(const fs::path &out, const std::string &s) {
   ck(!fs::exists(out), "existing report");
   std::ofstream f(out);
@@ -73,11 +80,15 @@ void report(const fs::path &out, const std::string &s) {
   ck(bool(f), "report flush");
   std::cout << s << '\n';
 }
+
 void fresh(const fs::path &p) {
   ck(!fs::exists(p) && fs::create_directories(p), "fresh output directory");
 }
+
 bool bit(const Q *p, Q x) { return (p[x / 64] >> (x % 64)) & 1; }
+
 void set(std::vector<Q> &v, Q x) { v[size_t(x / 64)] |= Q(1) << (x % 64); }
+
 void savebits(const fs::path &out, const std::string &name, const std::vector<Q> &v) {
   std::vector<Q> rank(v.size() + 1, 0);
   for (size_t i = 0; i < v.size(); i++)
@@ -85,34 +96,38 @@ void savebits(const fs::path &out, const std::string &name, const std::vector<Q>
   write(out / (name + ".bits"), v);
   write(out / (name + ".rank"), rank);
 }
+
 struct Rank {
   File bits, rank;
   const Q *b, *a;
   Q positions;
+
   Rank(const fs::path &p, const std::string &name, Q n)
       : bits(p / (name + ".bits")), rank(p / (name + ".rank")), b(bits.as<Q>()),
         a(rank.as<Q>()), positions(n) {
     ck(bits.n<Q>() == (n + 63) / 64 && rank.n<Q>() == bits.n<Q>() + 1 && a[0] == 0,
        "rank extent");
   }
+
   Q before(Q x) const {
     ck(x <= positions, "rank bound");
     Q w = x / 64, t = x % 64;
     return a[w] + (t ? Q(__builtin_popcountll(b[w] & ((Q(1) << t) - 1))) : 0);
   }
+
   Q count(Q start, Q n) const {
     ck(start <= positions && n <= positions - start, "rank range");
     return before(start + n) - before(start);
   }
 };
+
 void credit(int argc, char **argv) {
   ck(argc == 5, "credit PREFIX ID_COUNT OUT");
   std::string p = argv[2];
   I N = std::stoll(argv[3]);
   fs::path out = argv[4];
   ck(N > 0 && N <= INT32_MAX, "ID range");
-  File nb(p + "_nb.i32"), ids(p + "_ids.i32"), sessions(p + "_sess.i32"),
-      ts(p + "_ts.i64");
+  File nb(p + "_nb.i32"), ids(p + "_ids.i32"), sessions(p + "_sess.i32"), ts(p + "_ts.i64");
   auto n = nb.as<int32_t>(), id = ids.as<int32_t>(), sid = sessions.as<int32_t>();
   auto times = ts.as<I>();
   size_t R = nb.n<int32_t>();
@@ -121,8 +136,7 @@ void credit(int argc, char **argv) {
   std::vector<Q> bits((ids.n<int32_t>() + 63) / 64, 0), offset(R + 1, 0);
   Q total = 0;
   for (size_t r = 0; r < R; r++) {
-    ck(n[r] >= 0 && sid[r] >= 0 && (r == 0 || times[r] >= times[r - 1]),
-       "row metadata");
+    ck(n[r] >= 0 && sid[r] >= 0 && (r == 0 || times[r] >= times[r - 1]), "row metadata");
     offset[r + 1] = offset[r] + Q(n[r]);
     ck(offset[r + 1] <= ids.n<int32_t>(), "ID extent");
     for (Q k = offset[r]; k < offset[r + 1]; k++) {
@@ -149,15 +163,16 @@ void credit(int argc, char **argv) {
              ",\"positions\":" + std::to_string(offset.back()) +
              ",\"qualified_positions\":" + std::to_string(total) + "}");
 }
+
 struct Calendar {
   File meta, rows, mo, miss, oo, offers;
   const I *m, *rr, *off, *of;
   const U *mi, *oi;
   I R, N;
+
   explicit Calendar(const fs::path &p)
       : meta(p / "meta.i64"), rows(p / "rows.i64"), mo(p / "miss_offsets.i64"),
-        miss(p / "misses.u32"), oo(p / "offer_offsets.i64"),
-        offers(p / "offer_ids.u32") {
+        miss(p / "misses.u32"), oo(p / "offer_offsets.i64"), offers(p / "offer_ids.u32") {
     ck(meta.n<I>() == 14, "calendar schema");
     m = meta.as<I>();
     ck(m[0] == 0x5353445052465831LL && m[1] == 1, "calendar magic");
@@ -173,14 +188,15 @@ struct Calendar {
     of = oo.as<I>();
     mi = miss.as<U>();
     oi = offers.as<U>();
-    ck(off[0] == 0 && off[R] == m[7] && of[0] == 0 && of[R] == m[8],
-       "calendar cursors");
+    ck(off[0] == 0 && off[R] == m[7] && of[0] == 0 && of[R] == m[8], "calendar cursors");
   }
+
   void stable() const {
     for (const File *f : {&meta, &rows, &mo, &miss, &oo, &offers})
       f->stable();
   }
 };
+
 void verify_credit(int argc, char **argv) {
   ck(argc == 5, "verify_credit PREFIX ID_COUNT CREDIT");
   std::string p = argv[2];
@@ -211,14 +227,13 @@ void verify_credit(int argc, char **argv) {
     total += count;
     offset += Q(n[r]);
   }
-  ck(offset == ids.n<int32_t>() && rank.before(offset) == total,
-     "verification complete");
+  ck(offset == ids.n<int32_t>() && rank.before(offset) == total, "verification complete");
   for (File *f : {&nb, &ids, &sessions})
     f->stable();
   std::cout << "{\"status\":\"PASS_INDEPENDENT_PREVIOUS_ROW_CREDIT\",\"rows\":" << R
-            << ",\"positions\":" << offset << ",\"qualified_positions\":" << total
-            << "}\n";
+            << ",\"positions\":" << offset << ",\"qualified_positions\":" << total << "}\n";
 }
+
 void misses(int argc, char **argv) {
   ck(argc == 5, "misses CAL CREDIT OUT");
   Calendar c(argv[2]);
@@ -232,13 +247,11 @@ void misses(int argc, char **argv) {
   Q count = 0, credited = 0;
   for (I r = 0; r < c.R; r++) {
     ck(os[r + 1] - os[r] == Q(c.rr[r * 6 + 1]), "calendar raw row length");
-    ck(c.off[r] >= 0 && c.off[r] <= c.off[r + 1] && c.off[r + 1] <= c.m[7],
-       "miss cursors");
+    ck(c.off[r] >= 0 && c.off[r] <= c.off[r + 1] && c.off[r + 1] <= c.m[7], "miss cursors");
     I previous = -1;
     for (I k = c.off[r]; k < c.off[r + 1]; k++) {
       U b = c.mi[2 * k], j = c.mi[2 * k + 1];
-      ck(b < U(c.N) && I(j) > previous && I(j) < c.rr[r * 6 + 3] &&
-             c.rr[r * 6 + 4] == 0,
+      ck(b < U(c.N) && I(j) > previous && I(j) < c.rr[r * 6 + 3] && c.rr[r * 6 + 4] == 0,
          "miss position");
       previous = j;
       Q pos = os[r] + j;
@@ -255,10 +268,11 @@ void misses(int argc, char **argv) {
   fresh(out);
   savebits(out, "all_misses", all);
   savebits(out, "credited_misses", qualified);
-  report(out / "RESULT.json", "{\"status\":\"PASS_EXACT_CALENDAR_CREDIT\",\"misses\":" +
-                                  std::to_string(count) + ",\"credited_misses\":" +
-                                  std::to_string(credited) + "}");
+  report(out / "RESULT.json",
+         "{\"status\":\"PASS_EXACT_CALENDAR_CREDIT\",\"misses\":" + std::to_string(count) +
+             ",\"credited_misses\":" + std::to_string(credited) + "}");
 }
+
 void rescore(int argc, char **argv) {
   ck(argc == 7, "rescore CREDIT GEOMETRY CAL ROWS OUT");
   fs::path cp = argv[2], gp = argv[3], out = argv[6];
@@ -270,8 +284,8 @@ void rescore(int argc, char **argv) {
   Rank credit(cp, "credit", total), miss(gp, "all_misses", total),
       cmiss(gp, "credited_misses", total);
   auto saved = rows.as<I>();
-  Q count = rows.n<I>() / 13, D = 0, h = 0, combined = 0, ssd = 0, ph = 0, pc = 0,
-    ps = 0, writes = 0;
+  Q count = rows.n<I>() / 13, D = 0, h = 0, combined = 0, ssd = 0, ph = 0, pc = 0, ps = 0,
+    writes = 0;
   I previous = -1;
   std::vector<U> newrows;
   newrows.reserve(size_t(count) * 3);
@@ -281,8 +295,8 @@ void rescore(int argc, char **argv) {
     ck(r >= 0 && r < c.R && r > previous, "saved row index");
     previous = r;
     auto cr = c.rr + r * 6;
-    ck(x[1] == cr[0] && x[1] >= c.m[5] && x[1] < c.m[6] && x[2] == cr[1] &&
-           x[3] == cr[5] && x[9] == cr[4] && x[10] == cr[1] - cr[3] && x[12] == cr[2],
+    ck(x[1] == cr[0] && x[1] >= c.m[5] && x[1] < c.m[6] && x[2] == cr[1] && x[3] == cr[5] &&
+           x[9] == cr[4] && x[10] == cr[1] - cr[3] && x[12] == cr[2],
        "saved row identity");
     ck(x[3] >= 0 && x[3] <= x[4] && x[4] <= cr[3] && x[7] >= 0, "saved prefix");
     ck((cr[4] == 0) || x[4] == 0, "bypass prefix");
@@ -309,15 +323,16 @@ void rescore(int argc, char **argv) {
   offsets.stable();
   fresh(out);
   write(out / "CREDITED_ROWS.u32", newrows);
-  report(out / "RESULT.json",
-         "{\"status\":\"PASS_EXACT_SAVED_PREFIX_RESCORE\",\"requests\":" +
-             std::to_string(count) + ",\"denominator\":" + std::to_string(D) +
-             ",\"credited_hbm\":" + std::to_string(h) + ",\"credited_combined\":" +
-             std::to_string(combined) + ",\"credited_ssd\":" + std::to_string(ssd) +
-             ",\"original_hbm\":" + std::to_string(ph) + ",\"original_combined\":" +
-             std::to_string(pc) + ",\"original_ssd\":" + std::to_string(ps) +
-             ",\"evaluation_writes\":" + std::to_string(writes) + "}");
+  report(
+      out / "RESULT.json",
+      "{\"status\":\"PASS_EXACT_SAVED_PREFIX_RESCORE\",\"requests\":" + std::to_string(count) +
+          ",\"denominator\":" + std::to_string(D) + ",\"credited_hbm\":" + std::to_string(h) +
+          ",\"credited_combined\":" + std::to_string(combined) + ",\"credited_ssd\":" +
+          std::to_string(ssd) + ",\"original_hbm\":" + std::to_string(ph) +
+          ",\"original_combined\":" + std::to_string(pc) + ",\"original_ssd\":" +
+          std::to_string(ps) + ",\"evaluation_writes\":" + std::to_string(writes) + "}");
 }
+
 void verify_rescore(int argc, char **argv) {
   ck(argc == 7, "verify_rescore CREDIT GEOMETRY CAL ROWS RESCORE_OUT");
   fs::path cp = argv[2], out = argv[6];
@@ -352,21 +367,21 @@ void verify_rescore(int argc, char **argv) {
     combined += b;
     ssd += d;
   }
-  std::cout << "{\"status\":\"PASS_INDEPENDENT_LITERAL_PREFIX_RESCORE\",\"requests\":"
-            << count << ",\"credited_hbm\":" << h
-            << ",\"credited_combined\":" << combined << ",\"credited_ssd\":" << ssd
-            << "}\n";
+  std::cout << "{\"status\":\"PASS_INDEPENDENT_LITERAL_PREFIX_RESCORE\",\"requests\":" << count
+            << ",\"credited_hbm\":" << h << ",\"credited_combined\":" << combined
+            << ",\"credited_ssd\":" << ssd << "}\n";
 }
+
 Q topsum(std::vector<Q> &v, Q k) {
   k = std::min(k, Q(v.size()));
   if (k && k < v.size())
-    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(k), v.end(),
-                     std::greater<Q>());
+    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(k), v.end(), std::greater<Q>());
   Q sum = 0;
   for (Q j = 0; j < k; j++)
     sum += v[j];
   return sum;
 }
+
 std::vector<Q> grouped(std::vector<U> &ids) {
   std::sort(ids.begin(), ids.end());
   std::vector<Q> w;
@@ -380,18 +395,18 @@ std::vector<Q> grouped(std::vector<U> &ids) {
   ids.clear();
   return w;
 }
+
 void upper(int argc, char **argv) {
-  ck(argc == 10,
-     "upper CAL CREDIT BOUNDARY WARM_S PERIOD_US SORT_REFERENCE OUT EXTRA_SCHEMA");
+  ck(argc == 10, "upper CAL CREDIT BOUNDARY WARM_S PERIOD_US SORT_REFERENCE OUT EXTRA_SCHEMA");
   ck(std::string(argv[9]) == "v1", "explicit upper schema");
   Calendar c(argv[2]);
   fs::path cp = argv[3], out = argv[8];
   File offsets(cp / "offsets.i64"), boundary(argv[4]), warmfile(argv[5]);
   auto os = offsets.as<Q>();
   auto bd = boundary.as<I>();
-  ck(boundary.n<I>() == 12 && bd[0] == 0x5353445741524d31LL && bd[1] == 1 &&
-         bd[6] == c.N && bd[7] == c.m[4] && bd[10] == c.m[5] && bd[11] == c.m[6] &&
-         bd[5] >= 0 && bd[9] >= bd[5] && bd[8] > 0,
+  ck(boundary.n<I>() == 12 && bd[0] == 0x5353445741524d31LL && bd[1] == 1 && bd[6] == c.N &&
+         bd[7] == c.m[4] && bd[10] == c.m[5] && bd[11] == c.m[6] && bd[5] >= 0 &&
+         bd[9] >= bd[5] && bd[8] > 0,
      "upper fixed geometry");
   ck(offsets.n<Q>() >= size_t(c.R + 1) && bd[2] == c.m[12] && bd[4] == c.of[bd[2]],
      "upper cursor");
@@ -510,16 +525,16 @@ void upper(int argc, char **argv) {
   write(out / "WINDOW_CERTIFICATE.u64", cert);
   report(out / "RESULT.json",
          "{\"status\":\"PASS_INTEGER_SESSION_UPPER_ACCOUNTING\",\"sorted_reference\":" +
-             (reference ? std::string("true") : std::string("false")) +
-             ",\"period_us\":" + std::to_string(period) + ",\"remaining\":" +
-             std::to_string(remaining) + ",\"capacity\":" + std::to_string(capacity) +
-             ",\"immortal\":" + std::to_string(immortal) + ",\"free_warm\":" +
-             std::to_string(freewarm) + ",\"top_remaining\":" + std::to_string(top) +
-             ",\"budget_upper\":" + std::to_string(budgetbound) +
-             ",\"window_upper\":" + std::to_string(windowbound) +
+             (reference ? std::string("true") : std::string("false")) + ",\"period_us\":" +
+             std::to_string(period) + ",\"remaining\":" + std::to_string(remaining) +
+             ",\"capacity\":" + std::to_string(capacity) + ",\"immortal\":" +
+             std::to_string(immortal) + ",\"free_warm\":" + std::to_string(freewarm) +
+             ",\"top_remaining\":" + std::to_string(top) + ",\"budget_upper\":" +
+             std::to_string(budgetbound) + ",\"window_upper\":" + std::to_string(windowbound) +
              ",\"zero_write_warm_prefix\":" + std::to_string(warmonly) +
              ",\"upper\":" + std::to_string(Ubound) + "}");
 }
+
 int main(int argc, char **argv) {
   try {
     ck(argc > 1, "command required");

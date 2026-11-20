@@ -6,8 +6,12 @@ from direct_backend_hbf import HBFScheduler
 
 
 class BaselineScheduler(Observer, DirectScheduler):
+    """Record scheduler activity for the HBM only run"""
+
     pass
 
 
 class TieredScheduler(Observer, HBFScheduler):
+    """Record scheduler activity for the HBF run"""
+
     pass

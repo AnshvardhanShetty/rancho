@@ -1,8 +1,4 @@
-"""Reference controller used to check the serving implementation.
-
-Keeps separate write accounting and threshold calculations for comparison with
-controllers.py. Offers arrive in decision order, with supplied predictions and
-write costs. HBF observes before charging; SSD charges before observing."""
+"""Keep a separate controller to check the decisions made by the serving code"""
 
 from dataclasses import asdict, dataclass
 import hashlib
@@ -25,6 +21,8 @@ def hash01(event_id, seed):
 
 @dataclass(frozen=True)
 class Observation:
+    """One offer kept by the reference controller"""
+
     event_id: int
     score: float
     cost: int
@@ -91,6 +89,7 @@ class Wallet:
         return self.ring[self.rp :] + self.ring[: self.rp]
 
     def recompute(self, now_us):
+        """Calculate the reference cutoff from recent offers"""
         if self.design == "ssd":
             self.phase(now_us)
             values = self.chronological()

@@ -1,9 +1,4 @@
-"""Connect vLLM to HBM and emulated HBF storage.
-
-Uses one GPU, synchronous execution and complete 16-token KV pages.
-New KV is computed in HBM. Accepted copies are transferred to HBF in chunks,
-with writes paced to the configured bandwidth. Attention reads both regions
-in GPU memory. The caller supplies the model, policy, capacities and budget."""
+"""Connect vLLM's scheduler and GPU worker to the two cache tiers"""
 
 from dataclasses import dataclass, field
 import hashlib
@@ -24,6 +19,7 @@ from tier_pool import TierPool
 
 
 def plan():
+    """Read the settings passed to this vLLM process"""
     p = Path(os.environ["RANCHO_DIRECT_PLAN"])
     result = json.loads(p.read_text())
     if result["block_tokens"] != 16 or result["native_block_bytes"] != 1572864:
@@ -43,12 +39,16 @@ def log_event(config, name, event):
 
 @dataclass
 class Step(KVConnectorMetadata):
+    """The requests and available destinations sent to the worker"""
+
     candidates: list = field(default_factory=list)
     destinations: list = field(default_factory=list)
 
 
 @dataclass
 class Copied(KVConnectorWorkerMetadata):
+    """The completed copies and decision events sent back by the worker"""
+
     pairs: list = field(default_factory=list)
     events: list = field(default_factory=list)
     gpu_completed: bool = True
@@ -58,6 +58,8 @@ class Copied(KVConnectorWorkerMetadata):
 
 
 class DirectConnector(KVConnectorBase_V1):
+    """Prepare GPU cache access and copy completed KV pages"""
+
     @property
     def requires_kv_delivery(self):
         return False
@@ -85,6 +87,7 @@ class DirectConnector(KVConnectorBase_V1):
                 raise ValueError("HBF serving requires the updated RANCHO policy")
 
     def register_kv_caches(self, kv_caches):
+        """Find the page layout and allocate the copy buffer"""
         from native_pages import NativeCachePages
 
         self.pages = NativeCachePages(self._kv_cache_config, kv_caches)
@@ -124,6 +127,7 @@ class DirectConnector(KVConnectorBase_V1):
         pass
 
     def wait_for_save(self):
+        """Handle this step's write offers after the GPU finishes"""
         import torch
 
         metadata = self._get_connector_metadata()
@@ -229,6 +233,8 @@ class DirectConnector(KVConnectorBase_V1):
 
 
 class DirectScheduler(Scheduler):
+    """Prepare page moves and publish the copies that finish"""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.direct_plan = plan()
@@ -245,6 +251,7 @@ class DirectScheduler(Scheduler):
         self.offered = set()
 
     def schedule(self, *args, **kwargs):
+        """Plan page moves for completed prefill and send them to the worker"""
         output = super().schedule(*args, **kwargs)
         self.tiers.refresh_worker_tables(output)
         beginnings = {
@@ -341,6 +348,7 @@ class DirectScheduler(Scheduler):
         return output
 
     def update_from_output(self, scheduler_output, model_runner_output):
+        """Apply the worker's completed moves to the cache tables"""
         conn = model_runner_output.kv_connector_output
         meta = conn.kv_connector_worker_meta if conn else None
         if meta is not None:

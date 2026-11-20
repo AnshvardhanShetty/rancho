@@ -1,27 +1,32 @@
-# Running the SSD examples
+# Run the SSD serving examples
 
-The GPU examples require Linux, compatible vLLM/CUDA, local Qwen3-30B-A3B-Instruct-2507 BF16 weights and a local SSD with an ext4 filesystem. The code uses direct I/O and synchronous writes. It expects the same 48-layer, 16-token KV layout as the HBF integration. See the [vLLM setup](../hbf_serving/RUNNING.md). This public snapshot has been checked on CPU; it has not been rerun on a GPU.
+Use Linux, a compatible CUDA and vLLM setup, local Qwen3-30B-A3B-Instruct-2507 BF16 weights and a local SSD formatted as ext4. The storage code writes directly to SSD and waits for each write. It expects the 48-layer, 16-token KV block layout described in the [HBF setup](../hbf_serving/RUNNING.md). This public copy has been checked on CPU.
 
 ## Save and restore KV
 
-Run these sequentially on the same GPU and model, choosing a new output directory for each:
+Run both examples from the repo root, one at a time on the same GPU. Give each its own new output directory.
 
 ```bash
 export RANCHO_MODEL_PATH=/path/to/local/model
-python ssd_serving/run.py --plan ssd_serving/examples/fixture_accept.json --ssd-directory /path/to/local/ssd --output /path/to/new/accept-output
-python ssd_serving/run.py --plan ssd_serving/examples/fixture_reject.json --ssd-directory /path/to/local/ssd --output /path/to/new/reject-output
-python ssd_serving/code/check_pair.py /path/to/new/accept-output /path/to/new/reject-output /path/to/check-report.json
+python ssd_serving/run.py \
+  --plan ssd_serving/examples/fixture_accept.json \
+  --ssd-directory /path/to/local/ssd --output /path/to/new/accept-output
+python ssd_serving/run.py \
+  --plan ssd_serving/examples/fixture_reject.json \
+  --ssd-directory /path/to/local/ssd --output /path/to/new/reject-output
+python ssd_serving/code/check_pair.py \
+  /path/to/new/accept-output /path/to/new/reject-output /path/to/check-report.json
 ```
 
-One example saves every eligible block within the budget; the other rejects every write. The comparison checks that restored KV produces the same output. Byte verification is enabled. The launcher uses vLLM's batch-invariant mode for the output comparison.
+One run saves eligible blocks up to the budget. The other skips every write. The comparison checks that bringing KV back from SSD still gives the same model output. It checks the bytes copied and uses vLLM's batch-invariant mode to keep the output comparable.
 
-The engine creates a temporary SSD file and removes it when closed. Only complete input-KV blocks are saved. Transfers pass through a CPU buffer, and writes count against the allowance, including warm-up.
+The engine saves full input blocks through a CPU buffer. The SSD file is temporary and is removed when the store closes. Warm-up writes count against the allowance.
 
-## Connect an admission policy
+## Supply a policy
 
-Set `policy_factory` in the plan to `module:function`. The factory receives `policy_settings` and returns a function that accepts an [Offer](code/ssd_policy.py). Return `True` to save the block or `False` to skip it.
+The plan names a `policy_factory` as `module:function`. The factory takes `policy_settings` and returns a function that takes an [Offer](code/ssd_policy.py). Return `True` to save the block or `False` to skip it.
 
-The offer contains prior accesses and evictions, time in memory, time since the last access, features from the last request and the remaining write budget. Supply request features and user encoding consistently with the predictor. The included accept/reject policies check the storage interface; the research SSD predictor is supplied separately.
+The offer includes block history, the most recent request's features and the write budget. A trained predictor needs the same feature order and user encoding it was trained with. The bundled accept and reject rules exercise this interface.
 
 ## CPU checks
 
@@ -29,4 +34,4 @@ The offer contains prior accesses and evictions, time in memory, time since the 
 PYTHONPATH=ssd_serving/code:hbf_serving/code python -m unittest discover -s ssd_serving/tests
 ```
 
-These check the example plans, policy interface, write limits and protection of active KV using stand-ins for GPU interfaces. For a CPU cache replay, see [ssd/replay](../ssd_simulator/replay/README.md).
+These check example inputs, policy decisions and the protection of blocks in use. For the offline algorithm, see the [SSD simulator](../ssd_simulator/README.md).

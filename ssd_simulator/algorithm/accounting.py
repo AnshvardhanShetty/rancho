@@ -16,6 +16,7 @@ def credit_and_overlap(path, reference, credit_directory):
     assert np.array_equal(rows[:, 0], reference_rows[:, 0]) and np.array_equal(
         rows[:, 3], reference_rows[:, 3]
     )
+    # Each request starts at a different position in the saved eligibility bits
     request_offsets = np.memmap(credit_path / "offsets.i64", "<u8", "r")[
         rows[:, 0]
     ].astype(np.int64)
@@ -24,6 +25,7 @@ def credit_and_overlap(path, reference, credit_directory):
     byte_popcounts = np.array([int(i).bit_count() for i in range(256)], dtype=np.uint8)
 
     def eligible_before(prefix_positions):
+        """Count eligible positions up to each request's prefix boundary"""
         positions = (request_offsets + prefix_positions).astype("uint64")
         word_indices, bit_offsets = np.divmod(positions, np.uint64(64))
         partial_word = eligible_bits[word_indices] & (
@@ -34,6 +36,7 @@ def credit_and_overlap(path, reference, credit_directory):
             + byte_popcounts[partial_word.view("u1").reshape(-1, 8)].sum(axis=1)
         ).astype(np.int64)
 
+    # Subtract the reads served by HBM to get what SSD saved
     hbm_credit = eligible_before(rows[:, 3])
     combined_credit = eligible_before(rows[:, 4])
     reference_credit = eligible_before(reference_rows[:, 4])

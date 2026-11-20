@@ -22,8 +22,12 @@ class ServingReplayTest(unittest.TestCase):
     def test_default_workload_counts_and_write_allowance(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "summary.json"
-            command = [sys.executable, str(ROOT / "hbf_simulator/examples/serving_replay.py"),
-                       "--output", str(output)]
+            command = [
+                sys.executable,
+                str(ROOT / "hbf_simulator/examples/serving_replay.py"),
+                "--output",
+                str(output),
+            ]
             subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
             summary = json.loads(output.read_text())
             rows = summary["results"]
@@ -32,8 +36,9 @@ class ServingReplayTest(unittest.TestCase):
                 self.assertEqual(row["eligible_accesses"], 1200 * 123)
                 self.assertEqual(row["cache_hits"], 1200 * 117)
                 self.assertEqual(row["prefill_blocks_recomputed"], 1200 * 6)
-                self.assertLessEqual(row["flash_blocks_written"],
-                                     row["write_allowance_blocks"])
+                self.assertLessEqual(
+                    row["flash_blocks_written"], row["write_allowance_blocks"]
+                )
                 self.assertAlmostEqual(row["hit_ratio_percent"], 100 * 117 / 123)
             self.assertEqual(rows[0]["hbm_blocks"], 960)
             self.assertEqual(rows[1]["hbm_blocks"], 320)
@@ -57,8 +62,9 @@ class ServingReplayTest(unittest.TestCase):
         rows, labels = initial.training_examples(6 * hour)
         np.testing.assert_array_equal(rows, [0, 3, 4])
         np.testing.assert_array_equal(labels, [1, 0, 1])
-        offered = SyntheticTrainingData(blocks, times, sessions, features, ["user"],
-                                         offered=blocks)
+        offered = SyntheticTrainingData(
+            blocks, times, sessions, features, ["user"], offered=blocks
+        )
         rows, labels = offered.training_examples(2 * hour)
         np.testing.assert_array_equal(rows, [0, 1])
         np.testing.assert_array_equal(labels, [0.5, 0])

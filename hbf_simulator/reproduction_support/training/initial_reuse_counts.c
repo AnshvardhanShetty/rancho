@@ -1,12 +1,13 @@
-// Build the initial predictor's labels from the prepared trace, without a cache replay.
-// Track which request introduced each block into its current session-reference history.
-// Credit subsequent eligible reads to that request, grouped by the supplied time interval.
-// The rebuild script uses one-hour intervals. Hourly fitting sums only earlier intervals.
-// Output: read counts by hour (Y.i32) and distinct introduced-block counts (c.i32).
+// Count later reads for the first reuse predictor
+// Record which request introduced each block and count later reads in that session
+// Y.i32 stores reads by interval and c.i32 stores distinct block counts by request
+// The hourly trainer only uses intervals that have already ended
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 int main(int argc, char **argv) {
   // 1. Read paths and interval settings, then load lengths, sessions, and times.
   const char *pfx = argv[1];
@@ -92,8 +93,8 @@ int main(int argc, char **argv) {
   f = fopen(OUT, "wb");
   fwrite(Y, 4, (size_t)NBK * n, f);
   fclose(f);
-  printf("{\"requests\":%lld,\"buckets\":%lld,\"credits_bucketed\":%lld}\n",
-         (long long)n, (long long)NBK, (long long)tot);
+  printf("{\"requests\":%lld,\"buckets\":%lld,\"credits_bucketed\":%lld}\n", (long long)n,
+         (long long)NBK, (long long)tot);
   if (argc > 6) {
     f = fopen(argv[6], "wb");
     fwrite(offers, 4, n, f);

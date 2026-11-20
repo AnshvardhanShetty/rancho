@@ -6,6 +6,7 @@ the single synchronous scheduler."""
 
 
 def existing_hbf(tiers, source_id):
+    """Find a saved HBF copy of this page if there is one"""
     source = tiers.pool.blocks[source_id]
     if source.block_hash is None:
         return None
@@ -22,6 +23,7 @@ def existing_hbf(tiers, source_id):
 
 
 def commit_existing(tiers, pairs, *, gpu_completed):
+    """Move active references to an HBF copy we already have"""
     if gpu_completed is not True:
         raise ValueError("Prefill GPU work must complete before remapping")
     pairs = list(pairs)

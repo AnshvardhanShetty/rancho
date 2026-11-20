@@ -1,19 +1,9 @@
-// Replay requests through GPU-memory and SSD caches; count reads and writes.
-//
-// Read in this order:
-// 1. MappedArray reads the binary input arrays. BlockDigest checks cache histories.
-// 2. ScoreHistory keeps recent scores in sorted order for cutoff selection.
-// 3. LruCache stores block IDs and removes the least recently used block when full.
-// 4. WriteBudgetController chooses which scored writes the allowance can afford.
-// 5. ReplayMetrics holds counters; refresh_scores accepts causal model updates.
-// 6. main() reads each request, finds its cached beginning, offers GPU evictions
-//    to SSD, updates the caches, then saves counters and a write-decision log.
-//
-// Assumptions: requests execute one at a time, with full input-block identities.
-// This models cache behavior, not vLLM scheduling, transfer latency or GPU time.
-// The caller supplies reuse predictions and controls what was available at a fit.
-// Raw prefix counts have no session filter; the paper's within-session measure
-// requires its separate eligibility accounting. See README.md for the distinction.
+// Replay requests through GPU memory and SSD one request at a time
+// LruCache stores block IDs and removes the least recently used when full
+// WriteBudgetController keeps recent scores and decides which writes fit
+// Start at main to follow the prefix lookup and GPU evictions for each request
+// The outputs record the reads each cache served and the new writes to SSD
+
 #include <algorithm>
 #include <cctype>
 #include <climits>
@@ -39,15 +29,18 @@
 #include <utility>
 #include <vector>
 using namespace std;
+
 static void require_condition(bool ok, const string &why) {
   if (!ok)
     throw runtime_error(why);
 }
+
 // Read a binary array without loading the entire file into RAM.
 template <class T> struct MappedArray {
   int fd = -1;
   size_t n = 0, bytes = 0;
   const T *p = nullptr;
+
   explicit MappedArray(const string &s) {
     fd = open(s.c_str(), O_RDONLY);
     require_condition(fd >= 0, "open " + s);
@@ -62,22 +55,28 @@ template <class T> struct MappedArray {
       p = (T *)z;
     }
   }
+
   ~MappedArray() {
     if (bytes)
       munmap((void *)p, bytes);
     if (fd >= 0)
       close(fd);
   }
+
   const T &operator[](size_t i) const {
     require_condition(i < n, "mapped index");
     return p[i];
   }
 };
+
 // Hash the cache order so an independent implementation can check it.
 struct BlockDigest {
   SHA256_CTX c;
+
   BlockDigest() { SHA256_Init(&c); }
+
   void add(int32_t x) { SHA256_Update(&c, &x, 4); }
+
   string finish() const {
     auto q = c;
     unsigned char b[32];
@@ -88,11 +87,14 @@ struct BlockDigest {
     return z.str();
   }
 };
+
 // Describe one block leaving GPU memory; the driver uses this as a model example.
 struct EvictionRecord {
   int32_t row, block, last, freq, nev, born;
 };
+
 static_assert(sizeof(EvictionRecord) == 24);
+
 static uint64_t mix_hash(uint64_t x) {
   x ^= x >> 33;
   x *= 0xff51afd7ed558ccdULL;
@@ -101,29 +103,35 @@ static uint64_t mix_hash(uint64_t x) {
   x ^= x >> 33;
   return x;
 }
+
 static double random_value(int64_t id, uint64_t seed) {
-  return double(mix_hash(uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >>
-                11) /
+  return double(mix_hash(uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >> 11) /
          9007199254740992.;
 }
+
 // Portable order-statistics treap. Allocation is bounded by live history plus
 // one temporary observation; deleting old observations recycles their nodes.
 // Keep recent scores sorted so cutoff updates can find the desired rank.
 class ScoreHistory {
   using Key = pair<double, int64_t>;
+
   struct Item {
     Key key;
     uint64_t priority;
     int left = -1, right = -1, size = 1;
   };
+
   vector<Item> nodes;
   vector<int> free;
   int root = -1;
+
   int count(int x) const { return x < 0 ? 0 : nodes[x].size; }
+
   void pull(int x) {
     if (x >= 0)
       nodes[x].size = 1 + count(nodes[x].left) + count(nodes[x].right);
   }
+
   int rotate_left(int x) {
     int y = nodes[x].right;
     nodes[x].right = nodes[y].left;
@@ -132,6 +140,7 @@ class ScoreHistory {
     pull(y);
     return y;
   }
+
   int rotate_right(int x) {
     int y = nodes[x].left;
     nodes[x].left = nodes[y].right;
@@ -140,6 +149,7 @@ class ScoreHistory {
     pull(y);
     return y;
   }
+
   int put(int x, int y) {
     if (x < 0)
       return y;
@@ -156,6 +166,7 @@ class ScoreHistory {
     pull(x);
     return x;
   }
+
   int merge(int l, int r) {
     if (l < 0)
       return r;
@@ -170,6 +181,7 @@ class ScoreHistory {
     pull(r);
     return r;
   }
+
   int remove(int x, const Key &k) {
     require_condition(x >= 0, "missing history key");
     if (k == nodes[x].key) {
@@ -191,6 +203,7 @@ public:
     free.clear();
     root = -1;
   }
+
   void insert(Key k) {
     int x;
     if (free.empty()) {
@@ -203,7 +216,9 @@ public:
     nodes[x] = {k, mix_hash(uint64_t(k.second) ^ 0xd6e8feb86659fd93ULL), -1, -1, 1};
     root = put(root, x);
   }
+
   void erase(Key k) { root = remove(root, k); }
+
   size_t order_of_key(Key k) const {
     int x = root;
     size_t n = 0;
@@ -216,6 +231,7 @@ public:
     }
     return n;
   }
+
   const Key *find_by_order(size_t k) const {
     int x = root;
     while (x >= 0) {
@@ -232,18 +248,23 @@ public:
     throw runtime_error("history order out of bounds");
   }
 };
+
 // Link a stored block to its neighbors in most-recently-used order.
 struct CacheSlot {
   int32_t b = -1, prev = -1, next = -1;
 };
+
 // Track block IDs only. head is newest; tail is the next block to remove.
 struct LruCache {
   vector<int32_t> slot;
   vector<CacheSlot> nd;
   int cap, n = 0, head = -1, tail = -1;
   int64_t peak = 0;
+
   LruCache(int nb, int c) : slot(nb, -1), cap(c) { nd.reserve(min(c, 1000000)); }
+
   bool has(int b) const { return slot[b] >= 0; }
+
   void touch(int b) {
     int s = slot[b];
     require_condition(s >= 0, "touch absent");
@@ -266,6 +287,7 @@ struct LruCache {
     if (tail < 0)
       tail = s;
   }
+
   int pop() {
     require_condition(tail >= 0, "empty eviction");
     int s = tail, b = nd[s].b;
@@ -279,10 +301,12 @@ struct LruCache {
     nd[s].b = -1;
     return s;
   }
+
   int victim() const {
     require_condition(tail >= 0, "empty victim");
     return nd[tail].b;
   }
+
   void add(int b, int recycled = -1) {
     require_condition(!has(b) && n < cap, "cache insert geometry");
     int s = recycled;
@@ -301,6 +325,7 @@ struct LruCache {
     n++;
     peak = max(peak, int64_t(n));
   }
+
   string hash() const {
     BlockDigest h;
     int count = 0;
@@ -311,6 +336,7 @@ struct LruCache {
     require_condition(count == n, "cache length");
     return h.finish();
   }
+
   string json() const {
     ostringstream s;
     s << '[';
@@ -325,24 +351,27 @@ struct LruCache {
     return s.str();
   }
 };
+
 // Store one earlier score, its eviction ID and its arrival time.
 struct OfferObservation {
   double score;
   int64_t id, time;
 };
+
 // Forecast how many one-block writes remain, then choose an affordable cutoff.
 // Observe declined offers too; new observations affect later decisions.
 struct WriteBudgetController {
-  int64_t budget, end, release, update, limit, written_blocks = 0, observations = 0,
-                                               cap;
+  int64_t budget, end, release, update, limit, written_blocks = 0, observations = 0, cap;
   double reserve, demand, threshold = -INFINITY, tie = 1;
   bool have = false, released = false;
   deque<OfferObservation> hist;
   ScoreHistory order;
-  WriteBudgetController(int64_t b, int64_t e, int64_t r, int64_t u, int64_t l,
-                        double res, double d)
+
+  WriteBudgetController(int64_t b, int64_t e, int64_t r, int64_t u, int64_t l, double res,
+                        double d)
       : budget(b), end(e), release(r), update(u), limit(l),
         cap(int64_t(floor((1 - res) * double(b)))), reserve(res), demand(d) {}
+
   void phase(int64_t now) {
     if (!released && now >= release) {
       released = true;
@@ -350,6 +379,7 @@ struct WriteBudgetController {
       have = false;
     }
   }
+
   void recompute(int64_t now) {
     phase(now);
     if (hist.size() < 100) {
@@ -361,9 +391,8 @@ struct WriteBudgetController {
     double span = max((hist.back().time - hist.front().time) / 1e6, 1.0),
            rate = hist.size() / span,
            horizon = max(((released ? end : release) - now) / 1e6, 1.0);
-    double frac = clamp(demand * max(double(cap - written_blocks), 0.0) /
-                            max(rate * horizon, 1e-9),
-                        0.0, 1.0);
+    double frac = clamp(
+        demand * max(double(cap - written_blocks), 0.0) / max(rate * horizon, 1e-9), 0.0, 1.0);
     if (frac <= 0) {
       threshold = INFINITY;
       tie = 0;
@@ -374,19 +403,19 @@ struct WriteBudgetController {
       double wanted = frac * hist.size();
       size_t k = min(hist.size() - 1, size_t(floor(hist.size() - wanted)));
       double th = order.find_by_order(k)->first;
-      auto lo = order.order_of_key({th, LLONG_MIN}),
-           hi = order.order_of_key({th, LLONG_MAX});
+      auto lo = order.order_of_key({th, LLONG_MIN}), hi = order.order_of_key({th, LLONG_MAX});
       threshold = th;
       tie = clamp((wanted - (hist.size() - hi)) / double(hi - lo), 0.0, 1.0);
     }
     have = true;
   }
+
   bool pass(double score, int64_t id, uint64_t seed, int64_t now) {
     phase(now);
     return written_blocks < budget && written_blocks < cap &&
-           (!have || score > threshold ||
-            (score == threshold && random_value(id, seed) < tie));
+           (!have || score > threshold || (score == threshold && random_value(id, seed) < tie));
   }
+
   void observe(double score, int64_t id, int64_t now) {
     require_condition(isfinite(score) && score >= 0, "nonfinite/negative score");
     hist.push_back({score, id, now});
@@ -401,6 +430,7 @@ struct WriteBudgetController {
       recompute(now);
   }
 };
+
 // The driver emits this restricted JSON shape. Parse numeric arrays exactly;
 // do not accept a different ID order or infer scores from missing entries.
 static string field(const string &s, const string &k) {
@@ -411,6 +441,7 @@ static string field(const string &s, const string &k) {
   require_condition(p != string::npos, "response colon");
   return s.substr(p + 1);
 }
+
 static vector<double> numeric_array(const string &s, const string &k) {
   auto t = field(s, k);
   auto p = t.find('[');
@@ -430,6 +461,7 @@ static vector<double> numeric_array(const string &s, const string &k) {
   }
   return a;
 }
+
 // Ask the Python driver to rescore retained history using its current model.
 // IDs must stay in order, and the driver must use only observations before cut.
 static void refresh_scores(WriteBudgetController &w, int64_t cut) {
@@ -451,20 +483,21 @@ static void refresh_scores(WriteBudgetController &w, int64_t cut) {
                     "reprice length");
   w.order.clear();
   for (size_t j = 0; j < ids.size(); j++) {
-    require_condition(ids[j] == double(w.hist[j].id) && scores[j] >= 0,
-                      "reprice IDs/score");
+    require_condition(ids[j] == double(w.hist[j].id) && scores[j] >= 0, "reprice IDs/score");
     w.hist[j].score = scores[j];
     w.order.insert({scores[j], w.hist[j].id});
   }
   w.recompute(cut);
 }
+
 // Hold counts for one request or for the whole replay.
 struct ReplayMetrics {
-  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail_tokens = 0,
-          hbm_prefix = 0, prefix = 0, ssd_positions = 0, ssd_payloads = 0, writes = 0,
-          evictions = 0, absent_offers = 0, free_retained = 0, eligible_raw = 0,
-          bypass = 0, cap_lost = 0, reprograms = 0, ssd_evictions = 0;
+  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail_tokens = 0, hbm_prefix = 0,
+          prefix = 0, ssd_positions = 0, ssd_payloads = 0, writes = 0, evictions = 0,
+          absent_offers = 0, free_retained = 0, eligible_raw = 0, bypass = 0, cap_lost = 0,
+          reprograms = 0, ssd_evictions = 0;
 };
+
 static string metrics_json(const ReplayMetrics &m) {
   ostringstream s;
   s << "{\"requests\":" << m.requests << ",\"prompt_blocks\":" << m.prompt_blocks
@@ -476,15 +509,14 @@ static string metrics_json(const ReplayMetrics &m) {
     << ",\"ssd_payload_reads\":" << m.ssd_payloads
     << ",\"incremental_prefix_positions\":" << m.prefix - m.hbm_prefix
     << ",\"physical_writes\":" << m.writes << ",\"hbm_evictions\":" << m.evictions
-    << ",\"absent_offers\":" << m.absent_offers
-    << ",\"free_retained\":" << m.free_retained
+    << ",\"absent_offers\":" << m.absent_offers << ",\"free_retained\":" << m.free_retained
     << ",\"raw_repeated_hbm_misses_diagnostic\":" << m.eligible_raw
     << ",\"oversized_bypass\":" << m.bypass
     << ",\"last_token_cap_excluded_positions\":" << m.cap_lost
-    << ",\"reprograms\":" << m.reprograms << ",\"ssd_evictions\":" << m.ssd_evictions
-    << '}';
+    << ",\"reprograms\":" << m.reprograms << ",\"ssd_evictions\":" << m.ssd_evictions << '}';
   return s.str();
 }
+
 // Read settings and arrays, process requests in time order, then save the replay.
 int main(int argc, char **argv) {
   try {
@@ -537,12 +569,10 @@ int main(int argc, char **argv) {
       return a[k];
     };
     auto val = [&](string k, string d) { return a.count(k) ? a[k] : d; };
-    string p = req("--prefix"), out = req("--out-prefix"),
-           mode = val("--mode", "quantile");
+    string p = req("--prefix"), out = req("--out-prefix"), mode = val("--mode", "quantile");
     int block_id_count = stoi(req("--nb")), hbm_capacity = stoi(req("--hbm"));
     int64_t ssd_capacity = stoll(req("--ssd")), write_budget = stoll(req("--budget")),
-            split = stoll(req("--eval-start-us")),
-            end = stoll(val("--end-us", "604800000000")),
+            split = stoll(req("--eval-start-us")), end = stoll(val("--end-us", "604800000000")),
             stop = stoll(val("--stop-us", to_string(end)));
     uint64_t seed = stoull(val("--seed", "17"));
     int64_t update = stoll(val("--update-every", "1000")),
@@ -552,14 +582,13 @@ int main(int argc, char **argv) {
            demand = stod(val("--demand-multiplier", "1")),
            coin = stod(val("--coin-probability", "0.5"));
     int threshold = stoi(val("--threshold", "0"));
-    bool gate_mode = mode == "stride" || mode == "access_min" ||
-                     mode == "eviction_min" || mode == "eviction_exact";
+    bool gate_mode = mode == "stride" || mode == "access_min" || mode == "eviction_min" ||
+                     mode == "eviction_exact";
     if (gate_mode)
       require_condition(threshold > 0, "threshold required");
     int64_t numerator = stoll(val("--probability-numerator", "-1")),
             denominator = stoll(val("--probability-denominator", "-1"));
-    bool exact =
-        a.count("--probability-numerator") || a.count("--probability-denominator");
+    bool exact = a.count("--probability-numerator") || a.count("--probability-denominator");
     if (exact)
       require_condition(mode == "coin" && numerator >= 0 && denominator > 0 &&
                             numerator <= denominator,
@@ -567,25 +596,24 @@ int main(int argc, char **argv) {
     auto pick = [&](int64_t eid) {
       uint64_t draw =
           mix_hash(uint64_t(eid) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >> 11;
-      return exact ? (__int128(draw) * denominator <
-                      __int128(numerator) * (uint64_t(1) << 53))
+      return exact ? (__int128(draw) * denominator < __int128(numerator) * (uint64_t(1) << 53))
                    : random_value(eid, seed) < coin;
     };
     require_condition(block_id_count > 0 && hbm_capacity > 0 && ssd_capacity > 0 &&
-                          write_budget >= 0 && split >= 0 && end > split &&
-                          stop <= end && stop >= 0,
+                          write_budget >= 0 && split >= 0 && end > split && stop <= end &&
+                          stop >= 0,
                       "geometry");
     require_condition(update > 0 && history >= 100 && release > 0 && release <= end &&
-                          reserve >= 0 && reserve < 1 && isfinite(demand) &&
-                          demand > 0 && coin >= 0 && coin <= 1,
+                          reserve >= 0 && reserve < 1 && isfinite(demand) && demand > 0 &&
+                          coin >= 0 && coin <= 1,
                       "controller configuration");
-    require_condition(mode == "quantile" || mode == "all" || mode == "coin" ||
-                          mode == "bits" || gate_mode,
+    require_condition(mode == "quantile" || mode == "all" || mode == "coin" || mode == "bits" ||
+                          gate_mode,
                       "policy mode");
     MappedArray<int32_t> block_counts(p + "_nb.i32"), block_ids(p + "_ids.i32");
     MappedArray<int64_t> arrival_times(p + "_ts.i64"), token_counts(req("--tokens"));
-    require_condition(block_counts.n == arrival_times.n &&
-                          block_counts.n == token_counts.n && block_counts.n <= INT_MAX,
+    require_condition(block_counts.n == arrival_times.n && block_counts.n == token_counts.n &&
+                          block_counts.n <= INT_MAX,
                       "request shapes");
     unique_ptr<MappedArray<double>> scores;
     if (a.count("--scores"))
@@ -610,26 +638,22 @@ int main(int argc, char **argv) {
                               (j == 0 || (*cuts)[j] > (*cuts)[j - 1]),
                           "invalid fit cuts");
     }
-    require_condition(!flags.count("--reprice-stdio") || cuts,
-                      "repricing cuts required");
-    require_condition(!cuts || flags.count("--reprice-stdio"),
-                      "cuts without repricing");
+    require_condition(!flags.count("--reprice-stdio") || cuts, "repricing cuts required");
+    require_condition(!cuts || flags.count("--reprice-stdio"), "cuts without repricing");
     require_condition(!cuts || mode == "quantile", "only quantile reprices");
     require_condition(access((out + ".rows.i64").c_str(), F_OK) != 0 &&
                           access((out + ".programs.bits").c_str(), F_OK) != 0,
                       "output already exists");
     for (string k : {"--evictions-out", "--events-out", "--debug-jsonl"})
       if (a.count(k))
-        require_condition(access(a[k].c_str(), F_OK) != 0,
-                          "output already exists " + k);
+        require_condition(access(a[k].c_str(), F_OK) != 0, "output already exists " + k);
     LruCache hbm_cache(block_id_count, min(block_id_count, hbm_capacity)),
         ssd_cache(block_id_count, int(min<int64_t>(block_id_count, ssd_capacity)));
     vector<int32_t> mark(block_id_count, -1), fetched(block_id_count, -1),
         last(block_id_count, -1), freq(block_id_count), nev(block_id_count),
         born(block_id_count, -1);
     vector<uint8_t> ever(block_id_count), programs;
-    WriteBudgetController wallet(write_budget, end, release, update, history, reserve,
-                                 demand);
+    WriteBudgetController wallet(write_budget, end, release, update, history, reserve, demand);
     ofstream rows(out + ".rows.i64", ios::binary), evout, eventsout, debug;
     require_condition(bool(rows), "rows output");
     if (a.count("--evictions-out")) {
@@ -668,19 +692,17 @@ int main(int argc, char **argv) {
       int64_t now = arrival_times[request_index];
       require_condition(request_index == 0 || now >= arrival_times[request_index - 1],
                         "nonmonotonic timestamps");
-      require_condition(
-          block_counts[request_index] >= 0 &&
-              block_offset + size_t(block_counts[request_index]) <= block_ids.n &&
-              token_counts[request_index] >= 0 &&
-              token_counts[request_index] / 16 == block_counts[request_index],
-          "token/hash mapping");
+      require_condition(block_counts[request_index] >= 0 &&
+                            block_offset + size_t(block_counts[request_index]) <= block_ids.n &&
+                            token_counts[request_index] >= 0 &&
+                            token_counts[request_index] / 16 == block_counts[request_index],
+                        "token/hash mapping");
       if (now < split) {
         block_offset += block_counts[request_index];
         continue;
       }
       if (now >= split && !snapped) {
-        require_condition(hbm_cache.n == 0 && ssd_cache.n == 0 &&
-                              wallet.written_blocks == 0,
+        require_condition(hbm_cache.n == 0 && ssd_cache.n == 0 && wallet.written_blocks == 0,
                           "cold day4");
         Wpre = wallet.written_blocks;
         warmE = eviction_count;
@@ -706,8 +728,7 @@ int main(int argc, char **argv) {
       int64_t cap =
           token_counts[request_index] > 0 ? (token_counts[request_index] - 1) / 16 : 0;
       row.cap_lost = block_counts[request_index] - cap;
-      require_condition(cap >= 0 && cap <= block_counts[request_index] &&
-                            row.cap_lost <= 1,
+      require_condition(cap >= 0 && cap <= block_counts[request_index] && row.cap_lost <= 1,
                         "prefix cap");
       vector<int> ds;
       ds.reserve(block_counts[request_index]);
@@ -766,8 +787,7 @@ int main(int argc, char **argv) {
           if (expected) {
             require_condition(size_t(eviction_count) < expected->n &&
                                   !memcmp(&ev, &(*expected)[eviction_count], sizeof ev),
-                              "HBM eviction identity mismatch at " +
-                                  to_string(eviction_count));
+                              "HBM eviction identity mismatch at " + to_string(eviction_count));
           }
           if (evout)
             evout.write((char *)&ev, sizeof ev);
@@ -782,8 +802,7 @@ int main(int argc, char **argv) {
             programs.push_back(0);
           bool forced = mode == "bits" || (warmbits && now < split);
           bool desired =
-              forced ? bit(warmbits && now < split ? *warmbits : *fixedbits, eid)
-                     : false;
+              forced ? bit(warmbits && now < split ? *warmbits : *fixedbits, eid) : false;
           // An existing SSD copy is kept for free; absent copies need admission.
           if (ssd_cache.has(block)) {
             require_condition(!desired, "fixed program on resident copy");
@@ -810,8 +829,7 @@ int main(int argc, char **argv) {
             else if (mode == "coin")
               admit = wallet.written_blocks < write_budget && pick(eid);
             else if (mode == "stride")
-              admit = wallet.written_blocks < write_budget &&
-                      positive_offers % threshold == 0;
+              admit = wallet.written_blocks < write_budget && positive_offers % threshold == 0;
             else if (mode == "access_min")
               admit = wallet.written_blocks < write_budget && freq[block] >= threshold;
             else if (mode == "eviction_min")
@@ -954,10 +972,9 @@ int main(int argc, char **argv) {
             "atomic_v1\",\"physical_scope\":\"request_atomic_hash_deduplicated_HBM_not_"
             "vLLM_slots\",\"primary_metric\":\"ssd_fetched_prefix_positions\","
             "\"session_filter\":false,\"budget\":"
-         << write_budget << ",\"writes\":" << wallet.written_blocks
-         << ",\"W_pre\":" << Wpre << ",\"W_test\":" << wallet.written_blocks - Wpre
-         << ",\"processed_evictions\":" << eviction_count
-         << ",\"warm_evictions\":" << warmE
+         << write_budget << ",\"writes\":" << wallet.written_blocks << ",\"W_pre\":" << Wpre
+         << ",\"W_test\":" << wallet.written_blocks - Wpre
+         << ",\"processed_evictions\":" << eviction_count << ",\"warm_evictions\":" << warmE
          << ",\"controller_observations\":" << wallet.observations
          << ",\"repricing_snapshots\":" << nextcut << ",\"peak_hbm\":" << hbm_cache.peak
          << ",\"peak_ssd\":" << ssd_cache.peak << ",\"warm_hbm_sha256\":\"" << warmh
@@ -965,8 +982,8 @@ int main(int argc, char **argv) {
          << hbm_cache.hash() << "\",\"final_ssd_sha256\":\"" << ssd_cache.hash()
          << "\",\"eviction_records_sha256\":\"" << evhash.finish()
          << "\",\"hbm_signed_event_sha256\":\"" << eventhash.finish()
-         << "\",\"total\":" << metrics_json(total)
-         << ",\"evaluation\":" << metrics_json(eval) << "}" << endl;
+         << "\",\"total\":" << metrics_json(total) << ",\"evaluation\":" << metrics_json(eval)
+         << "}" << endl;
     return 0;
   } catch (const exception &e) {
     cerr << "ssd_prefix_replay: " << e.what() << '\n';

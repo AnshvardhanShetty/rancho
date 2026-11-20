@@ -1,4 +1,4 @@
-"""Save a JSON record without exposing a partly written file."""
+"""Save a JSON record so readers only see the finished file"""
 
 import json
 from pathlib import Path

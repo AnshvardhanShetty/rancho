@@ -1,14 +1,11 @@
-"""Calculate throughput and latency from completed GPU requests.
-
-Times use a monotonic clock. Throughput includes queue drain; first-token
-latency includes queueing. Incomplete runs are rejected. First-token latency
-requires an output token, and time per output token requires at least two."""
+"""Count output tokens and measure delays from the saved request times"""
 
 import math
 import statistics
 
 
 def describe(values):
+    """Summarise a list of times and report its percentiles"""
     values = sorted(values)
     if not values:
         return dict(n=0, mean=None, median=None, p95=None)
@@ -28,6 +25,7 @@ def describe(values):
 
 
 def summarise(records):
+    """Compute throughput and delays for the measured requests"""
     if not records or any(r["status"] != "COMPLETE" for r in records):
         raise ValueError("Every measured GPU request must complete")
     if len({r["row"] for r in records}) != len(records):

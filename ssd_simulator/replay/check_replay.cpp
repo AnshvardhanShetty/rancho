@@ -1,12 +1,7 @@
-// Independently check the SSD replay's cache transitions and write decisions.
-//
-// Input maps the supplied arrays. LRU uses a separate cache implementation.
-// Count records hits, writes and evictions. main() reads the write-decision log,
-// reconstructs both caches and produces its own per-request counts and digests.
-// A different result or an invalid supplied decision stops the check.
-//
-// Assumptions: the same request-atomic model as ssd_replay.cpp. This verifies
-// cache and write accounting, not predictor quality or serving performance.
+// Check the SSD replay using a separate cache implementation
+// Read the input requests and saved write decisions in the same order
+// Rebuild both caches and compare the resulting reads and writes
+
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -27,10 +22,12 @@
 #include <unordered_set>
 #include <vector>
 using namespace std;
+
 static void demand(bool b, const string &s) {
   if (!b)
     throw runtime_error(s);
 }
+
 template <class T> class Input {
   int fd;
   size_t bytes;
@@ -38,6 +35,7 @@ template <class T> class Input {
 
 public:
   size_t size;
+
   explicit Input(const string &p) {
     fd = open(p.c_str(), O_RDONLY);
     demand(fd >= 0, "open " + p);
@@ -52,22 +50,27 @@ public:
       data = (const T *)q;
     }
   }
+
   ~Input() {
     if (bytes)
       munmap((void *)data, bytes);
     close(fd);
   }
+
   T operator[](size_t j) const {
     demand(j < size, "input bounds");
     return data[j];
   }
 };
+
 class Digest {
   SHA256_CTX h;
 
 public:
   Digest() { SHA256_Init(&h); }
+
   void value(int32_t n) { SHA256_Update(&h, &n, 4); }
+
   string str() const {
     auto c = h;
     unsigned char x[32];
@@ -78,9 +81,11 @@ public:
     return o.str();
   }
 };
+
 // Independent intrusive LRU. Head is LRU, tail is MRU. Full16GB
 // parity against the original hash/list auditor is required by dense_gate.py.
 static int audit_domain = 0;
+
 class LRU {
   vector<int32_t> previous, next;
   int head = -1, tail = -1;
@@ -89,10 +94,13 @@ class LRU {
 public:
   int capacity;
   int64_t peak = 0;
-  explicit LRU(int c)
-      : previous(audit_domain, -2), next(audit_domain, -1), capacity(c) {}
+
+  explicit LRU(int c) : previous(audit_domain, -2), next(audit_domain, -1), capacity(c) {}
+
   bool contains(int b) const { return previous[b] != -2; }
+
   size_t size() const { return count; }
+
   void touch(int b) {
     demand(contains(b), "touch missing");
     if (tail == b)
@@ -112,6 +120,7 @@ public:
       head = b;
     tail = b;
   }
+
   void insert(int b) {
     demand(!contains(b) && int(count) < capacity, "insert capacity");
     previous[b] = tail;
@@ -124,10 +133,12 @@ public:
     count++;
     peak = max(peak, int64_t(count));
   }
+
   int victim() const {
     demand(head >= 0, "empty victim");
     return head;
   }
+
   int evict() {
     int b = victim(), n = next[b];
     head = n;
@@ -140,6 +151,7 @@ public:
     count--;
     return b;
   }
+
   string digest() const {
     Digest h;
     size_t n = 0;
@@ -151,10 +163,12 @@ public:
     return h.str();
   }
 };
+
 struct Count {
-  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail = 0, hbm = 0,
-          prefix = 0, ssd = 0, payloads = 0, writes = 0, evictions = 0, absent = 0,
-          free = 0, raw = 0, bypass = 0, capped = 0, reprograms = 0, ssd_evictions = 0;
+  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail = 0, hbm = 0, prefix = 0,
+          ssd = 0, payloads = 0, writes = 0, evictions = 0, absent = 0, free = 0, raw = 0,
+          bypass = 0, capped = 0, reprograms = 0, ssd_evictions = 0;
+
   void add(const Count &a) {
     requests += a.requests;
     prompt_blocks += a.prompt_blocks;
@@ -174,26 +188,23 @@ struct Count {
     reprograms += a.reprograms;
     ssd_evictions += a.ssd_evictions;
   }
+
   string json() const {
     ostringstream o;
     o << "{\"requests\":" << requests << ",\"prompt_blocks\":" << prompt_blocks
-      << ",\"prompt_tokens\":" << prompt_tokens
-      << ",\"unrepresented_tail_tokens\":" << tail
-      << ",\"hbm_only_prefix_positions\":" << hbm
-      << ",\"combined_prefix_positions\":" << prefix
-      << ",\"ssd_fetched_prefix_positions\":" << ssd
-      << ",\"ssd_payload_reads\":" << payloads
+      << ",\"prompt_tokens\":" << prompt_tokens << ",\"unrepresented_tail_tokens\":" << tail
+      << ",\"hbm_only_prefix_positions\":" << hbm << ",\"combined_prefix_positions\":" << prefix
+      << ",\"ssd_fetched_prefix_positions\":" << ssd << ",\"ssd_payload_reads\":" << payloads
       << ",\"incremental_prefix_positions\":" << prefix - hbm
       << ",\"physical_writes\":" << writes << ",\"hbm_evictions\":" << evictions
       << ",\"absent_offers\":" << absent << ",\"free_retained\":" << free
-      << ",\"raw_repeated_hbm_misses_diagnostic\":" << raw
-      << ",\"oversized_bypass\":" << bypass
-      << ",\"last_token_cap_excluded_positions\":" << capped
-      << ",\"reprograms\":" << reprograms << ",\"ssd_evictions\":" << ssd_evictions
-      << '}';
+      << ",\"raw_repeated_hbm_misses_diagnostic\":" << raw << ",\"oversized_bypass\":" << bypass
+      << ",\"last_token_cap_excluded_positions\":" << capped << ",\"reprograms\":" << reprograms
+      << ",\"ssd_evictions\":" << ssd_evictions << '}';
     return o.str();
   }
 };
+
 int main(int argc, char **argv) {
   try {
     map<string, string> a;
@@ -213,27 +224,22 @@ int main(int argc, char **argv) {
     string policy = a.count("--verify-policy") ? a["--verify-policy"] : "bits";
     uint64_t seed = stoull(a.count("--seed") ? a["--seed"] : "17");
     int64_t numerator =
-                stoll(a.count("--probability-numerator") ? a["--probability-numerator"]
-                                                         : "0"),
-            denominator = stoll(a.count("--probability-denominator")
-                                    ? a["--probability-denominator"]
-                                    : "1");
+                stoll(a.count("--probability-numerator") ? a["--probability-numerator"] : "0"),
+            denominator = stoll(
+                a.count("--probability-denominator") ? a["--probability-denominator"] : "1");
     int threshold = stoi(a.count("--threshold") ? a["--threshold"] : "0");
-    demand(policy == "bits" || policy == "all" || policy == "coin" ||
-               policy == "stride" || policy == "access_min" ||
-               policy == "eviction_min" || policy == "eviction_exact",
+    demand(policy == "bits" || policy == "all" || policy == "coin" || policy == "stride" ||
+               policy == "access_min" || policy == "eviction_min" || policy == "eviction_exact",
            "audit policy");
     if (policy != "bits" && policy != "all" && policy != "coin")
       demand(threshold > 0, "audit threshold");
-    demand(numerator >= 0 && denominator > 0 && numerator <= denominator,
-           "audit probability");
+    demand(numerator >= 0 && denominator > 0 && numerator <= denominator, "audit probability");
     auto choose = [&](int64_t id) {
       uint64_t x = uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL;
       x = (x ^ (x >> 33)) * 0xff51afd7ed558ccdULL;
       x = (x ^ (x >> 33)) * 0xc4ceb9fe1a85ec53ULL;
       x ^= x >> 33;
-      return __int128(x >> 11) * denominator <
-             __int128(numerator) * (uint64_t(1) << 53);
+      return __int128(x >> 11) * denominator < __int128(numerator) * (uint64_t(1) << 53);
     };
     Input<int32_t> nb(p + "_nb.i32"), ids(p + "_ids.i32");
     Input<int64_t> ts(p + "_ts.i64"), tokens(get("--tokens"));
@@ -329,8 +335,8 @@ int main(int argc, char **argv) {
         while (H.size() + missing.size() > size_t(CH)) {
           int b = H.victim();
           demand(last[b] >= 0 && born[b] >= 0, "victim history");
-          for (int32_t x : {int32_t(row), int32_t(b), last[b], frequency[b],
-                            eviction_count[b], born[b]})
+          for (int32_t x :
+               {int32_t(row), int32_t(b), last[b], frequency[b], eviction_count[b], born[b]})
             eviction_hash.value(x);
           eviction_count[b]++;
           event(b, row);
@@ -425,8 +431,8 @@ int main(int argc, char **argv) {
          << "\",\"final_hbm_sha256\":\"" << H.digest() << "\",\"final_ssd_sha256\":\""
          << S.digest() << "\",\"eviction_records_sha256\":\"" << eviction_hash.str()
          << "\",\"hbm_signed_event_sha256\":\"" << event_hash.str()
-         << "\",\"total\":" << total.json() << ",\"evaluation\":" << evaluation.json()
-         << "}" << endl;
+         << "\",\"total\":" << total.json() << ",\"evaluation\":" << evaluation.json() << "}"
+         << endl;
     return 0;
   } catch (const exception &e) {
     cerr << "independent_audit: " << e.what() << endl;

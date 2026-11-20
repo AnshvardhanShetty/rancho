@@ -1,9 +1,7 @@
-// Build training labels against a supplied reference replay's write decisions.
-// Marginal measures how much of the later readable prefix each sampled victim
-// would unlock alone. Label events record the request, sample and credited gain.
-//
-// Assumes the reference write bits, eviction identities and same-session credit
-// index are verified inputs. No future read enters a label before its cutoff.
+// Build SSD training labels from a checked reference write log
+// For each sampled eviction count the extra prefix reads that saving it would allow
+// Save the gain with the request where it occurred so fitting can use it at the right hour
+
 #include <algorithm>
 #include <cctype>
 #include <climits>
@@ -29,14 +27,17 @@
 #include <utility>
 #include <vector>
 using namespace std;
+
 static void ck(bool ok, const string &why) {
   if (!ok)
     throw runtime_error(why);
 }
+
 template <class T> struct Map {
   int fd = -1;
   size_t n = 0, bytes = 0;
   const T *p = nullptr;
+
   explicit Map(const string &s) {
     fd = open(s.c_str(), O_RDONLY);
     ck(fd >= 0, "open " + s);
@@ -51,21 +52,27 @@ template <class T> struct Map {
       p = (T *)z;
     }
   }
+
   ~Map() {
     if (bytes)
       munmap((void *)p, bytes);
     if (fd >= 0)
       close(fd);
   }
+
   const T &operator[](size_t i) const {
     ck(i < n, "mapped index");
     return p[i];
   }
 };
+
 struct Hash {
   SHA256_CTX c;
+
   Hash() { SHA256_Init(&c); }
+
   void add(int32_t x) { SHA256_Update(&c, &x, 4); }
+
   string finish() const {
     auto q = c;
     unsigned char b[32];
@@ -76,10 +83,13 @@ struct Hash {
     return z.str();
   }
 };
+
 struct Eviction {
   int32_t row, block, last, freq, nev, born;
 };
+
 static_assert(sizeof(Eviction) == 24);
+
 static uint64_t mix(uint64_t x) {
   x ^= x >> 33;
   x *= 0xff51afd7ed558ccdULL;
@@ -88,28 +98,34 @@ static uint64_t mix(uint64_t x) {
   x ^= x >> 33;
   return x;
 }
+
 static double random01(int64_t id, uint64_t seed) {
-  return double(mix(uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >>
-                11) /
+  return double(mix(uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >> 11) /
          9007199254740992.;
 }
+
 // Portable order-statistics treap. Allocation is bounded by live history plus
 // one temporary observation; deleting old observations recycles their nodes.
 class OST {
   using Key = pair<double, int64_t>;
+
   struct Item {
     Key key;
     uint64_t priority;
     int left = -1, right = -1, size = 1;
   };
+
   vector<Item> nodes;
   vector<int> free;
   int root = -1;
+
   int count(int x) const { return x < 0 ? 0 : nodes[x].size; }
+
   void pull(int x) {
     if (x >= 0)
       nodes[x].size = 1 + count(nodes[x].left) + count(nodes[x].right);
   }
+
   int rotate_left(int x) {
     int y = nodes[x].right;
     nodes[x].right = nodes[y].left;
@@ -118,6 +134,7 @@ class OST {
     pull(y);
     return y;
   }
+
   int rotate_right(int x) {
     int y = nodes[x].left;
     nodes[x].left = nodes[y].right;
@@ -126,6 +143,7 @@ class OST {
     pull(y);
     return y;
   }
+
   int put(int x, int y) {
     if (x < 0)
       return y;
@@ -142,6 +160,7 @@ class OST {
     pull(x);
     return x;
   }
+
   int merge(int l, int r) {
     if (l < 0)
       return r;
@@ -156,6 +175,7 @@ class OST {
     pull(r);
     return r;
   }
+
   int remove(int x, const Key &k) {
     ck(x >= 0, "missing history key");
     if (k == nodes[x].key) {
@@ -177,6 +197,7 @@ public:
     free.clear();
     root = -1;
   }
+
   void insert(Key k) {
     int x;
     if (free.empty()) {
@@ -189,7 +210,9 @@ public:
     nodes[x] = {k, mix(uint64_t(k.second) ^ 0xd6e8feb86659fd93ULL), -1, -1, 1};
     root = put(root, x);
   }
+
   void erase(Key k) { root = remove(root, k); }
+
   size_t order_of_key(Key k) const {
     int x = root;
     size_t n = 0;
@@ -202,6 +225,7 @@ public:
     }
     return n;
   }
+
   const Key *find_by_order(size_t k) const {
     int x = root;
     while (x >= 0) {
@@ -218,16 +242,21 @@ public:
     throw runtime_error("history order out of bounds");
   }
 };
+
 struct Node {
   int32_t b = -1, prev = -1, next = -1;
 };
+
 struct Cache {
   vector<int32_t> slot;
   vector<Node> nd;
   int cap, n = 0, head = -1, tail = -1;
   int64_t peak = 0;
+
   Cache(int nb, int c) : slot(nb, -1), cap(c) { nd.reserve(min(c, 1000000)); }
+
   bool has(int b) const { return slot[b] >= 0; }
+
   void touch(int b) {
     int s = slot[b];
     ck(s >= 0, "touch absent");
@@ -250,6 +279,7 @@ struct Cache {
     if (tail < 0)
       tail = s;
   }
+
   int pop() {
     ck(tail >= 0, "empty eviction");
     int s = tail, b = nd[s].b;
@@ -263,10 +293,12 @@ struct Cache {
     nd[s].b = -1;
     return s;
   }
+
   int victim() const {
     ck(tail >= 0, "empty victim");
     return nd[tail].b;
   }
+
   void add(int b, int recycled = -1) {
     ck(!has(b) && n < cap, "cache insert geometry");
     int s = recycled;
@@ -285,6 +317,7 @@ struct Cache {
     n++;
     peak = max(peak, int64_t(n));
   }
+
   string hash() const {
     Hash h;
     int count = 0;
@@ -295,6 +328,7 @@ struct Cache {
     ck(count == n, "cache length");
     return h.finish();
   }
+
   string json() const {
     ostringstream s;
     s << '[';
@@ -309,20 +343,25 @@ struct Cache {
     return s.str();
   }
 };
+
 #include "marginal_labels.hpp"
+
 struct Obs {
   double score;
   int64_t id, time;
 };
+
 struct Wallet {
   int64_t budget, end, release, update, limit, W = 0, observations = 0, cap;
   double reserve, demand, threshold = -INFINITY, tie = 1;
   bool have = false, released = false;
   deque<Obs> hist;
   OST order;
+
   Wallet(int64_t b, int64_t e, int64_t r, int64_t u, int64_t l, double res, double d)
       : budget(b), end(e), release(r), update(u), limit(l),
         cap(int64_t(floor((1 - res) * double(b)))), reserve(res), demand(d) {}
+
   void phase(int64_t now) {
     if (!released && now >= release) {
       released = true;
@@ -330,6 +369,7 @@ struct Wallet {
       have = false;
     }
   }
+
   void recompute(int64_t now) {
     phase(now);
     if (hist.size() < 100) {
@@ -353,19 +393,19 @@ struct Wallet {
       double wanted = frac * hist.size();
       size_t k = min(hist.size() - 1, size_t(floor(hist.size() - wanted)));
       double th = order.find_by_order(k)->first;
-      auto lo = order.order_of_key({th, LLONG_MIN}),
-           hi = order.order_of_key({th, LLONG_MAX});
+      auto lo = order.order_of_key({th, LLONG_MIN}), hi = order.order_of_key({th, LLONG_MAX});
       threshold = th;
       tie = clamp((wanted - (hist.size() - hi)) / double(hi - lo), 0.0, 1.0);
     }
     have = true;
   }
+
   bool pass(double score, int64_t id, uint64_t seed, int64_t now) {
     phase(now);
     return W < budget && W < cap &&
-           (!have || score > threshold ||
-            (score == threshold && random01(id, seed) < tie));
+           (!have || score > threshold || (score == threshold && random01(id, seed) < tie));
   }
+
   void observe(double score, int64_t id, int64_t now) {
     ck(isfinite(score) && score >= 0, "nonfinite/negative score");
     hist.push_back({score, id, now});
@@ -380,6 +420,7 @@ struct Wallet {
       recompute(now);
   }
 };
+
 // The driver emits this restricted JSON shape. Parse numeric arrays exactly;
 // do not accept a different ID order or infer scores from missing entries.
 static string field(const string &s, const string &k) {
@@ -390,6 +431,7 @@ static string field(const string &s, const string &k) {
   ck(p != string::npos, "response colon");
   return s.substr(p + 1);
 }
+
 static vector<double> numeric_array(const string &s, const string &k) {
   auto t = field(s, k);
   auto p = t.find('[');
@@ -409,6 +451,7 @@ static vector<double> numeric_array(const string &s, const string &k) {
   }
   return a;
 }
+
 static void reprice(Wallet &w, int64_t cut) {
   cout << "{\"event\":\"reprice\",\"cut_us\":" << cut << ",\"ids\":[";
   bool comma = false;
@@ -433,12 +476,14 @@ static void reprice(Wallet &w, int64_t cut) {
   }
   w.recompute(cut);
 }
+
 struct Metrics {
-  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail_tokens = 0,
-          hbm_prefix = 0, prefix = 0, ssd_positions = 0, ssd_payloads = 0, writes = 0,
-          evictions = 0, absent_offers = 0, free_retained = 0, eligible_raw = 0,
-          bypass = 0, cap_lost = 0, reprograms = 0, ssd_evictions = 0;
+  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail_tokens = 0, hbm_prefix = 0,
+          prefix = 0, ssd_positions = 0, ssd_payloads = 0, writes = 0, evictions = 0,
+          absent_offers = 0, free_retained = 0, eligible_raw = 0, bypass = 0, cap_lost = 0,
+          reprograms = 0, ssd_evictions = 0;
 };
+
 static string metrics_json(const Metrics &m) {
   ostringstream s;
   s << "{\"requests\":" << m.requests << ",\"prompt_blocks\":" << m.prompt_blocks
@@ -450,15 +495,14 @@ static string metrics_json(const Metrics &m) {
     << ",\"ssd_payload_reads\":" << m.ssd_payloads
     << ",\"incremental_prefix_positions\":" << m.prefix - m.hbm_prefix
     << ",\"physical_writes\":" << m.writes << ",\"hbm_evictions\":" << m.evictions
-    << ",\"absent_offers\":" << m.absent_offers
-    << ",\"free_retained\":" << m.free_retained
+    << ",\"absent_offers\":" << m.absent_offers << ",\"free_retained\":" << m.free_retained
     << ",\"raw_repeated_hbm_misses_diagnostic\":" << m.eligible_raw
     << ",\"oversized_bypass\":" << m.bypass
     << ",\"last_token_cap_excluded_positions\":" << m.cap_lost
-    << ",\"reprograms\":" << m.reprograms << ",\"ssd_evictions\":" << m.ssd_evictions
-    << '}';
+    << ",\"reprograms\":" << m.reprograms << ",\"ssd_evictions\":" << m.ssd_evictions << '}';
   return s.str();
 }
+
 int main(int argc, char **argv) {
   try {
     const set<string> allowed = {"--prefix",
@@ -510,12 +554,10 @@ int main(int argc, char **argv) {
       return a[k];
     };
     auto val = [&](string k, string d) { return a.count(k) ? a[k] : d; };
-    string p = req("--prefix"), out = req("--out-prefix"),
-           mode = val("--mode", "quantile");
+    string p = req("--prefix"), out = req("--out-prefix"), mode = val("--mode", "quantile");
     int NB = stoi(req("--nb")), CH = stoi(req("--hbm"));
     int64_t CS64 = stoll(req("--ssd")), B = stoll(req("--budget")),
-            split = stoll(req("--eval-start-us")),
-            end = stoll(val("--end-us", "604800000000")),
+            split = stoll(req("--eval-start-us")), end = stoll(val("--end-us", "604800000000")),
             stop = stoll(val("--stop-us", to_string(end)));
     uint64_t seed = stoull(val("--seed", "17"));
     int64_t update = stoll(val("--update-every", "1000")),
@@ -524,14 +566,13 @@ int main(int argc, char **argv) {
     double reserve = stod(val("--reserve", "0")),
            demand = stod(val("--demand-multiplier", "1")),
            coin = stod(val("--coin-probability", "0.5"));
-    ck(NB > 0 && CH > 0 && CS64 > 0 && B >= 0 && split >= 0 && end > split &&
-           stop <= end && stop >= 0,
+    ck(NB > 0 && CH > 0 && CS64 > 0 && B >= 0 && split >= 0 && end > split && stop <= end &&
+           stop >= 0,
        "geometry");
     ck(update > 0 && history >= 100 && release > 0 && release <= end && reserve >= 0 &&
            reserve < 1 && isfinite(demand) && demand > 0 && coin >= 0 && coin <= 1,
        "controller configuration");
-    ck(mode == "quantile" || mode == "all" || mode == "coin" || mode == "bits",
-       "policy mode");
+    ck(mode == "quantile" || mode == "all" || mode == "coin" || mode == "bits", "policy mode");
     Map<int32_t> nb(p + "_nb.i32"), ids(p + "_ids.i32");
     Map<int64_t> ts(p + "_ts.i64"), tokens(req("--tokens"));
     ck(nb.n == ts.n && nb.n == tokens.n && nb.n <= INT_MAX, "request shapes");
@@ -551,11 +592,9 @@ int main(int argc, char **argv) {
     unique_ptr<Map<int64_t>> cuts;
     if (a.count("--cuts-i64")) {
       cuts = make_unique<Map<int64_t>>(a["--cuts-i64"]);
-      ck(cuts->n > 0 && (*cuts)[0] == split,
-         "initial candidate calibration cut required");
+      ck(cuts->n > 0 && (*cuts)[0] == split, "initial candidate calibration cut required");
       for (size_t j = 0; j < cuts->n; j++)
-        ck((*cuts)[j] >= split && (*cuts)[j] < end &&
-               (j == 0 || (*cuts)[j] > (*cuts)[j - 1]),
+        ck((*cuts)[j] >= split && (*cuts)[j] < end && (j == 0 || (*cuts)[j] > (*cuts)[j - 1]),
            "invalid fit cuts");
     }
     ck(!flags.count("--reprice-stdio") || cuts, "repricing cuts required");
@@ -713,8 +752,7 @@ int main(int argc, char **argv) {
           marginal.offer(b, eid + stoll(val("--label-event-offset", "0")));
           bool forced = mode == "bits" || (warmbits && now < split);
           bool desired =
-              forced ? bit(warmbits && now < split ? *warmbits : *fixedbits, eid)
-                     : false;
+              forced ? bit(warmbits && now < split ? *warmbits : *fixedbits, eid) : false;
           if (s.has(b)) {
             ck(!desired, "fixed program on resident copy");
             s.touch(b);
@@ -781,8 +819,7 @@ int main(int argc, char **argv) {
         }
       }
       row.writes = wallet.W - beforeW;
-      ck(row.prefix >= row.hbm_prefix &&
-             row.ssd_positions <= row.prefix - row.hbm_prefix,
+      ck(row.prefix >= row.hbm_prefix && row.ssd_positions <= row.prefix - row.hbm_prefix,
          "prefix metric invariant");
       auto add = [&](Metrics &m) {
         m.requests += row.requests;
@@ -823,8 +860,7 @@ int main(int argc, char **argv) {
         rows.write((char *)z, sizeof z);
       }
       if (debug) {
-        debug << "{\"row\":" << r << ",\"now\":" << now
-              << ",\"metrics\":" << metrics_json(row)
+        debug << "{\"row\":" << r << ",\"now\":" << now << ",\"metrics\":" << metrics_json(row)
               << ",\"writes_total\":" << wallet.W << ",\"hbm\":" << h.json()
               << ",\"ssd\":" << s.json() << ",\"offers\":[";
         for (size_t j = 0; j < rowoffers.size(); j++) {
@@ -873,12 +909,11 @@ int main(int argc, char **argv) {
          << ",\"controller_observations\":" << wallet.observations
          << ",\"repricing_snapshots\":" << nextcut << ",\"peak_hbm\":" << h.peak
          << ",\"peak_ssd\":" << s.peak << ",\"warm_hbm_sha256\":\"" << warmh
-         << "\",\"warm_ssd_sha256\":\"" << warms << "\",\"final_hbm_sha256\":\""
-         << h.hash() << "\",\"final_ssd_sha256\":\"" << s.hash()
-         << "\",\"eviction_records_sha256\":\"" << evhash.finish()
-         << "\",\"hbm_signed_event_sha256\":\"" << eventhash.finish()
-         << "\",\"total\":" << metrics_json(total)
-         << ",\"evaluation\":" << metrics_json(eval) << "}" << endl;
+         << "\",\"warm_ssd_sha256\":\"" << warms << "\",\"final_hbm_sha256\":\"" << h.hash()
+         << "\",\"final_ssd_sha256\":\"" << s.hash() << "\",\"eviction_records_sha256\":\""
+         << evhash.finish() << "\",\"hbm_signed_event_sha256\":\"" << eventhash.finish()
+         << "\",\"total\":" << metrics_json(total) << ",\"evaluation\":" << metrics_json(eval)
+         << "}" << endl;
     marginal.events.close();
     ck(bool(marginal.events) && marginal.tests > 0, "label verification");
     cerr << "explicit toggles verified " << marginal.tests << endl;

@@ -4,6 +4,8 @@ Reports CUDA allocation and per-layer cache geometry for the supplied model."""
 
 
 class MemoryProbe:
+    """Ask the GPU worker how its cache is laid out and sized"""
+
     def rancho_memory_snapshot(self):
         import torch
 

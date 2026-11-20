@@ -1,14 +1,14 @@
-# Tests
+# HBF simulator tests
 
-From the repository root:
+Run these from the repo root:
 
 ```bash
 make test-simulator
 make test-demo
 ```
 
-The simulator tests cover ten synthetic cases, including duplicate blocks, empty requests, repeated writes, score ties and controller updates. They compare decisions, cache contents and counts against the saved expected outputs.
+[simulator_regression.py](simulator_regression.py) makes ten small traces. It checks decisions, cache contents and totals against the saved expected outputs. The cases include empty requests, duplicate blocks, rewrites, score ties and cutoff updates.
 
-The demo tests check the serving workload's cache counts, write allowance and training cutoffs. A small hand-counted example checks the reuse labels, including blocks shared between conversations.
+[test_serving_replay.py](test_serving_replay.py) checks the larger CPU demo's hits, writes and training labels. One small example checks which reads are visible at a training cutoff.
 
-The serving and SSD folders contain their own checks. See [hbf_serving/RUNNING.md](../../hbf_serving/RUNNING.md) and [ssd_simulator/replay/README.md](../../ssd_simulator/replay/README.md).
+See [HBF serving checks](../../hbf_serving/RUNNING.md#cpu-checks) or [SSD replay tests](../../ssd_simulator/replay/README.md#build-and-check) for the other parts of the repo.

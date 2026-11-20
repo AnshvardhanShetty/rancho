@@ -1,7 +1,7 @@
-// Load simulator settings and input arrays; save decisions, hits, writes, and snapshots.
-// rancho.cpp makes cache decisions. These helpers read its inputs and record its results.
-// Example: load a request's prediction -> rancho decides to write two blocks -> log two writes.
-// File formats stay compatible with the saved reproduction records.
+// Read inputs and save outputs for the HBF simulator
+// SimulationSettings reads the command line and TraceInputs loads the request arrays
+// ReplayOutput saves the write decisions and the hit and write counts
+
 #pragma once
 
 #include "cache.hpp"
@@ -15,8 +15,7 @@ struct SimulationSettings {
   int64_t block_id_limit, flash_capacity, hbm_capacity, budget, start, end;
   fs::path output;
   uint64_t seed;
-  std::string zero_before_path, zero_after_path, eligible_path, prediction_path,
-      prefix_path;
+  std::string zero_before_path, zero_after_path, eligible_path, prediction_path, prefix_path;
   bool debug = false;
 };
 
@@ -32,8 +31,7 @@ static SimulationSettings read_settings(int argc, char **argv) {
                       "expected recorded policy flag " + std::string(flag));
     --argc;
   }
-  require_condition(argc == 16 || argc == 17,
-                    "arguments: use experiments/run_simulation.py");
+  require_condition(argc == 16 || argc == 17, "arguments: use experiments/run_simulation.py");
   bool debug = argc == 17;
   require_condition(!debug || std::string(argv[16]) == "--debug", "debug flag");
   require_condition(std::string(argv[10]) == "v1", "format version");
@@ -55,13 +53,11 @@ static SimulationSettings read_settings(int argc, char **argv) {
   settings.prediction_path = argv[15];
   settings.prefix_path = prefix_path;
   settings.debug = debug;
-  require_condition(
-      settings.block_id_limit > 0 && settings.block_id_limit <= INT32_MAX &&
-          settings.flash_capacity > 0 && settings.flash_capacity <= INT32_MAX &&
-          settings.hbm_capacity >= 0 && settings.hbm_capacity <= INT32_MAX,
-      "geometry");
-  require_condition(settings.budget >= 0 && settings.start > 0 &&
-                        settings.end > settings.start,
+  require_condition(settings.block_id_limit > 0 && settings.block_id_limit <= INT32_MAX &&
+                        settings.flash_capacity > 0 && settings.flash_capacity <= INT32_MAX &&
+                        settings.hbm_capacity >= 0 && settings.hbm_capacity <= INT32_MAX,
+                    "geometry");
+  require_condition(settings.budget >= 0 && settings.start > 0 && settings.end > settings.start,
                     "time or budget");
   return settings;
 }
@@ -84,34 +80,33 @@ struct TraceInputs {
     auto before = read_binary_array<uint8_t>(settings.zero_before_path);
     auto after = read_binary_array<uint8_t>(settings.zero_after_path);
     size_t count = block_counts.size();
-    require_condition(count <= INT32_MAX && sessions.size() == count &&
-                          times.size() == count && before.size() == count &&
-                          after.size() == count && hbm_prefix.size() == count &&
-                          eligible.size() == count && predicted_reuse.size() == count,
+    require_condition(count <= INT32_MAX && sessions.size() == count && times.size() == count &&
+                          before.size() == count && after.size() == count &&
+                          hbm_prefix.size() == count && eligible.size() == count &&
+                          predicted_reuse.size() == count,
                       "metadata lengths");
     require_condition(std::is_sorted(times.begin(), times.end()), "timestamp order");
     int64_t total_blocks = 0;
     for (size_t row = 0; row < count; row++) {
-      require_condition(block_counts[row] >= 0 && sessions[row] >= 0 &&
-                            before[row] == 0 && after[row] == 0 && eligible[row] <= 1 &&
-                            std::isfinite(predicted_reuse[row]) &&
-                            predicted_reuse[row] >= 0,
+      require_condition(block_counts[row] >= 0 && sessions[row] >= 0 && before[row] == 0 &&
+                            after[row] == 0 && eligible[row] <= 1 &&
+                            std::isfinite(predicted_reuse[row]) && predicted_reuse[row] >= 0,
                         "invalid input: this recipe requires the two zero placeholder "
                         "arrays");
       total_blocks += block_counts[row];
       require_condition(total_blocks >= 0, "count overflow");
     }
-    require_condition(fs::file_size(settings.stream + "_ids.i32") ==
-                          uint64_t(total_blocks) * 4,
+    require_condition(fs::file_size(settings.stream + "_ids.i32") == uint64_t(total_blocks) * 4,
                       "full block stream length");
   }
 };
 
 // Aggregate request, hit, write, and admission counters.
 struct Metrics {
-  int64_t requests = 0, positions = 0, fetched = 0, hbf_hits = 0, hbm_hits = 0,
-          eligible = 0, writes = 0;
+  int64_t requests = 0, positions = 0, fetched = 0, hbf_hits = 0, hbm_hits = 0, eligible = 0,
+          writes = 0;
   int64_t requested = 0, admitted = 0, budget_rejected = 0, no_offer = 0;
+
   // Write the counters in the existing results format.
   void json(std::ostream &f) const {
     f << "{\"requests\":" << requests << ",\"positions\":" << positions
@@ -119,8 +114,8 @@ struct Metrics {
       << ",\"hbm_hits\":" << hbm_hits << ",\"credited_hits\":" << hbf_hits + hbm_hits
       << ",\"eligible_first_distinct\":" << eligible << ",\"writes\":" << writes
       << ",\"requested_admissions\":" << requested << ",\"admitted\":" << admitted
-      << ",\"budget_rejections\":" << budget_rejected
-      << ",\"no_offer_requests\":" << no_offer << "}";
+      << ",\"budget_rejections\":" << budget_rejected << ",\"no_offer_requests\":" << no_offer
+      << "}";
   }
 };
 
@@ -128,12 +123,14 @@ struct Metrics {
 struct OfferHistory {
   int64_t row = -1, distinct = 0, cost = 0, time = 0;
 };
+
 // Original binary layout for a scored admission decision.
 struct DecisionRecord {
   int64_t row, time, distinct, cost, spent;
   double predicted_reuse, score, threshold, tie_probability;
   int64_t has_threshold, reason, admitted;
 };
+
 static_assert(sizeof(DecisionRecord) == 96, "decision record layout");
 static_assert(sizeof(OfferHistory) == 32, "offer history layout");
 
@@ -158,8 +155,7 @@ struct ReplayOutput {
 
   // Create a new results folder and open the logs.
   ReplayOutput(const SimulationSettings &settings, size_t requests)
-      : folder(settings.output), admitted_mask(requests, 0),
-        requested_mask(requests, 0) {
+      : folder(settings.output), admitted_mask(requests, 0), requested_mask(requests, 0) {
     require_condition(!fs::exists(folder), "output already exists");
     require_condition(fs::create_directory(folder), "create output");
     rows.open(folder / "rows.i64", std::ios::binary);
@@ -209,8 +205,8 @@ struct ReplayOutput {
 
   // Save one request's hit, write, and cumulative-spending record.
   void record_request(size_t request, int64_t time, int64_t positions, size_t first,
-                      int64_t flash_hits, int64_t hbm_hits, int64_t charged,
-                      bool requested, bool admitted, int64_t spent) {
+                      int64_t flash_hits, int64_t hbm_hits, int64_t charged, bool requested,
+                      bool admitted, int64_t spent) {
     int64_t record[10] = {int64_t(request),  time,     positions, int64_t(first),
                           flash_hits,        hbm_hits, charged,   int64_t(requested),
                           int64_t(admitted), spent};
@@ -226,9 +222,8 @@ struct ReplayOutput {
                     const Cache &flash, const Cache &hbm) {
     if (!debug.is_open())
       return;
-    debug << "{\"row\":" << request << ",\"first\":" << first
-          << ",\"hbf_hits\":" << flash_hits << ",\"hbm_hits\":" << hbm_hits
-          << ",\"writes\":" << charged << ",\"W\":" << spent
+    debug << "{\"row\":" << request << ",\"first\":" << first << ",\"hbf_hits\":" << flash_hits
+          << ",\"hbm_hits\":" << hbm_hits << ",\"writes\":" << charged << ",\"W\":" << spent
           << ",\"requested\":" << requested << ",\"admitted\":" << admitted;
     for (auto item :
          {std::make_pair("hbf", flash.order()), std::make_pair("hbm", hbm.order())}) {
@@ -242,9 +237,8 @@ struct ReplayOutput {
 
   // Close logs, check accounting, and save final metrics.
   void finish(const SimulationSettings &settings, const Metrics &evaluation,
-              const std::vector<OfferHistory> &history, int64_t spent,
-              int64_t controller_spent, int64_t observations, size_t next_request,
-              int64_t cursor) {
+              const std::vector<OfferHistory> &history, int64_t spent, int64_t controller_spent,
+              int64_t observations, size_t next_request, int64_t cursor) {
     write_binary_array(folder / "effective_mask.u8", admitted_mask);
     write_binary_array(folder / "requested_mask.u8", requested_mask);
     write_binary_array(folder / "final_history.bin", history);
@@ -261,15 +255,13 @@ struct ReplayOutput {
       diag << (j ? "," : "") << reason_counts[j];
     diag << "],\"offered_write_cost\":" << offered_cost
          << ",\"threshold_rejected_write_cost\":" << rejected_cost
-         << ",\"wallet_W\":" << controller_spent
-         << ",\"wallet_observations\":" << observations
+         << ",\"wallet_W\":" << controller_spent << ",\"wallet_observations\":" << observations
          << ",\"remaining_budget\":" << settings.budget - spent << "}\n";
     diag.close();
     require_condition(bool(diag), "close diagnostic");
     require_condition(spent == evaluation.writes && spent <= settings.budget,
                       "evaluation write identity");
-    require_condition(evaluation.hbf_hits + evaluation.hbm_hits <=
-                              evaluation.eligible &&
+    require_condition(evaluation.hbf_hits + evaluation.hbm_hits <= evaluation.eligible &&
                           evaluation.eligible <= evaluation.positions,
                       "credit conservation");
     Metrics warm;
@@ -277,13 +269,11 @@ struct ReplayOutput {
     result << "{\"schema\":\"hbf_replacement_replay_v1\",\"status\":\"PASS\","
               "\"N\":"
            << settings.block_id_limit << ",\"hbf_capacity\":" << settings.flash_capacity
-           << ",\"hbm_capacity\":" << settings.hbm_capacity
-           << ",\"budget\":" << settings.budget << ",\"split_us\":" << settings.start
-           << ",\"end_us\":" << settings.end
+           << ",\"hbm_capacity\":" << settings.hbm_capacity << ",\"budget\":" << settings.budget
+           << ",\"split_us\":" << settings.start << ",\"end_us\":" << settings.end
            << ",\"W_pre\":0,\"W_test\":" << evaluation.writes << ",\"writes\":" << spent
            << ",\"remaining_after_warm\":" << settings.budget
-           << ",\"next_row\":" << next_request << ",\"id_cursor\":" << cursor
-           << ",\"warm\":";
+           << ",\"next_row\":" << next_request << ",\"id_cursor\":" << cursor << ",\"warm\":";
     warm.json(result);
     result << ",\"evaluation\":";
     evaluation.json(result);

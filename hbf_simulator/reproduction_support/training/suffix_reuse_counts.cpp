@@ -1,21 +1,22 @@
-/* Shared original-policy suffix labels, one dataset per geometry/seed.
- * Every offer (including rejected ones) uses the physically audited prefix.
- * Main generation groups indexed future event rows via hourly row boundaries.
- * Full independent audit uses separately certified per-block hour histograms,
- * plus within-hour subtraction, and compares EVERY bucket/offer entry.
- * Current row is excluded. Fitting later masks all buckets at/after cutoff.
- */
+// Count later reads for every suffix offered by the reference replay
+// Use the saved prefix to find the offer including offers the policy declined
+// Write one count per hour so each fit uses only reads it could have seen
+// Audit mode checks every count using the per-block hourly totals
+
 #define main index_program_main
 #include "reuse_index.cpp"
 #undef main
 #include <array>
+
 // The decision-record layout written by record_write_offers.cpp.
 struct Decision {
   I row, time, distinct, cost, W;
   double pred, score, threshold, tie;
   I have, reason, admit;
 };
+
 static_assert(sizeof(Decision) == 96);
+
 // Add the offer's later eligible reads to their respective hours.
 static void count_later_reads(int32_t *first, int32_t *last, I offer_row, int current,
                               const std::vector<I> &times,
@@ -46,8 +47,7 @@ static void audit_later_reads(int block, int32_t *first, int32_t *last, I offer_
     else if (int(hour_total.h) == current) {
       auto lo = std::lower_bound(first, last, int32_t(first_row_of_hour[current]));
       auto past = std::upper_bound(lo, last, int32_t(offer_row));
-      require_condition(uint64_t(past - lo) <= hour_total.count,
-                        "within-hour subtraction");
+      require_condition(uint64_t(past - lo) <= hour_total.count, "within-hour subtraction");
       expected[current] += hour_total.count - (past - lo);
     }
   }
@@ -55,10 +55,9 @@ static void audit_later_reads(int block, int32_t *first, int32_t *last, I offer_
 
 int main(int argc, char **argv) {
   try {
-    require_condition(argc == 9,
-                      "mode prefix N index calib_native old_native outdir start");
-    std::string mode = argv[1], pre = argv[2], idx = argv[4], cal = argv[5],
-                old = argv[6], out = argv[7];
+    require_condition(argc == 9, "mode prefix N index calib_native old_native outdir start");
+    std::string mode = argv[1], pre = argv[2], idx = argv[4], cal = argv[5], old = argv[6],
+                out = argv[7];
     I N = std::stoll(argv[3]), start = std::stoll(argv[8]);
     bool build = mode == "build";
     require_condition(build || mode == "audit", "mode");
@@ -86,10 +85,9 @@ int main(int argc, char **argv) {
     Map<int32_t> counts(out + "/c.i32", request_count, build);
     // Open the earlier replay logs, including each request's suffix start.
     std::ifstream ar(cal + "/rows.i64", std::ios::binary),
-        br(old + "/rows.i64", std::ios::binary),
-        ad(cal + "/decisions.bin", std::ios::binary),
-        bd(old + "/decisions.bin", std::ios::binary),
-        ns(pre + "_nb.i32", std::ios::binary), ids(pre + "_ids.i32", std::ios::binary);
+        br(old + "/rows.i64", std::ios::binary), ad(cal + "/decisions.bin", std::ios::binary),
+        bd(old + "/decisions.bin", std::ios::binary), ns(pre + "_nb.i32", std::ios::binary),
+        ids(pre + "_ids.i32", std::ios::binary);
     require_condition(ar && br && ad && bd && ns && ids, "input open");
     std::vector<int32_t> row;
     I offers = 0, positive = 0, checked = 0;
@@ -102,12 +100,12 @@ int main(int argc, char **argv) {
       ids.read((char *)row.data(), I(n) * 4);
       require_condition(ids.gcount() == I(n) * 4, "IDs");
       std::array<I, 10> a, b;
-      require_condition(read_record(br, b) && b[0] == offer_row &&
-                            b[1] == times[offer_row] && b[2] == n,
+      require_condition(read_record(br, b) && b[0] == offer_row && b[1] == times[offer_row] &&
+                            b[2] == n,
                         "eval row identity");
       if (times[offer_row] < 72 * H)
-        require_condition(read_record(ar, a) && a[0] == offer_row &&
-                              a[1] == times[offer_row] && a[2] == n,
+        require_condition(read_record(ar, a) && a[0] == offer_row && a[1] == times[offer_row] &&
+                              a[2] == n,
                           "cal row identity");
       if (times[offer_row] < start) {
         require_condition(counts[offer_row] == 0, "pre-training count");
@@ -127,8 +125,7 @@ int main(int argc, char **argv) {
       suffix.erase(std::unique(suffix.begin(), suffix.end()), suffix.end());
       // Repeated block IDs in one offer contribute only once to its label denominator.
       require_condition(I(suffix.size()) == d.distinct, "suffix count");
-      require_condition(d.cost >= 0 && (d.distinct == 0 || d.cost > 0),
-                        "cost contract");
+      require_condition(d.cost >= 0 && (d.distinct == 0 || d.cost > 0), "cost contract");
       if (build)
         counts[offer_row] = d.distinct;
       else
@@ -162,16 +159,15 @@ int main(int argc, char **argv) {
     }
     // Require complete log consumption and report how many entries were checked.
     char extra;
-    require_condition(!ar.read(&extra, 1) && !br.read(&extra, 1) &&
-                          !ad.read(&extra, 1) && !bd.read(&extra, 1),
+    require_condition(!ar.read(&extra, 1) && !br.read(&extra, 1) && !ad.read(&extra, 1) &&
+                          !bd.read(&extra, 1),
                       "leftover native");
     std::cout << "{\"status\":\""
               << (build ? "BUILT_SHARED_SUFFIX_LABELS"
                         : "PASS_FULL_INDEPENDENT_SUFFIX_LABEL_AUDIT")
               << "\",\"rows\":" << request_count << ",\"offers\":" << offers
-              << ",\"positive_suffixes\":" << positive
-              << ",\"bucket_entries\":" << checked << ",\"label_credit_mass\":" << mass
-              << "}\n";
+              << ",\"positive_suffixes\":" << positive << ",\"bucket_entries\":" << checked
+              << ",\"label_credit_mass\":" << mass << "}\n";
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';
     return 1;

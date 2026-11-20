@@ -47,6 +47,7 @@ class TrainingData:
     """Keep training samples, request features and observed labels aligned."""
 
     def __init__(self, manifest_path, cold=False):
+        """Load the eviction records and reuse counts used by the hourly models"""
         manifest_path = Path(manifest_path).resolve()
         raw = manifest_path.read_bytes()
         self.identity = hashlib.sha256(raw).hexdigest()

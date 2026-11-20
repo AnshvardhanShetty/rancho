@@ -24,6 +24,8 @@ def completed_shared_candidates(scheduled_ids, requests, tables, seen, shared_pa
 
 
 class PrefixRetention:
+    """Keep the shared prefixes in memory for the HBM comparison"""
+
     def __init__(self, pool, hbm_pages, expected_pages):
         self.pool = pool
         self.hbm_pages = hbm_pages

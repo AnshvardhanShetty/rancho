@@ -1,12 +1,8 @@
-# SSD simulator
+# SSD cache simulator
 
-The simulator replays requests and decides which blocks to save on SSD when they leave memory. It counts how much repeated prefill those blocks avoid.
+This simulator tracks KV by block ID and runs without a GPU. It decides which blocks to save to SSD as they leave GPU memory. It then counts how much later prompt computation those writes save.
 
-| Folder | What it contains |
-| --- | --- |
-| [algorithm](algorithm/README.md) | The reuse predictor, hourly training and write-budget controller. |
-| [replay](replay/README.md) | The baseline cache replay and small synthetic tests. |
+- [algorithm](algorithm/README.md) has RANCHO's model training, write decisions and recomputation counts. Start with [algorithm/run.py](algorithm/run.py) to see the steps together.
+- [replay](replay/README.md) has the baseline policies, the independent cache checker and the small synthetic cases.
 
-Start with [algorithm/run.py](algorithm/run.py) to follow training and replay. See [algorithm/RUNNING.md](algorithm/RUNNING.md) for commands and input formats.
-
-For saving and restoring actual KV with vLLM, see the [SSD serving engine](../ssd_serving/README.md), which is under development.
+See [run commands](algorithm/RUNNING.md) for the SSD algorithm or [SSD serving](../ssd_serving/README.md) for the vLLM integration that moves actual KV.

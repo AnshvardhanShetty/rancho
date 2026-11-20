@@ -10,7 +10,9 @@ from types import SimpleNamespace
 import numpy as np
 
 # Use the shared trace reader and simulator helpers.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hbf_simulator/experiments"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parents[2] / "hbf_simulator/experiments")
+)
 from trace_reader import prepare_trace
 from run_simulation import ROOT, read_json, run_cache_simulation, run_program
 from run_experiment import build_request_features
@@ -104,7 +106,9 @@ def run_demo():
         with np.load(work / "features.npz") as saved:
             rebuilt_features = np.column_stack([saved[name] for name in names])
         if not np.array_equal(rebuilt_features, feature_table):
-            raise RuntimeError("Feature preparation differs from the synthetic examples")
+            raise RuntimeError(
+                "Feature preparation differs from the synthetic examples"
+            )
         stream = work / "prepared/dst"
         for name, typ, values in [
             ("zero", "B", [0] * len(requests)),
@@ -113,7 +117,13 @@ def run_demo():
         ]:
             (work / ("stream" + name)).write_bytes(array.array(typ, values).tobytes())
         run_program(
-            "hbm_only_readable_prefix", stream, 256, 1, split, split + 100, work / "shadow"
+            "hbm_only_readable_prefix",
+            stream,
+            256,
+            1,
+            split,
+            split + 100,
+            work / "shadow",
         )
         result = run_cache_simulation(
             stream,

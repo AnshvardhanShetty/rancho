@@ -1,6 +1,7 @@
-// Marginal credited prefix length when one sampled victim alone is present versus
-// absent on this reference request. A newer offer supersedes its prior owner.
-// Writes to other blocks, HBM, and the legal lookup limit follow the reference.
+// Measure how much extra of the prompt one saved block can unlock
+// Keep the reference HBM state and the writes to every other SSD block
+// Attribute a block's later gain to its most recent sampled offer
+
 struct Marginal {
   Map<int64_t> samples;
   Map<uint64_t> bits, ranks;
@@ -8,23 +9,26 @@ struct Marginal {
   ofstream events;
   size_t next;
   uint64_t tests = 0;
+
   Marginal(int n, string data, string credit, string output, int64_t first)
       : samples(data), bits(credit + "/credit.bits"), ranks(credit + "/credit.rank"),
-        owner(n, -1), last_accounted(samples.n, -1),
-        events(output + ".gain", ios::binary),
+        owner(n, -1), last_accounted(samples.n, -1), events(output + ".gain", ios::binary),
         next(lower_bound(samples.p, samples.p + samples.n, first) - samples.p) {}
+
   uint64_t credited_before(size_t x) const {
     const size_t word = x / 64, tail = x % 64;
     return ranks[word] +
            (tail ? __builtin_popcountll(bits[word] & ((uint64_t(1) << tail) - 1)) : 0);
   }
+
   void offer(int b, int64_t ordinal) {
     owner[b] = -1;
     if (next < samples.n && samples[next] == ordinal)
       owner[b] = int(next++);
   }
-  void measure(const Cache &h, const Cache &s, const Map<int32_t> &ids, size_t off,
-               int cap, int prefix, int r) {
+
+  void measure(const Cache &h, const Cache &s, const Map<int32_t> &ids, size_t off, int cap,
+               int prefix, int r) {
     auto accessible = [&](int b) { return h.has(b) || s.has(b); };
     // Recompute a sample of the contributions by explicitly forcing one
     // identity present and absent. Duplicate positions carry one identity.

@@ -1,9 +1,4 @@
-"""Build request and block features from earlier events.
-
-RequestHistory tracks session position and arrival times on every request.
-BlockHistory tracks accesses, evictions and time in memory. At SSD eviction,
-features use the block's last request and history before the current request.
-The engine supplies integer identities and chronological timestamps."""
+"""Track earlier requests and block accesses for the reuse predictors"""
 
 from dataclasses import dataclass
 
@@ -23,6 +18,8 @@ HISTORY = (
 
 @dataclass(frozen=True)
 class RequestInfo:
+    """The request details available when that request arrives"""
+
     row: int
     time_us: int
     user: int
@@ -40,12 +37,15 @@ class RequestInfo:
 
 
 class RequestHistory:
+    """Remember when each chat started and when it last made a request"""
+
     def __init__(self):
         self.sessions = {}
         self.next_row = 0
         self.last_time_us = -(1 << 63)
 
     def arrival(self, row, time_us, session, user):
+        """Read the earlier chat state before adding the current request"""
         if (
             type(row) is not int
             or row != self.next_row
@@ -72,6 +72,8 @@ class RequestHistory:
 
 @dataclass
 class Block:
+    """The earlier accesses and evictions of one KV block"""
+
     last: RequestInfo | None = None
     touches: int = 0
     evictions: int = 0
@@ -96,6 +98,7 @@ class BlockHistory:
     def touch_request(self, block_ids, request):
         # The physical replay counts a block once per request, even if repeated
         # at multiple prompt positions. No admission status enters this update.
+        """Update block history once per block in this request"""
         for block_id in dict.fromkeys(block_ids):
             b = self.blocks.get(block_id)
             if b is None or b.born_us is None:
@@ -109,6 +112,7 @@ class BlockHistory:
             b.last_touch_row = request.row
 
     def eviction(self, block_id, request):
+        """Get the history of a block as it leaves memory"""
         b = self.blocks.get(block_id)
         if b is None or b.last is None or b.born_us is None:
             raise ValueError("Eviction lacks complete HBM prehistory")

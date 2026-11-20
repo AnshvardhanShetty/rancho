@@ -1,25 +1,27 @@
-# Synthetic examples
+# Try RANCHO on a CPU
 
-## Serving workload on CPU
+Run these commands from the repo root after [setting up Python](../../README.md#try-it-without-a-gpu).
 
-Run `make demo-serving` from the repository root after installing the Python requirements.
+## Three requests
 
-The demo uses the serving experiment's synthetic prompt generator: eight conversations, eight warm-up requests and 1,200 measured requests. It trains RANCHO on earlier requests, then replays the measured requests through the C++ simulator. The output shows cache hits, GPU memory savings, recomputation and flash writes.
+```bash
+make demo
+```
 
-Training uses the research pipeline. An initial predictor supplies scores for a replay that records which KV each request offers. The final predictor learns from the later reuse of that KV. Labels include only accesses observed before each training cutoff.
+The first of the three requests writes two blocks to flash. The next two each read those blocks back. You should see four flash hits and two writes. Start at [demo.py](demo.py) to see the whole run.
 
-The baseline keeps shared prefixes in HBM. RANCHO uses HBF and a smaller HBM cache. Both start empty before warm-up; cache-hit ratios and recomputation count only measured requests. Writes include warm-up and must fit one flash-capacity allowance.
+## Eight conversations
 
-The model is trained locally on these synthetic requests. The CPU replay processes prompt caching in arrival order; the GPU runner also executes the model, schedules concurrent requests and applies elapsed-time write credits. [Serving code](../../hbf_serving/README.md).
+```bash
+make demo-serving
+```
 
-To save the computed summary in a new file:
+[serving_replay.py](serving_replay.py) uses the same synthetic prompts as the [vLLM example](../../hbf_serving/README.md). It warms the cache with eight requests, then measures 1,200 more. It trains on earlier synthetic requests. A first replay records the KV offered for writing, and the final model learns from later reads of those blocks.
+
+The output shows cache hits, blocks recomputed and writes. Hits and recomputation exclude warm-up. The write allowance covers both warm-up and measurement. This run measures cache behavior. The GPU example runs the model and measures latency and throughput.
+
+Save the counts in a new file with:
 
 ```bash
 python hbf_simulator/examples/serving_replay.py --output demo-summary.json
 ```
-
-## Three-request walkthrough
-
-Run `make demo` for a smaller example. It trains a predictor, checks the request reader and features, then processes the three requests in `demo_requests.json`.
-
-The first request writes two KV blocks. Two later requests reuse both. The result is **4 flash hits and 2 block writes**.

@@ -1,9 +1,7 @@
-// Replay a separate HBM-only cache, without flash. For each request, save how
-// many blocks it serves from the beginning before the first miss.
-// RANCHO uses these lengths to filter the reuse counted in its history bonus.
-//
-// main(): load inputs -> process requests -> check and save prefix lengths.
-// ReferenceCache repeats the calculation independently to check the result.
+// Replay the same requests with just HBM and save the prefix it can read each time
+// RANCHO uses this record to count reuse that HBM alone would have missed
+// ReferenceCache repeats the calculation with a separate cache to check the result
+
 #include "cache.hpp"
 #include <list>
 #include <memory>
@@ -15,9 +13,11 @@ struct ReferenceCache {
   size_t capacity;
   std::list<int> order;
   std::unordered_map<int, std::list<int>::iterator> location;
+
   explicit ReferenceCache(size_t capacity) : capacity(capacity) {
     location.reserve(capacity + 1);
   }
+
   // Count the readable prefix while updating the cache for each block.
   // On a miss, insert the block and evict the least recently used if full.
   int process(const std::vector<int> &ids) {
@@ -69,8 +69,7 @@ int main(int argc, char **argv) {
 
     // 4. Read each request in arrival order, stopping at the evaluation end.
     for (size_t request = 0;
-         request < block_counts.size() && arrival_times[request] < evaluation_end;
-         ++request) {
+         request < block_counts.size() && arrival_times[request] < evaluation_end; ++request) {
       int block_count = block_counts[request];
       require_condition(block_count >= 0, "length");
       blocks.resize(block_count);

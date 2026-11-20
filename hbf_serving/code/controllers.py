@@ -1,9 +1,4 @@
-"""Track write spending and update HBF and SSD admission thresholds.
-
-Callers supply ordered offers, predictions, timestamps and exact write costs.
-Accepted writes are charged immediately. HBF records an offer before charging;
-SSD charges first. SSD can rescore stored offers when its model is updated.
-A failed transfer stops the run because its charged write cannot be refunded."""
+"""Track writes and set score cutoffs using recent offers"""
 
 from dataclasses import asdict, dataclass
 import hashlib
@@ -26,6 +21,8 @@ def hash01(event_id, seed):
 
 @dataclass(frozen=True)
 class Observation:
+    """The score and cost saved for one offer"""
+
     event_id: int
     score: float
     cost: int
@@ -92,6 +89,7 @@ class Wallet:
         return self.ring[self.rp :] + self.ring[: self.rp]
 
     def recompute(self, now_us):
+        """Estimate future writes and recalculate the score cutoff"""
         if self.design == "ssd":
             self.phase(now_us)
             values = self.chronological()
@@ -173,6 +171,7 @@ class Wallet:
         self.have = True
 
     def _observe(self, v):
+        """Save this offer and record what the policy decided"""
         if len(self.ring) < self.limit:
             self.ring.append(v)
         else:

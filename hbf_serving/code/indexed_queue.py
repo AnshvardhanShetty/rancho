@@ -5,6 +5,8 @@ from itertools import islice
 
 
 class IndexedQueue:
+    """Keep requests in order and find them by ID"""
+
     def __init__(self, native, hbm_pages):
         self.native = native
         self.hbm_pages = hbm_pages
@@ -71,6 +73,7 @@ class IndexedQueue:
         return list(islice(self.hbm.values(), count))
 
     def assert_consistent(self):
+        """Check that the queue and the request index agree"""
         native = self.native.get_all_free_blocks()
         for index, predicate in [
             (self.hbm, lambda b: b.block_id <= self.hbm_pages),

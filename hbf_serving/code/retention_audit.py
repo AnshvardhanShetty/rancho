@@ -7,6 +7,7 @@ import json
 
 
 def audit_retention(root, cfg, result):
+    """Check which shared pages were kept and how many requests ran together"""
     rows = [json.loads(x) for x in (root / "retention.jsonl").open()]
     assert rows[0]["event"] == "RETENTION_START" and rows[0]["retained_pages"] == 0
     expected = cfg["shared_groups"] * cfg["shared_prefix_tokens"] // cfg["block_tokens"]

@@ -13,6 +13,7 @@ from controlled_workload import prompts, block_keys, records
 
 
 def audit_policy(root, cfg, saved):
+    """Check the saved policy inputs and replay the admission decisions"""
     read = lambda p: json.loads(Path(p).read_text())
     receipt = Path(cfg["controller_history"])
     assert (

@@ -1,12 +1,9 @@
-"""Connect vLLM's GPU cache to SSD storage.
+"""Save full KV blocks to SSD before vLLM reuses their GPU slots
 
-Connector tracks block histories and asks the supplied policy what to save.
-Before a GPU slot is reused, accepted KV is written to SSD.
-For a later request, the connector stages saved KV and restores it before use.
-SSDScheduler installs these steps around vLLM allocation and reports I/O counts.
-
-Assumes one synchronous engine process. Active KV cannot be evicted, and unfinished
-KV cannot be saved. A failed transfer stops the run."""
+The scheduler records block history and asks the policy what to keep
+The connector stages cache hits before allocation can reuse their old slots
+Saved blocks are copied back before the model reads them
+"""
 
 import importlib
 import json
@@ -78,6 +75,7 @@ class Connector(KVConnectorBase_V1):
         return False
 
     def register_kv_caches(self, caches):
+        """Open the SSD store using the worker's KV page layout"""
         global store
         if store is not None:
             raise RuntimeError("One engine per serving process required")
@@ -232,7 +230,6 @@ class Connector(KVConnectorBase_V1):
         return 16 * len(matches), False
 
     def stage_lookup(self, request):
-        # Capture before allocate_slots can recycle a source page or SSD slot.
         """Preserve needed KV before allocation can recycle its source."""
         staged = []
         for key, local in self.pending.get(request.request_id, (0, []))[1]:
@@ -291,6 +288,7 @@ class SSDScheduler(Scheduler):
     """Call the SSD connector before GPU slots are reused."""
 
     def __init__(self, *args, **kwargs):
+        """Connect the GPU allocation path to the SSD eviction and restore hooks"""
         super().__init__(*args, **kwargs)
         if (
             store is None

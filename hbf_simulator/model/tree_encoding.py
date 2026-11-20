@@ -6,6 +6,7 @@ import numpy as np
 # Collect user IDs seen during fitting; their positions become category codes.
 # Numeric columns do not need a category list. Save this mapping with the model.
 def build_category_values(feature_table, cats):
+    """Save the user categories seen in this fit"""
     return [
         (
             np.unique(

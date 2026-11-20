@@ -1,11 +1,12 @@
-"""Read the selected model's requests and save them in arrival order.
+"""Read the selected model's requests and save them in arrival order
 
-Reading order: check one request -> read all requests -> sort/save -> prepare_trace().
-Other files call prepare_trace() to run those steps and save their checks.
-File helpers and the small self-test are at the bottom.
+parse_request checks the dictionary decoded from one JSONL line
+read_requests saves the blocks and collects each request's time and session
+write_sorted_requests sorts whole requests and marks days 4 to 7 for testing
+prepare_trace runs those steps and saves a summary of the files and checks
 
-Input times are seconds from the week start. Keep sessions, block order, and
-repeated IDs unchanged. Mark days 4–7 for evaluation; no cache replay runs here.
+Input times are seconds from the week start
+Sorting keeps each request's block order and any repeated IDs
 """
 
 from dataclasses import dataclass

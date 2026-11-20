@@ -1,10 +1,9 @@
-"""Load training data, fit the reuse predictor, and save one hour's predictions.
+"""Train the predictor and score requests one hour at a time
 
-Sections: RequestData loads inputs and selects earlier examples; training_weights()
-and prepare_training_arrays() prepare the fit; fit_tree_model() chooses and fits
-the trees; predict_reuse() applies them; fit_hourly_model() connects and saves the update.
-run_hourly_models() in run_experiment.py runs the loop across hours.
-Use the fixed Poisson/recency-weighted recipe and only observations before the cutoff.
+RequestData gets the examples and reuse counts available at a cutoff
+fit_tree_model picks a tree count using earlier requests and fits the trees
+predict_reuse returns one reads per block estimate for each new request
+fit_hourly_model runs these steps and saves the model and predictions
 """
 
 import hashlib
@@ -23,11 +22,12 @@ H = HOUR
 VALIDATION_HOURS = 6 * HOUR
 
 
-# REQUEST DATA: shared inputs for the hourly fits. No tree is trained in this class.
 class RequestData:
-    # LOAD INPUTS: keep all requests' times, features, and reuse counts together.
+    """Keep the request inputs and reuse counts in the same request order"""
+
     def __init__(self, label_dir=None):
-        # Find the recipe, feature/count files, and request arrival times.
+        """Load checked features and the saved counts of later reads"""
+        # Find the recipe and the files it uses
         plan = read_json(CODE / "PLAN.json")
         paths = read_json(ROOT / "RESOLVED_MODEL_INPUTS.json")
         inputs = read_json(CODE / "INPUTS.json")
@@ -71,9 +71,8 @@ class RequestData:
         self.observed = np.zeros(self.n, dtype=np.int64)
         assert len(self.c) == self.n and np.all(self.c >= 0)
 
-    # PREPARE TRAINING EXAMPLES: return earlier request positions and reads per offered block.
     def training_examples(self, cut):
-        """Return earlier request positions and their observed reads per offered block."""
+        """Return request positions and reads per block known by this cutoff"""
         # Convert the hourly cutoff into a row boundary in the read-count table.
         assert cut % H == 0 and 0 <= cut <= 168 * H
         cutoff_hour = cut // H
@@ -98,16 +97,14 @@ class RequestData:
         assert not len(training_rows) or self.ts[training_rows].max() < cut
         return training_rows, reads_per_block
 
-    # GET FEATURE VALUES: one row per selected request, one column per input.
     def feature_table(self, request_rows, feature_names):
-        # Put the selected requests into rows, with features in the requested column order.
+        """Put requests into rows and features into columns"""
         return np.column_stack(
             [self.features[name][request_rows] for name in feature_names]
         ).astype(float)
 
-    # MARK CATEGORIES: identify the columns that represent identities rather than quantities.
     def categorical_columns(self, feature_names):
-        # Return categorical column numbers so LightGBM treats user IDs as identities.
+        """Tell LightGBM which inputs are names such as user IDs"""
         return [
             column
             for column, name in enumerate(feature_names)
@@ -121,9 +118,8 @@ def check_condition(condition, message):
         raise ValueError(message)
 
 
-# Give earlier requests recency weights with a 24-hour half-life.
 def training_weights(data, request_rows, cut):
-    """Weight earlier requests by age, with a 24-hour half-life."""
+    """Give requests half as much weight for each extra day since arrival"""
     weights = np.exp2(
         -(cut - np.asarray(data.ts[request_rows], dtype=float)) / (24 * HOUR)
     )

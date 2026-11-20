@@ -1,7 +1,8 @@
-"""Train hourly SSD models, replay the recorded admission rule and count saved reuse.
+"""Run the recorded SSD experiment from prepared files
 
-Assumes a caller-supplied prepared-data manifest with certified observed labels.
-No private data is bundled. Source matching does not replace a private-trace rerun.
+Check the inputs and fit one model for each measured hour
+Start the C++ replay and update earlier offer scores as each model changes
+Check the write log and count the prefill blocks SSD saved
 """
 
 import argparse

@@ -1,10 +1,8 @@
-/* Fixed-trace eligible-reuse index for causal suffix labels.
- * Eligibility is first distinct reference per request whose previous reference
- * has the same session. Negative times seed stamps only. Full future indexing
- * is an offline data structure; the fitter reads only completed past buckets.
- * Independent audit sorts/deduplicates each raw request and verifies EVERY
- * indexed event and compressed hourly count. No raw data leave the server.
- */
+// Record the request and hour of each eligible repeat read
+// A block counts once per request if its last reference was in the same session
+// Requests before time zero only set the previous session
+// Build mode saves the index and audit mode independently checks its events
+
 #include <algorithm>
 #include <cstdint>
 #include <fcntl.h>
@@ -18,10 +16,12 @@
 #include <vector>
 using I = int64_t;
 constexpr I H = 3600000000LL;
+
 void require_condition(bool b, const char *s) {
   if (!b)
     throw std::runtime_error(s);
 }
+
 template <class T> bool read_record(std::ifstream &f, T &x) {
   f.read((char *)&x, sizeof x);
   if (!f.gcount())
@@ -29,12 +29,14 @@ template <class T> bool read_record(std::ifstream &f, T &x) {
   require_condition(f.gcount() == sizeof x, "partial record");
   return true;
 }
+
 // Access a binary array on disk without copying the whole file into memory.
 template <class T> struct Map {
   T *p;
   size_t n;
   int fd;
   bool write;
+
   Map(std::string s, size_t count, bool w) : n(count), write(w) {
     fd = open(s.c_str(), w ? O_RDWR | O_CREAT | O_EXCL : O_RDONLY, 0600);
     require_condition(fd >= 0, "map open");
@@ -43,26 +45,30 @@ template <class T> struct Map {
     struct stat st;
     fstat(fd, &st);
     require_condition(size_t(st.st_size) == n * sizeof(T) && n > 0, "map size");
-    p = (T *)mmap(0, n * sizeof(T), w ? PROT_READ | PROT_WRITE : PROT_READ, MAP_SHARED,
-                  fd, 0);
+    p = (T *)mmap(0, n * sizeof(T), w ? PROT_READ | PROT_WRITE : PROT_READ, MAP_SHARED, fd, 0);
     require_condition(p != MAP_FAILED, "mmap");
   }
+
   ~Map() {
     if (write)
       msync(p, n * sizeof(T), MS_SYNC);
     munmap(p, n * sizeof(T));
     close(fd);
   }
+
   T &operator[](size_t i) {
     require_condition(i < n, "index bounds");
     return p[i];
   }
 };
+
 // One block's eligible-read count for one hour.
 struct Hour {
   uint32_t h, count;
 };
+
 static_assert(sizeof(Hour) == 8);
+
 // The label builder uses this index to find later reads of each offered block.
 int main(int argc, char **argv) {
   try {
@@ -89,13 +95,11 @@ int main(int argc, char **argv) {
         std::fill(stamp.begin(), stamp.end(), -1);
         std::fill(mark.begin(), mark.end(), -1);
         std::ifstream ns(pre + "_nb.i32", std::ios::binary),
-            ss(pre + "_sess.i32", std::ios::binary),
-            ids(pre + "_ids.i32", std::ios::binary);
+            ss(pre + "_sess.i32", std::ios::binary), ids(pre + "_ids.i32", std::ios::binary);
         require_condition(ns && ss && ids, "raw open");
         for (size_t r = 0; r < times.size(); r++) {
           int32_t n, s;
-          require_condition(read_record(ns, n) && read_record(ss, s) && n >= 0,
-                            "metadata");
+          require_condition(read_record(ns, n) && read_record(ss, s) && n >= 0, "metadata");
           row.resize(n);
           ids.read((char *)row.data(), I(n) * 4);
           require_condition(ids.gcount() == I(n) * 4, "raw IDs");
@@ -154,8 +158,7 @@ int main(int argc, char **argv) {
         require_condition(q == ho[b + 1], "hour fill");
       }
       std::cout << "{\"status\":\"BUILT_ELIGIBLE_EVENT_INDEX\",\"events\":" << total
-                << ",\"hour_entries\":" << ho[N] << ",\"rows\":" << times.size()
-                << "}\n";
+                << ",\"hour_entries\":" << ho[N] << ",\"rows\":" << times.size() << "}\n";
     } else {
       // Audit: independently scan requests and check every saved event and hour count.
       require_condition(mode == "audit", "mode");
@@ -167,13 +170,11 @@ int main(int argc, char **argv) {
       std::vector<int32_t> prev(N, -1), row;
       I checked = 0;
       std::ifstream ns(pre + "_nb.i32", std::ios::binary),
-          ss(pre + "_sess.i32", std::ios::binary),
-          ids(pre + "_ids.i32", std::ios::binary);
+          ss(pre + "_sess.i32", std::ios::binary), ids(pre + "_ids.i32", std::ios::binary);
       require_condition(ns && ss && ids, "audit input");
       for (size_t r = 0; r < times.size(); r++) {
         int32_t n, s;
-        require_condition(read_record(ns, n) && read_record(ss, s) && n >= 0,
-                          "audit metadata");
+        require_condition(read_record(ns, n) && read_record(ss, s) && n >= 0, "audit metadata");
         row.resize(n);
         ids.read((char *)row.data(), I(n) * 4);
         require_condition(ids.gcount() == I(n) * 4, "audit raw");
@@ -182,8 +183,7 @@ int main(int argc, char **argv) {
         for (int b : row) {
           require_condition(b >= 0 && b < N, "auditID");
           if (times[r] >= 0 && prev[b] == s) {
-            require_condition(off[b] + cursor[b] < off[b + 1] &&
-                                  ev[off[b] + cursor[b]] == I(r),
+            require_condition(off[b] + cursor[b] < off[b + 1] && ev[off[b] + cursor[b]] == I(r),
                               "event identity mismatch");
             cursor[b]++;
             checked++;

@@ -1,5 +1,9 @@
-// Controller walkthrough: record offers -> estimate affordable demand -> update cutoffs.
-// The current decision uses the previous cutoff and the hard remaining write allowance.
+// Decide how selective to be with the remaining flash write allowance
+// Save recent offers including ones RANCHO declined
+// Estimate how much it would cost to write future offers at the recent rate
+// Pick a score cutoff that fits what we can still afford
+// The current offer is recorded after its decision so it affects later cutoffs
+
 #pragma once
 
 #include "cache.hpp"
@@ -27,10 +31,10 @@ static uint64_t mix_hash(uint64_t value) {
   value ^= value >> 33;
   return value;
 }
+
 // Get a reproducible value in [0, 1) from the request and seed.
 static double random_value_for_request(uint64_t row, uint64_t seed) {
-  return double(mix_hash(row * 0x9E3779B97F4A7C15ULL ^ seed) >> 11) /
-         9007199254740992.0;
+  return double(mix_hash(row * 0x9E3779B97F4A7C15ULL ^ seed) >> 11) / 9007199254740992.0;
 }
 
 // Track spending and the last 20,000 offers; update cutoffs every 1,000 offers.
@@ -48,8 +52,7 @@ struct WriteController {
 
   // Start with the full budget and no learned cutoff.
   WriteController(int64_t allowance, int64_t start, int64_t end)
-      : budget(allowance), start_time(start), end_time(end), history(history_capacity) {
-  }
+      : budget(allowance), start_time(start), end_time(end), history(history_capacity) {}
 
   // Save each decided offer; refresh cutoffs every 1,000 offers before charging its write.
   void observe(double score, int64_t cost, int64_t now) {
@@ -97,10 +100,9 @@ struct WriteController {
     double remaining_blocks = std::max(double(budget - spent), 0.0);
 
     // Forecast write demand and limit the affordable fraction to [0, 1].
-    double estimated_write_demand =
-        offers_per_second * remaining_seconds * average_write_cost;
-    double affordable_fraction = std::max(
-        0.0, std::min(1.0, remaining_blocks / std::max(estimated_write_demand, 1e-9)));
+    double estimated_write_demand = offers_per_second * remaining_seconds * average_write_cost;
+    double affordable_fraction =
+        std::max(0.0, std::min(1.0, remaining_blocks / std::max(estimated_write_demand, 1e-9)));
 
     // Recalculate stored cutoffs for subsequent decisions.
     update_cost_band_cutoffs(priced_offers, affordable_fraction);
@@ -109,8 +111,8 @@ struct WriteController {
   }
 
   // Set the global cutoff by write volume, sharing equal scores probabilistically.
-  void update_cutoff(std::vector<PricedOffer> &priced_offers,
-                            double affordable_fraction, double total_write_cost) {
+  void update_cutoff(std::vector<PricedOffer> &priced_offers, double affordable_fraction,
+                     double total_write_cost) {
     if (affordable_fraction <= 0) {
       threshold = INFINITY;
       tie_probability = 0;
@@ -118,17 +120,15 @@ struct WriteController {
       threshold = -INFINITY;
       tie_probability = 1;
     } else {
-      std::sort(
-          priced_offers.begin(), priced_offers.end(),
-          [](const PricedOffer &a, const PricedOffer &b) { return a.score > b.score; });
-      double desired_write_cost = affordable_fraction * total_write_cost,
-             cost_above = 0, cost_at_cutoff = 0;
+      std::sort(priced_offers.begin(), priced_offers.end(),
+                [](const PricedOffer &a, const PricedOffer &b) { return a.score > b.score; });
+      double desired_write_cost = affordable_fraction * total_write_cost, cost_above = 0,
+             cost_at_cutoff = 0;
       threshold = priced_offers.back().score;
       for (size_t i = 0; i < priced_offers.size();) {
         size_t j = i;
         cost_at_cutoff = 0;
-        while (j < priced_offers.size() &&
-               priced_offers[j].score == priced_offers[i].score) {
+        while (j < priced_offers.size() && priced_offers[j].score == priced_offers[i].score) {
           cost_at_cutoff += priced_offers[j].cost;
           j++;
         }
@@ -144,6 +144,7 @@ struct WriteController {
       tie_probability = std::max(0.0, std::min(1.0, tie_probability));
     }
   }
+
   // Use the cost-group cutoff when available, otherwise the global cutoff.
   // Halve it when the fraction spent is below the fraction of evaluation time elapsed.
   AdmissionCutoff cutoff_for(int64_t cost, int64_t now) const {
@@ -154,11 +155,11 @@ struct WriteController {
         cutoff = band;
     }
     if (cost > 0 && cutoff.ready &&
-        (__int128)spent * (end_time - start_time) <
-            (__int128)budget * (now - start_time))
+        (__int128)spent * (end_time - start_time) < (__int128)budget * (now - start_time))
       cutoff.score *= 0.5;
     return cutoff;
   }
+
   static int write_cost_band(int64_t cost);
   void update_cost_band_cutoffs(const std::vector<PricedOffer> &priced_offers,
                                 double affordable_fraction);
@@ -168,6 +169,7 @@ struct WriteController {
 inline int WriteController::write_cost_band(int64_t cost) {
   return cost > 0 ? 63 - __builtin_clzll(static_cast<unsigned long long>(cost)) : 0;
 }
+
 inline void
 WriteController::update_cost_band_cutoffs(const std::vector<PricedOffer> &priced_offers,
                                           double affordable_fraction) {
@@ -191,9 +193,8 @@ WriteController::update_cost_band_cutoffs(const std::vector<PricedOffer> &priced
       cut.tie_probability = 1;
       continue;
     }
-    std::sort(
-        group.begin(), group.end(),
-        [](const PricedOffer &a, const PricedOffer &b) { return a.score > b.score; });
+    std::sort(group.begin(), group.end(),
+              [](const PricedOffer &a, const PricedOffer &b) { return a.score > b.score; });
     int64_t band_write_cost = 0, cost_above = 0;
     for (const auto &v : group)
       band_write_cost += v.cost;

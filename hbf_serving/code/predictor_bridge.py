@@ -4,6 +4,7 @@ import numpy as np
 
 
 def encode(X, vocab):
+    """Use the model's saved user codes for incoming requests"""
     z = np.where(np.isfinite(X) & (X >= 0), X, np.nan)
     for i, values in enumerate(vocab):
         if values is None:

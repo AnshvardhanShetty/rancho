@@ -1,12 +1,9 @@
-"""Run one vLLM serving test, then check its saved results.
+"""Run one serving benchmark and check its recorded requests and writes
 
-run() starts the engine, warms the cache and sends the measured requests.
-compute() reads request timings and cache events to calculate the metrics.
-audit() independently checks those counts, write charges and policy decisions.
-The small helpers read JSON records, compute file digests and parse request IDs.
-
-Assumes one fresh engine and the supplied synthetic workload. Warm-up is excluded
-from the main timings. HBF is GPU-memory emulation, with optimistic read speed."""
+run sends the warmup and measured requests then saves the logs
+compute gets hit counts and timings from those logs
+audit checks the counts and the write budget again
+"""
 
 import argparse, hashlib, json, math, os, re, time
 from pathlib import Path
@@ -259,10 +256,8 @@ def audit(root):
     assert (
         saved == got
     ), "Independent timestamp/eligibility/metric recomputation mismatch"
-    # Independent algebraic cross-check: measured contexts all occur in the
-    # immutable earlier reference trace; native request results separately report
-    # first-lookup counters are used for offline credit; internal reuses after
-    # preemption are not counted again. No constant95 value enters a hit counter.
+    # Check first lookup hits against the earlier synthetic requests
+    # Count each eligible block once even if a request was paused and resumed
     actual = [v for v in rows(root / "requests.jsonl") if not v["warmup"]]
     measured_lookups = {
         index(v["request_id"]): v
@@ -331,16 +326,16 @@ def run(setup, job, root, manifest):
     # Prepare identical prompts and the selected cache allocation.
     hbm, hbf = job["hbm"], job["hbf"]
     payload = prompts(setup)
-    N = len(payload)
-    P = setup["prefix_tokens"] + setup["unique_suffix_tokens"]
+    request_count = len(payload)
+    prompt_tokens = setup["prefix_tokens"] + setup["unique_suffix_tokens"]
     assert (
-        P + 64 <= setup["context_limit"]
-        and math.ceil((P + 64) / 16) <= hbm
+        prompt_tokens + 64 <= setup["context_limit"]
+        and math.ceil((prompt_tokens + 64) / 16) <= hbm
         and hbm + hbf <= 16384
     )
-    assert N == setup["groups"] + setup["requests"] <= setup["max_num_seqs"]
+    assert request_count == setup["groups"] + setup["requests"] <= setup["max_num_seqs"]
     # Pass explicit capacities, workload metadata and write limits to the engine.
-    cfg = dict(
+    engine_plan = dict(
         mode="benchmark",
         policy="filtered_linear_suffix_costband_half_behind" if hbf else "baseline",
         HBM_pages=hbm,
@@ -355,25 +350,25 @@ def run(setup, job, root, manifest):
         write_buffer_bytes=setup["write_buffer_bytes"],
         write_budget_pages=hbf,
         physical_write_accounting=bool(hbf),
-        n_requests=N,
+        n_requests=request_count,
         arrival_rate=job.get("rate"),
         payload_sha256=hashlib.sha256(
             json.dumps(payload, separators=(",", ":")).encode()
         ).hexdigest(),
-        input_tokens_per_request=P,
+        input_tokens_per_request=prompt_tokens,
         baseline_prefix_retention=bool(job.get("retain_prefixes", not bool(hbf))),
         shared_prefix_tokens=setup["prefix_tokens"],
         shared_groups=setup["groups"],
     )
     if hbf:
-        cfg.update(
+        engine_plan.update(
             controller_history=job["controller"],
             controller_history_sha256=digest(job["controller"]),
             fit=job["fit"],
             updated_rancho=True,
             repetition=job["repetition"],
         )
-    save(root / "PLAN.json", cfg)
+    save(root / "PLAN.json", engine_plan)
     save(root / "SETUP.json", setup)
     save(root / "JOB.json", job)
     os.environ["RANCHO_DIRECT_PLAN"] = str(root / "PLAN.json")
@@ -405,7 +400,7 @@ def run(setup, job, root, manifest):
                 if hbf
                 else (
                     "retained_baseline.RetainedBaselineScheduler"
-                    if cfg["baseline_prefix_retention"]
+                    if engine_plan["baseline_prefix_retention"]
                     else "concurrency_backend.BaselineScheduler"
                 )
             ),
@@ -496,10 +491,10 @@ def run(setup, job, root, manifest):
                 ),
             )
             dispatched = setup["groups"]
-            lastprogress = begin
-            while completed < N:
+            last_progress_ns = begin
+            while completed < request_count:
                 now = time.monotonic_ns()
-                while dispatched < N:
+                while dispatched < request_count:
                     at = dispatched - setup["groups"]
                     scheduled = (
                         begin
@@ -518,7 +513,10 @@ def run(setup, job, root, manifest):
                     continue
                 step(handle)
                 now = time.monotonic_ns()
-                if now - lastprogress > 15_000_000_000 or completed == N:
+                if (
+                    now - last_progress_ns > 15_000_000_000
+                    or completed == request_count
+                ):
                     save(
                         root / "PROGRESS.json",
                         dict(
@@ -528,7 +526,7 @@ def run(setup, job, root, manifest):
                             elapsed_seconds=(now - begin) / 1e9,
                         ),
                     )
-                    lastprogress = now
+                    last_progress_ns = now
     finally:
         if llm is not None:
             llm.llm_engine.engine_core.shutdown()
