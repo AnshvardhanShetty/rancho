@@ -1,6 +1,6 @@
 # HBF cache simulator
 
-This is the easiest place to see what RANCHO does. The simulator uses block IDs to track the cache. It runs on a CPU and does not run the language model.
+The simulator uses block IDs to track the cache. It runs on a CPU and does not run the language model.
 
 From the repo root, run `make demo` for three requests or `make demo-serving` for the larger synthetic example. Both are explained in [examples](examples/README.md).
 
