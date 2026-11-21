@@ -53,7 +53,7 @@ At a request rate of 20 req/s, with **85% less KV-cache HBM**, RANCHO achieves *
 
 SSD caching avoids **79.5% of the repeated prefill left after memory caching** within conversations in our simulator experiments, using 48 GB of memory and a 2.304 TB SSD at one drive write per day. [SSD simulator](ssd_simulator/README.md).
 
-The HBF serving engine is still under development. We are also developing an SSD serving engine; its initial code is in [ssd_serving](ssd_serving/README.md).
+The HBF serving engine results are tentative as it is still under development. We are also developing an SSD serving engine; its initial code is in [ssd_serving](ssd_serving/README.md).
 
 ## Try it without a GPU
 
