@@ -8,7 +8,7 @@ The research is ongoing. This repository provides a limited public demo so those
 
 ## How it works
 
-Language models use GPU memory to process requests and keep the **KV cache**, which stores information already computed about earlier tokens. Later requests can reuse that KV to skip prompt processing(**prefill**). We call this the prefix-KV cache. Keeping more KV saves computation but leaves less memory for active requests.
+Language models use GPU memory to process requests and keep the **KV cache**, which stores information already computed about earlier tokens. Later requests can reuse that KV to skip prompt processing(**prefill**). We call this the prefix-KV cache. Keeping more prefix-KV saves computation but leaves less memory for active requests.
 
 HBF (High-bandwidth flash) stacks NAND flash near the processor for high-bandwidth reads. Sandisk and SK hynix target 8–16 times HBM’s capacity at comparable read bandwidth and similar cost. 
 
