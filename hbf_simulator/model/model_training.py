@@ -1,9 +1,13 @@
-"""Train the predictor and score requests one hour at a time
+"""Train the reuse predictor and score one hour of requests.
 
-RequestData gets the examples and reuse counts available at a cutoff
-fit_tree_model picks a tree count using earlier requests and fits the trees
-predict_reuse returns one reads per block estimate for each new request
-fit_and_predict_one_hour runs these steps and saves the model and predictions
+1. RequestData loads features, offer sizes and read counts. It builds each
+   training label from the reads already seen when the hour starts.
+2. fit_tree_model chooses the number of trees on an earlier six-hour window,
+   then fits a new model with the data available at the current cutoff.
+3. fit_and_predict_one_hour checks the labels, predicts the requests arriving
+   in that hour and saves the model and predictions.
+
+The experiment runner calls fit_and_predict_one_hour for each hour.
 """
 
 import hashlib
@@ -35,9 +39,7 @@ class RequestData:
     def __init__(self, label_dir=None):
         """Load checked features and the saved counts of later reads"""
         # Read the model settings and find the files with the prepared data
-        training_recipe = read_training_json(
-            MODEL_DIRECTORY, "training_recipe.json", "PLAN.json"
-        )
+        training_recipe = read_training_json(MODEL_DIRECTORY, "training_recipe.json", "PLAN.json")
         training_files = read_training_json(
             SIMULATOR_DIRECTORY,
             "training_data_files.json",
@@ -52,19 +54,17 @@ class RequestData:
         self.arrival_times_us = np.fromfile(arrival_times_file, "<i8")
         self.request_count = len(self.arrival_times_us)
 
-        # Load the named feature arrays; matching positions describe the same request.
+        # Position i in every array belongs to request i in arrival order.
         feature_names = training_recipe["recipe"]["features"]
         with np.load(training_files["features"]["path"]) as feature_file:
             self.features = {name: feature_file[name] for name in feature_names}
 
-        # Load feature types, including categorical user ID, and check they are allowed.
+        # User ID is a category. A larger ID does not mean more of anything.
         descriptions = read_json(training_files["feature_registry"]["path"])["features"]
         self.feature_schema = {feature["name"]: feature for feature in descriptions}
-        assert all(
-            self.feature_schema[name]["status"] == "ALLOWED" for name in feature_names
-        )
+        assert all(self.feature_schema[name]["status"] == "ALLOWED" for name in feature_names)
 
-        # Load the size of each offer and its reads by hour after checking the label audit
+        # The saved labels give us the size of each offer and its reads in each hour.
         if label_dir is not None:
             folder = Path(label_dir)
             assert (
@@ -113,24 +113,15 @@ class RequestData:
         # For an earlier validation cutoff, subtract later hours without changing stored totals.
         observed_reads = self.observed_read_totals
         if cutoff_hour < self.counted_until_hour:
-            hours_after_cutoff = self.hourly_read_counts[
-                cutoff_hour : self.counted_until_hour
-            ]
-            observed_reads = observed_reads - hours_after_cutoff.sum(
-                axis=0, dtype=np.int64
-            )
+            hours_after_cutoff = self.hourly_read_counts[cutoff_hour : self.counted_until_hour]
+            observed_reads = observed_reads - hours_after_cutoff.sum(axis=0, dtype=np.int64)
 
-        # Select earlier offers and divide observed reads by offered blocks to form training labels.
+        # One label per earlier offer: observed reads divided by blocks offered.
         offered_blocks = self.offer_block_counts
-        training_rows = np.flatnonzero(
-            (self.arrival_times_us < cutoff_us) & (offered_blocks > 0)
-        )
+        training_rows = np.flatnonzero((self.arrival_times_us < cutoff_us) & (offered_blocks > 0))
         reads_per_block = observed_reads[training_rows] / offered_blocks[training_rows]
         assert np.all(np.isfinite(reads_per_block)) and np.all(reads_per_block >= 0)
-        assert (
-            not len(training_rows)
-            or self.arrival_times_us[training_rows].max() < cutoff_us
-        )
+        assert not len(training_rows) or self.arrival_times_us[training_rows].max() < cutoff_us
         return training_rows, reads_per_block
 
     def feature_table(self, request_rows, feature_names):
@@ -157,8 +148,7 @@ def check_condition(condition, message):
 def compute_training_weights(data, request_rows, cutoff_us):
     """Give requests half as much weight for each extra day since arrival"""
     weights = np.exp2(
-        -(cutoff_us - np.asarray(data.arrival_times_us[request_rows], dtype=float))
-        / (24 * HOUR)
+        -(cutoff_us - np.asarray(data.arrival_times_us[request_rows], dtype=float)) / (24 * HOUR)
     )
     check_condition(
         np.all(np.isfinite(weights)) and np.all(weights > 0),
@@ -168,9 +158,8 @@ def compute_training_weights(data, request_rows, cutoff_us):
     return weights / weights.mean() if len(weights) else weights
 
 
-# Load earlier examples and the matching features and weights.
 def prepare_training_arrays(data, cutoff_us, settings):
-    """Prepare the examples available before this hourly cutoff."""
+    """Match each earlier offer's reuse label to its features and weight."""
     started = time.monotonic()
     request_rows, reads_per_block = data.get_training_rows_and_reuse(cutoff_us)
     check_condition(
@@ -209,9 +198,8 @@ def prepare_training_arrays(data, cutoff_us, settings):
     )
 
 
-# Choose the tree count on an earlier period, then refit at the current cutoff.
 def fit_tree_model(data, cutoff_us, settings):
-    """Fit the recorded tree recipe using only earlier observations."""
+    """Choose a tree count on earlier data, then fit at the current cutoff."""
     check_condition(
         settings["model"] == "tree"
         and settings["objective"] == "poisson"
@@ -248,11 +236,14 @@ def fit_tree_model(data, cutoff_us, settings):
         feature_fraction=1.0,
     )
 
-    # The earlier fit sees only reads before earlier_cut. Validation uses reads before cut.
+    # At noon, fit on what we knew at 6 am. Check the tree counts on requests
+    # between 6 am and noon, using only reads that have happened by noon.
     earlier_cut = cutoff_us - VALIDATION_HOURS
     earlier_rows, earlier_reuse = data.get_training_rows_and_reuse(earlier_cut)
     validation_rows = data.arrival_times_us[request_rows] >= earlier_cut
-    tree_count, errors = settings["max_rounds"], []
+
+    tree_count = settings["max_rounds"]
+    errors = []
     if (
         len(earlier_rows) >= 2 * settings["minimum"]
         and validation_rows.any()
@@ -277,13 +268,13 @@ def fit_tree_model(data, cutoff_us, settings):
             categorical_feature=category_columns,
         )
 
+        # Entry zero is the validation error after the first tree.
         errors = fitted.evals_result_["valid_0"][settings["objective"]]
-        check_condition(
-            np.isfinite(errors).all(), "Nonfinite chronological validation curve"
-        )
+        check_condition(np.isfinite(errors).all(), "Nonfinite chronological validation curve")
         tree_count = int(np.argmin(errors)) + 1
 
-    # Keep the weighted mean when there are too few examples or no observed reuse.
+    # Fit a fresh model at the current cutoff using the chosen number of trees.
+    # With too little data or no observed reuse, use the weighted average.
     model = dict(kind="global", mean=average_reuse)
     if len(reads_per_block) >= 2 * settings["minimum"] and reads_per_block.sum() > 0:
         category_values = build_category_values(features, category_columns)
@@ -315,7 +306,6 @@ def fit_tree_model(data, cutoff_us, settings):
     return record_fit_details(model, features, reads_per_block, started, record)
 
 
-# Predict from features using the tree or its low-data fallback.
 def predict_reuse(model, features):
     """Predict reads per offered block with the tree or its mean fallback."""
     # With too little training data, return the weighted average instead of a tree.
@@ -330,9 +320,8 @@ def predict_reuse(model, features):
     return np.maximum(predictions, 0.0)
 
 
-# Check sample predictions and record fitting time and saved model size.
 def record_fit_details(model, features, reads_per_block, started, record):
-    """Check and describe the completed fit."""
+    """Check sample predictions and record fit time and model size."""
     record["fit_seconds"] = time.monotonic() - started
     sample_rows = np.arange(
         0, len(reads_per_block), max(1, len(reads_per_block) // 50000), dtype=int
@@ -349,36 +338,31 @@ def record_fit_details(model, features, reads_per_block, started, record):
     return model, record
 
 
-# FIT AND PREDICT ONE HOUR: the experiment runner calls this function.
 def fit_and_predict_one_hour(data, cutoff_us, output_directory):
     """Train on earlier observations and predict reuse for requests in this hour."""
-    # 1. Set up a fresh output folder and load the model recipe.
+    # Set up the output folder and load the model settings.
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=False)
-    recipe = read_training_json(MODEL_DIRECTORY, "training_recipe.json", "PLAN.json")[
-        "recipe"
-    ]
+    recipe = read_training_json(MODEL_DIRECTORY, "training_recipe.json", "PLAN.json")["recipe"]
 
-    # 2. Call fit_tree_model() to choose the tree count and fit on earlier observations.
+    # Fit using only observations from before this hour.
     model, fit_summary = fit_tree_model(data, cutoff_us, recipe)
     training_rows, reads_per_block = data.get_training_rows_and_reuse(cutoff_us)
     assert len(training_rows) > 0
 
-    # 3. Independently recount labels at the fitting and earlier validation cutoffs.
+    # Recount the reads from scratch to check both sets of labels.
     for check_cut in [cutoff_us, cutoff_us - 6 * H]:
         checked_rows, checked_targets = data.get_training_rows_and_reuse(check_cut)
         expected_rows = np.flatnonzero(
             (data.arrival_times_us < check_cut) & (data.offer_block_counts > 0)
         )
-        direct_counts = data.hourly_read_counts[: check_cut // H].sum(
-            axis=0, dtype=np.int64
-        )
+        direct_counts = data.hourly_read_counts[: check_cut // H].sum(axis=0, dtype=np.int64)
         assert np.array_equal(checked_rows, expected_rows) and np.array_equal(
             checked_targets,
             direct_counts[expected_rows] / data.offer_block_counts[expected_rows],
         )
 
-    # 4. Predict requests in [cut, cut+H) from their features.
+    # Find the requests in this hour. The prediction uses only their four features.
     hour_end = min(cutoff_us + H, 168 * H)
     first_row = int(np.searchsorted(data.arrival_times_us, cutoff_us))
     stop_row = int(np.searchsorted(data.arrival_times_us, hour_end))
@@ -389,17 +373,14 @@ def fit_and_predict_one_hour(data, cutoff_us, output_directory):
     )
     assert np.all(np.isfinite(predictions)) and np.all(predictions >= 0)
 
-    # 5. Save the fitted model and current-hour prediction array.
+    # Save the model, the predictions and a summary of the fit.
     with (output_directory / "model.pkl").open("xb") as model_file:
         pickle.dump(model, model_file, protocol=5)
     predictions.astype("<f8").tofile(output_directory / "segment.f64")
 
-    # 6. Record the cutoff, training examples, checks, and output fingerprints.
     fit_summary.update(
         status="PASS_CAUSAL_FIXED_RECIPE_FIT",
-        label="cutoff-censored observed "
-        + data.label_kind
-        + " reuse per distinct block",
+        label="cutoff-censored observed " + data.label_kind + " reuse per distinct block",
         target=data.label_kind,
         cut_us=cutoff_us,
         label_available_strictly_before_us=cutoff_us,
@@ -417,11 +398,10 @@ def fit_and_predict_one_hour(data, cutoff_us, output_directory):
     )
     write_json(output_directory / "model_fit_summary.json", fit_summary, exclusive=True)
 
-    # 7. Return predictions and their request positions for the runner's full scores array.
+    # The runner uses these positions to place the predictions in replay order.
     return predictions, first_row, stop_row
 
 
-# RECORD AN ARRAY FINGERPRINT: support the checks saved with each fit.
 def array_fingerprint(values):
-    # Hash ordered array contents for the saved fit record.
+    """Hash the array in request order for the saved fit record."""
     return hashlib.sha256(np.ascontiguousarray(values).tobytes()).hexdigest()

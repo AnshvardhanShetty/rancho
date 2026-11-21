@@ -1,12 +1,14 @@
-"""Read the selected model's requests and save them in arrival order
+"""Convert a JSONL trace into the arrays used by the predictor and simulator.
 
-parse_request checks the dictionary decoded from one JSONL line
-read_requests saves the blocks and collects each request's time and session
-write_sorted_requests sorts whole requests and marks days 4 to 7 for testing
-prepare_trace runs those steps and saves a summary of the files and checks
+1. parse_request checks one request after its JSON line has been read.
+2. read_requests keeps the selected model, numbers the sessions and saves the
+   original order in raw_* files.
+3. write_sorted_requests saves the same requests in arrival order in dst_*
+   files. Block order and repeated IDs stay the same within each request.
+4. prepare_trace runs both passes and records the file checks.
 
-Input times are seconds from the week start
-Sorting keeps each request's block order and any repeated IDs
+perm_time.i64 maps each sorted request back to its original position.
+eligible_test.u8 marks requests in days 4 through 7.
 """
 
 from dataclasses import dataclass
@@ -49,6 +51,8 @@ def parse_request(row):
     """Read the session, arrival time, and block IDs for the selected model."""
     if row.get("model_id") != MODEL:
         return None
+
+    # Check the session and time before reading the block IDs.
     session_id = row["session_id"]
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("Invalid session_id")
@@ -70,9 +74,7 @@ def parse_request(row):
             or block_array.min() < 0
             or block_array.max() > MAX_SIGNED_INT32
         ):
-            raise ValueError(
-                "Block IDs do not fit nonnegative int32: change schemas explicitly"
-            )
+            raise ValueError("Block IDs do not fit nonnegative int32: change schemas explicitly")
         block_array = block_array.astype("<i4", copy=False)
     else:
         block_array = np.empty(0, dtype="<i4")
@@ -84,8 +86,10 @@ def parse_request(row):
 # 2. Read the trace, number sessions, and save the input-order block lists.
 def read_requests(trace_path, output_directory, reference_prefix, started_at):
     """Save block lists and collect each request's length, session, and time."""
-    sessions = {}
-    block_counts, session_codes, arrival_times = [], [], []
+    session_codes_by_id = {}
+    block_counts = []
+    session_codes = []
+    arrival_times = []
     block_offset = 0
     max_block_id = -1
     block_hash = hashlib.sha256()
@@ -97,15 +101,11 @@ def read_requests(trace_path, output_directory, reference_prefix, started_at):
         reference_counts = np.fromfile(str(reference_prefix) + "_nb.i32", "<i4")
         reference_sessions = np.fromfile(str(reference_prefix) + "_sess.i32", "<i4")
         reference_times = np.fromfile(str(reference_prefix) + "_ts.f64", "<f8")
-        reference_blocks = np.memmap(
-            str(reference_prefix) + "_ids.i32", mode="r", dtype="<i4"
-        )
+        reference_blocks = np.memmap(str(reference_prefix) + "_ids.i32", mode="r", dtype="<i4")
         assert len(reference_counts) == len(reference_sessions) == len(reference_times)
         block_file = None
     else:
-        block_file = (output_directory / "raw_ids.i32").open(
-            "xb", buffering=8 * 1024**2
-        )
+        block_file = (output_directory / "raw_ids.i32").open("xb", buffering=8 * 1024**2)
 
     # Parse each JSON line, keep the selected model, and append its request data.
     try:
@@ -119,15 +119,16 @@ def read_requests(trace_path, output_directory, reference_prefix, started_at):
                 session_id, arrival_seconds, block_ids = request
 
                 # Assign codes in first-seen order. Different sessions stay separate.
-                if session_id not in sessions:
-                    sessions[session_id] = len(sessions)
-                session_code = sessions[session_id]
+                if session_id not in session_codes_by_id:
+                    session_codes_by_id[session_id] = len(session_codes_by_id)
+                session_code = session_codes_by_id[session_id]
                 request_index = len(block_counts)
                 if session_code > MAX_SIGNED_INT32:
                     raise ValueError("Session index overflow")
                 if request_index > MAX_SIGNED_INT32:
                     raise ValueError("Request indices require wider schema")
 
+                # In comparison mode, check this request against the saved one.
                 if reference_prefix:
                     assert (
                         request_index < len(reference_counts)
@@ -168,6 +169,7 @@ def read_requests(trace_path, output_directory, reference_prefix, started_at):
         if block_file:
             block_file.close()
 
+    # Save the three per-request arrays and check that their lengths match the blocks.
     block_counts = np.asarray(block_counts, dtype="<i4")
     session_codes = np.asarray(session_codes, dtype="<i4")
     arrival_times = np.asarray(arrival_times, dtype="<f8")
@@ -182,17 +184,13 @@ def read_requests(trace_path, output_directory, reference_prefix, started_at):
         block_counts.tofile(output_directory / "raw_nb.i32")
         session_codes.tofile(output_directory / "raw_sess.i32")
         arrival_times.tofile(output_directory / "raw_ts.f64")
-        saved_blocks = np.memmap(
-            output_directory / "raw_ids.i32", mode="r", dtype="<i4"
-        )
-        assert (
-            len(saved_blocks) == int(block_counts.sum(dtype=np.int64)) == block_offset
-        )
+        saved_blocks = np.memmap(output_directory / "raw_ids.i32", mode="r", dtype="<i4")
+        assert len(saved_blocks) == int(block_counts.sum(dtype=np.int64)) == block_offset
 
     details = dict(
         source_sha256=source_hash.hexdigest(),
         requests=len(block_counts),
-        sessions=len(sessions),
+        sessions=len(session_codes_by_id),
         raw_rows=raw_row + 1,
         skipped_other_models=skipped,
         block_occurrences=int(block_offset),
@@ -210,13 +208,15 @@ def write_sorted_requests(requests, output_directory, reference_prefix, started_
     session_codes = requests.session_codes
     arrival_seconds = requests.arrival_seconds
 
-    # Equal timestamps keep their original file order.
+    # Find the new request order. Equal timestamps keep their original order.
     arrival_order = np.argsort(arrival_seconds, kind="stable").astype("<i8")
     assert np.array_equal(np.sort(arrival_order), np.arange(len(arrival_order)))
     ordered_times = arrival_seconds[arrival_order]
     assert np.all(ordered_times[1:] >= ordered_times[:-1])
     tied_times = ordered_times[1:] == ordered_times[:-1]
     assert np.all(arrival_order[1:][tied_times] > arrival_order[:-1][tied_times])
+
+    # Use the simulator's time unit and mark which requests belong to the test window.
     arrival_microseconds = np.rint(ordered_times * 1e6).astype("<i8")
     test_requests = (
         (arrival_microseconds >= TEST_START_US) & (arrival_microseconds < TEST_END_US)
@@ -224,7 +224,8 @@ def write_sorted_requests(requests, output_directory, reference_prefix, started_
     arrival_order.tofile(output_directory / "perm_time.i64")
     test_requests.tofile(output_directory / "eligible_test.u8")
 
-    # Request r occupies blocks[offsets[r]:offsets[r + 1]] in the raw file.
+    # Find each request's block list in the joined file. If the first request has
+    # three blocks, the second starts at offset 3.
     offsets = np.empty(len(block_counts) + 1, dtype="<i8")
     offsets[0] = 0
     np.cumsum(block_counts, dtype=np.int64, out=offsets[1:])
@@ -246,9 +247,9 @@ def write_sorted_requests(requests, output_directory, reference_prefix, started_
         block_file = None
     else:
         ordered_prefix = output_directory / "dst"
-        block_file = (output_directory / "dst_ids.i32").open(
-            "xb", buffering=8 * 1024**2
-        )
+        block_file = (output_directory / "dst_ids.i32").open("xb", buffering=8 * 1024**2)
+
+    # Copy whole block lists in arrival order. Comparison mode only hashes them.
     try:
         for position, request_index in enumerate(arrival_order):
             block_bytes = raw_blocks[
@@ -272,19 +273,17 @@ def write_sorted_requests(requests, output_directory, reference_prefix, started_
 
     if reference_prefix:
         assert (
-            file_fingerprint(str(ordered_prefix) + "_ids.i32")
-            == ordered_hash.hexdigest()
+            file_fingerprint(str(ordered_prefix) + "_ids.i32") == ordered_hash.hexdigest()
         ), "Existing arrival stream differs"
     else:
         block_counts[arrival_order].tofile(output_directory / "dst_nb.i32")
         session_codes[arrival_order].tofile(output_directory / "dst_sess.i32")
         arrival_microseconds.tofile(output_directory / "dst_ts.i64")
 
+    # Record the fingerprints so a later run can check it used the same input.
     hashes = {str(ordered_prefix) + "_ids.i32": ordered_hash.hexdigest()}
     for suffix in ["_nb.i32", "_sess.i32", "_ts.i64"]:
-        hashes[str(ordered_prefix) + suffix] = file_fingerprint(
-            str(ordered_prefix) + suffix
-        )
+        hashes[str(ordered_prefix) + suffix] = file_fingerprint(str(ordered_prefix) + suffix)
     hashes[str(output_directory / "eligible_test.u8")] = file_fingerprint(
         output_directory / "eligible_test.u8"
     )

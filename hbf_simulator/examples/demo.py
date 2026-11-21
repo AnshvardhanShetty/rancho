@@ -10,9 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 
 # Use the shared trace reader and simulator helpers.
-sys.path.insert(
-    0, str(Path(__file__).resolve().parents[2] / "hbf_simulator/experiments")
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hbf_simulator/experiments"))
 from trace_reader import prepare_trace
 from run_simulation import ROOT, read_json, run_cache_simulation, run_program
 from run_experiment import build_request_features
@@ -86,12 +84,19 @@ def prepare_example():
 
 
 def run_demo():
-    """Fit on synthetic sessions, then check flash hits and writes on three later requests."""
-    requests, split, feature_table, scores, model = prepare_example()
+    """Fit on synthetic sessions, then check the results of three later requests."""
+    requests, start_us, feature_table, predictions, _ = prepare_example()
+    end_us = start_us + 100
+    block_id_count = 256
+    hbm_capacity = 1
+
     with tempfile.TemporaryDirectory() as temp_directory:
         work = Path(temp_directory)
-        source = work / "requests.jsonl"
-        with source.open("w") as f:
+        trace_path = work / "requests.jsonl"
+        prepared_directory = work / "prepared"
+
+        # Save the synthetic requests in the same format as a trace.
+        with trace_path.open("w") as trace_file:
             for request in requests:
                 row = dict(
                     model_id="deepseek-v4-flash",
@@ -100,51 +105,54 @@ def run_demo():
                     timestamp_arrival=request["time"] / 1e6,
                     hash_ids=request["blocks"],
                 )
-                f.write(json.dumps(row) + "\n")
-        prepare_trace(source, work / "prepared")
-        # Check that feature building from the JSONL agrees with the synthetic inputs.
-        build_request_features(source, work / "prepared", work)
-        names = read_json(ROOT / "hbf_simulator/model/model_settings.json")["features"]
+                trace_file.write(json.dumps(row) + "\n")
+
+        # Check that reading the trace produces the features we trained on.
+        prepare_trace(trace_path, prepared_directory)
+        build_request_features(trace_path, prepared_directory, work)
+        feature_names = read_json(ROOT / "hbf_simulator/model/model_settings.json")["features"]
         with np.load(work / "features.npz") as saved:
-            rebuilt_features = np.column_stack([saved[name] for name in names])
+            rebuilt_features = np.column_stack([saved[name] for name in feature_names])
         if not np.array_equal(rebuilt_features, feature_table):
-            raise RuntimeError(
-                "Feature preparation differs from the synthetic examples"
-            )
-        stream = work / "prepared/dst"
-        for name, array_type, values in [
-            ("zero", "B", [0] * len(requests)),
-            ("eligible", "B", [1] * len(requests)),
-            ("scores", "d", scores),
-        ]:
-            (work / ("stream" + name)).write_bytes(
-                array.array(array_type, values).tobytes()
-            )
+            raise RuntimeError("Feature preparation differs from the synthetic examples")
+
+        # Save the request flags and one reuse prediction per request.
+        stream_prefix = prepared_directory / "dst"
+        zero_flags_path = work / "streamzero"
+        eligible_requests_path = work / "streameligible"
+        predictions_path = work / "streamscores"
+        zero_flags_path.write_bytes(bytes(len(requests)))
+        eligible_requests_path.write_bytes(bytes([1]) * len(requests))
+        predictions_path.write_bytes(array.array("d", predictions).tobytes())
+
+        # Compare what HBM alone can serve, then replay RANCHO.
+        hbm_only_prefix_path = work / "shadow"
         run_program(
             "hbm_only_readable_prefix",
-            stream,
-            256,
-            1,
-            split,
-            split + 100,
-            work / "shadow",
+            stream_prefix,
+            block_id_count,
+            hbm_capacity,
+            start_us,
+            end_us,
+            hbm_only_prefix_path,
         )
         result = run_cache_simulation(
-            stream,
-            256,
-            2,
-            1,
-            work / "streamzero",
-            work / "streameligible",
-            work / "streamscores",
-            17,
-            2,
-            split,
-            split + 100,
-            work / "shadow",
-            work / "out",
+            request_stream_prefix=stream_prefix,
+            block_id_count=block_id_count,
+            hbf_capacity=2,
+            hbm_capacity=hbm_capacity,
+            zero_flags_path=zero_flags_path,
+            eligible_requests_path=eligible_requests_path,
+            predictions_path=predictions_path,
+            seed=17,
+            write_budget=2,
+            start_us=start_us,
+            end_us=end_us,
+            hbm_only_prefix_path=hbm_only_prefix_path,
+            output_directory=work / "out",
         )
-        print({k: result[k] for k in ("requests", "hbf_hits", "hbm_hits", "writes")})
+
+        print({name: result[name] for name in ("requests", "hbf_hits", "hbm_hits", "writes")})
         if (result["requests"], result["hbf_hits"], result["writes"]) != (3, 4, 2):
             raise RuntimeError("Unexpected demo result")
 

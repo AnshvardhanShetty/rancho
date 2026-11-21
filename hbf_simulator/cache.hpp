@@ -1,10 +1,10 @@
 #pragma once
 
-// One Cache keeps the block IDs in one tier and tracks when they were last used
-// has checks whether a block is present and touch moves it to the front
-// put makes room by removing the least recently used block when the cache is
-// full measure_suffix_write_cost tries a write and then undoes it so RANCHO can
-// price the offer
+// Each Cache holds one tier's block IDs and their order of use.
+//
+// contains_block checks for a block. mark_block_used moves it to the front.
+// store_block inserts a block and removes the least recently used block if full.
+// measure_suffix_write_cost tries the same inserts, counts the writes and undoes them.
 
 #include <algorithm>
 #include <cstdint>
@@ -62,9 +62,7 @@ struct Cache {
         nodes(capacity_blocks) {}
 
   // Check whether a block is present.
-  bool contains_block(int32_t block_id) const {
-    return cap && slots[block_id] >= 0;
-  }
+  bool contains_block(int32_t block_id) const { return cap && slots[block_id] >= 0; }
 
   // Move a present block to the most recently used end.
   void mark_block_used(int32_t block_id) {
@@ -123,8 +121,7 @@ struct Cache {
     require_condition(!logging && journal.empty(), "nested transaction");
     logging = true;
     int64_t blocks_written = 0;
-    for (size_t position = suffix_start; position < request_blocks.size();
-         position++)
+    for (size_t position = suffix_start; position < request_blocks.size(); position++)
       blocks_written += store_block(request_blocks[position]);
     logging = false;
     for (auto change = journal.rbegin(); change != journal.rend(); ++change)
@@ -142,15 +139,14 @@ struct Cache {
       require_condition(slot < allocated && nodes[slot].prev == previous_slot,
                         "broken LRU links");
       int32_t block_id = nodes[slot].block;
-      require_condition(block_id >= 0 && contains_block(block_id) &&
-                            slots[block_id] == slot,
+      require_condition(block_id >= 0 && contains_block(block_id) && slots[block_id] == slot,
                         "broken LRU index");
       ordered_block_ids.push_back(block_id);
       previous_slot = slot;
       require_condition(ordered_block_ids.size() <= size_t(used), "LRU cycle");
     }
-    require_condition(ordered_block_ids.size() == size_t(used) &&
-                          previous_slot == tail && used <= cap,
+    require_condition(ordered_block_ids.size() == size_t(used) && previous_slot == tail &&
+                          used <= cap,
                       "broken LRU size");
     return ordered_block_ids;
   }
@@ -190,26 +186,22 @@ struct Cache {
 
 // Binary-file utilities.
 // Load an array from a binary file and check its size.
-template <class T>
-static std::vector<T> read_binary_array(const std::string &path) {
+template <class T> static std::vector<T> read_binary_array(const std::string &path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
   require_condition(bool(file), "cannot open " + path);
   auto bytes = file.tellg();
-  require_condition(bytes >= 0 && bytes % sizeof(T) == 0,
-                    "unaligned input " + path);
+  require_condition(bytes >= 0 && bytes % sizeof(T) == 0, "unaligned input " + path);
   std::vector<T> values(size_t(bytes) / sizeof(T));
   file.seekg(0);
   if (bytes)
-    require_condition(
-        bool(file.read(reinterpret_cast<char *>(values.data()), bytes)),
-        "short input " + path);
+    require_condition(bool(file.read(reinterpret_cast<char *>(values.data()), bytes)),
+                      "short input " + path);
   return values;
 }
 
 // Save an array in the simulator's binary format.
 template <class T>
-static void write_binary_array(const fs::path &path,
-                               const std::vector<T> &values) {
+static void write_binary_array(const fs::path &path, const std::vector<T> &values) {
   std::ofstream file(path, std::ios::binary);
   require_condition(bool(file), "cannot create " + path.string());
   file.write(reinterpret_cast<const char *>(values.data()),

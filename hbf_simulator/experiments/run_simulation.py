@@ -1,7 +1,8 @@
-"""Pass prepared inputs to the C++ cache simulator
+"""Run the C++ cache replay and read back its counts.
 
-The caller supplies the request files and predictions
-The simulator saves the hit and write counts and this file reads them back
+The caller supplies the prepared request files, predictions, cache sizes and
+write budget. run_cache_simulation passes them to the simulator for one seed,
+then reads metrics.json after it exits.
 """
 
 import hashlib
@@ -46,6 +47,7 @@ def run_cache_simulation(
     output_directory,
 ):
     """Run one seed with its saved predictions and read the simulator’s counters."""
+    # Keep the argument order expected by parse_simulation_settings in C++.
     run_program(
         "rancho",
         request_stream_prefix,
@@ -70,4 +72,5 @@ def run_cache_simulation(
         "shadow-linear",
         hbm_only_prefix_path,
     )
+
     return read_json(output_directory / "metrics.json")["evaluation"]
