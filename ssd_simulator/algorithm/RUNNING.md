@@ -1,8 +1,8 @@
-# Run the SSD algorithm
+# SSD replay setup
 
 Install the repo's Python requirements. The C++ tools also need a C++17 compiler, OpenSSL headers and `pkg-config`.
 
-## Check it with generated data
+## Synthetic tests
 
 From the repo root:
 
@@ -15,7 +15,7 @@ python ssd_simulator/algorithm/tests/check_pipeline.py
 
 The policy check compares write decisions and cache counts against the recorded source on small inputs. The pipeline check generates examples and runs training, replay and accounting together.
 
-## Run with prepared inputs
+## Prepared inputs
 
 The runner needs a manifest that points to a prepared trace and its training records. Use a new output directory. Capacity and write allowance are measured in blocks.
 
@@ -38,9 +38,9 @@ The manifest has:
 | `replay` | `block_ids`, `block_counts`, `arrival_times`, `tokens`, `measured_evictions`, `reference_rows`, `block_id_count` and a `credit` group with `offsets`, `bits` and `ranks` |
 | `expected_scores_sha256` and `expected_result` | Optional saved checksum and counts for an exact comparison |
 
-Each file record has a `path` and `sha256`. Paths can be relative to the manifest. See the [request file formats](../replay/README.md#files-the-replay-uses). The three credit files are `offsets.i64`, `credit.bits` and `credit.rank` in one directory. The original prediction checksum is in [SOURCE_VERIFICATION.json](SOURCE_VERIFICATION.json).
+Each file record has a `path` and `sha256`. Paths can be relative to the manifest. See the [request file formats](../replay/README.md#input-files). The three credit files are `offsets.i64`, `credit.bits` and `credit.rank` in one directory. The original prediction checksum is in [SOURCE_VERIFICATION.json](SOURCE_VERIFICATION.json).
 
-## Build the training counts
+## Training labels
 
 1. Use [session_accounting.cpp](support/session_accounting.cpp) to build and check the same-session read index for the prepared request sequence. Keep the request order, session IDs, block order and duplicates from the trace.
 2. Run the reference policy with cold caches over days 1–3 and again over days 4–7. Check the writes and the request rows.

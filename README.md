@@ -55,7 +55,7 @@ SSD caching avoids **79.5% of the repeated prefill left after memory caching** w
 
 The HBF serving engine results are tentative as it is still under development. We are also developing an SSD serving engine; its initial code is in [ssd_serving](ssd_serving/README.md).
 
-## Try it without a GPU
+## CPU demo
 
 Run the synthetic conversations from the vLLM example through the cache simulator on your laptop. The code trains RANCHO on earlier requests, then shows how much KV later requests reuse and how much it writes to flash.
 

@@ -1,8 +1,8 @@
-# Run the HBF serving example
+# HBF setup
 
 The runner uses one GPU with CUDA and local Qwen3-30B-A3B-Instruct-2507 BF16 weights. The recorded setup used vLLM 0.27.1 and PyTorch 2.13.0. The code uses vLLM's internal cache interfaces, which can change between versions. This public copy has been checked on CPU.
 
-## Run on a GPU
+## GPU run
 
 From the repo root, set the model path and choose a new output directory for each run:
 
@@ -16,7 +16,7 @@ The RANCHO run needs a predictor folder with `model.pkl` and `model_fit_summary.
 
 For a self-contained CPU run that trains its own predictor, use `make demo-serving`.
 
-## Settings saved with each run
+## Saved settings
 
 - `workload_settings.json` describes the prompts and request counts
 - `comparison_settings.json` records the cache sizes, arrival rate and predictor for this run
@@ -24,7 +24,7 @@ For a self-contained CPU run that trains its own predictor, use `make demo-servi
 
 The audit can also open older runs with `SETUP.json`, `JOB.json` and `PLAN.json` in `cell/`.
 
-## What the benchmark does
+## Workload
 
 Eight warm-up requests compute the shared prefixes. Then 1,200 measured requests arrive over 60 seconds. Each has 1,872 shared tokens and 96 unique input tokens. The model generates 64 output tokens per request.
 

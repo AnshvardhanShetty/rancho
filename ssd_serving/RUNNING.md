@@ -1,8 +1,8 @@
-# Run the SSD serving examples
+# SSD serving setup
 
 Use Linux, a compatible CUDA and vLLM setup, local Qwen3-30B-A3B-Instruct-2507 BF16 weights and a local SSD formatted as ext4. The storage code writes directly to SSD and waits for each write. It expects the 48-layer, 16-token KV block layout described in the [HBF setup](../hbf_serving/RUNNING.md). This public copy has been checked on CPU.
 
-## Save and restore KV
+## Save and restore
 
 Run both examples from the repo root, one at a time on the same GPU. Give each its own new output directory.
 
@@ -24,7 +24,7 @@ The engine saves full input blocks through a CPU buffer. The SSD file is tempora
 
 The launcher saves the inputs to `serving_inputs.json`. `cell/serving_settings.json` is the file the SSD connector reads. The comparison script also reads older runs saved as `cell/plan.json`.
 
-## Supply a policy
+## Custom policy
 
 The settings file names a `policy_factory` as `module:function`. The factory takes `policy_settings` and returns a function that takes an [Offer](code/ssd_policy.py). Return `True` to save the block or `False` to skip it.
 

@@ -1,4 +1,4 @@
-# Counting reuse for training
+# Reuse labels
 
 A training label says how often the blocks in one write offer were read again. These tools produce those counts from a prepared trace.
 

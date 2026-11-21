@@ -4,7 +4,7 @@ The simulator uses block IDs to track the cache. It runs on a CPU and does not r
 
 From the repo root, run `make demo` for three requests or `make demo-serving` for the larger synthetic example. Both are explained in [examples](examples/README.md).
 
-## Follow one request
+## One request
 
 1. Python prepares the requests in arrival order and predicts how often their KV will be read again.
 2. The simulator checks how much of each request it can read from the caches. It calls the part starting at the first missing block the **suffix**.

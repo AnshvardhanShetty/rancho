@@ -1,4 +1,4 @@
-# Running RANCHO in vLLM
+# HBF in vLLM
 
 This is my HBF integration with vLLM, the engine that runs the language model. RANCHO decides which KV to move out of ordinary GPU memory, called **HBM**, so the engine has more space for active requests.
 
@@ -6,7 +6,7 @@ vLLM finds the cached beginning of a prompt and computes the KV it is missing. R
 
 This prototype uses a separate region of GPU memory to stand in for HBF. Reads run at GPU-memory speed. Writes are limited to **8 GB/s**. The serving integration is under development.
 
-## Follow the code
+## Code
 
 | File | What it does |
 | --- | --- |

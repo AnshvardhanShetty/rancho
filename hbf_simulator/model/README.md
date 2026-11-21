@@ -1,4 +1,4 @@
-# Predicting KV reuse
+# Reuse predictor
 
 The model gives each request one estimate: the average number of later reads per block offered for writing. Its four inputs are user ID, turn number, chat age and time since the previous request in the chat.
 
@@ -13,7 +13,7 @@ Start in [model_training.py](model_training.py) and read these in order:
 
 [run_experiment.py](../experiments/run_experiment.py) calls the fitting code once per hour. The [CPU demo](../examples/README.md) supplies synthetic training data.
 
-## Files used for an hourly fit
+## Model files
 
 | File | What it contains |
 | --- | --- |

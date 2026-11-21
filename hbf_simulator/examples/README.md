@@ -1,6 +1,6 @@
-# Try RANCHO on a CPU
+# CPU demos
 
-Run these commands from the repo root after [setting up Python](../../README.md#try-it-without-a-gpu).
+Run these commands from the repo root after [setting up Python](../../README.md#cpu-demo).
 
 ## Three requests
 
