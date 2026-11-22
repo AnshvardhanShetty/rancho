@@ -14,7 +14,7 @@ import os
 import time
 from pathlib import Path
 from metrics import summarize_request_performance
-from model_location import resolve_model_path
+from run_files import resolve_model_path
 
 
 def validate_serving_inputs(serving_settings):

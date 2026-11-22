@@ -70,7 +70,7 @@ make demo-serving
 
 The demo processes 1,200 requests across eight conversations. It prints cache-hit ratios, GPU memory savings, recomputation and flash writes. In this example, RANCHO maintains a **95.12% cache-hit ratio with 85% less KV-cache HBM**.
 
-For a three-request walkthrough, run `make demo`. [Example code](hbf_simulator/examples/README.md) · [Run with vLLM on a GPU](hbf_serving/RUNNING.md).
+For a three-request walkthrough, run `make demo`. [Example code](hbf_simulator/examples/README.md) · [Run with vLLM on a GPU](hbf_serving/README.md#run-the-demo).
 
 ## Read the code
 

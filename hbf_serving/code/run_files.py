@@ -1,15 +1,8 @@
 """Read and write the settings and records saved by a serving run"""
 
 import json
+import os
 from pathlib import Path
-
-
-def read_run_json(output_directory, filename, earlier_filename):
-    """Read new or earlier serving output folders"""
-    path = output_directory / filename
-    if not path.exists():
-        path = output_directory / earlier_filename
-    return json.loads(path.read_text())
 
 
 def write_run_json(path, record):
@@ -18,3 +11,11 @@ def write_run_json(path, record):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(record, indent=2, allow_nan=False) + "\n")
     temporary.replace(path)
+
+
+def resolve_model_path():
+    """Return the local model directory from RANCHO_MODEL_PATH."""
+    path = Path(os.environ["RANCHO_MODEL_PATH"]).expanduser().resolve()
+    if not path.is_dir():
+        raise ValueError("RANCHO_MODEL_PATH must name an existing model directory")
+    return str(path)

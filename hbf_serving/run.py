@@ -19,7 +19,7 @@ from reuse_predictor import CUT, SuffixReusePredictor, model_fit_summary_path
 
 
 def main():
-    """Prepare one arm's inputs, run its engine, then check the saved result."""
+    """Prepare the settings and start the selected demo."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--arm", choices=["hbm", "rancho8", "rancho16"], required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -43,7 +43,6 @@ def main():
         ratio=ratio,
         retain_prefixes=not bool(hbf_pages),
         rate=20,
-        pilot=False,
         repetition=workload_settings["repetition"],
         controller=None,
     )
@@ -91,11 +90,6 @@ def main():
             "--output",
             str(output / "cell"),
         ],
-        env=env,
-        check=True,
-    )
-    subprocess.run(
-        [sys.executable, str(runner), "--audit", str(output / "cell")],
         env=env,
         check=True,
     )

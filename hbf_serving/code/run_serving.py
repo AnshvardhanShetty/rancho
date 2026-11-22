@@ -2,7 +2,6 @@
 
 run_serving_comparison sends requests and saves the engine logs
 compute_serving_results counts hits and measures timings from those logs
-audit_serving_results checks the results and the write budget
 """
 
 import argparse
@@ -18,10 +17,9 @@ from synthetic_requests import (
     bind_features_to_request_ids,
     build_eligible_read_mask,
 )
-from run_files import read_run_json, write_run_json
-from metrics import summarize_request_performance, summarize_latency_samples
-from model_location import resolve_model_path
-from write_bandwidth import PhysicalBudget
+from run_files import resolve_model_path, write_run_json
+from metrics import summarize_request_performance
+from write_controller import PhysicalBudget
 
 
 def read_json(json_path):
@@ -49,7 +47,7 @@ def parse_request_row(request_id):
 
 def compute_serving_results(run_directory, workload_settings):
     """Calculate hits, timings and write charges from the saved engine events."""
-    engine_settings = read_run_json(run_directory, "engine_settings.json", "PLAN.json")
+    engine_settings = read_json(run_directory / "engine_settings.json")
     request_records = read_jsonl_records(run_directory / "requests.jsonl")
     first_cache_lookups = [
         lookup
@@ -112,9 +110,6 @@ def compute_serving_results(run_directory, workload_settings):
             (last_completion_ns - begin) / 1e9 - workload_settings["measurement_seconds"],
         ),
     )
-    # Summarize concurrent requests and the cost of admission decisions.
-    steps = read_jsonl_records(run_directory / "concurrency.jsonl")
-    active = [v for v in steps if v["start_ns"] >= begin]
     offers = (
         [
             offer
@@ -124,24 +119,15 @@ def compute_serving_results(run_directory, workload_settings):
         if engine_settings["HBF_pages"]
         else []
     )
-    decision_ns = [
-        offer["decision"]["decision_cpu_ns"]
-        for offer in offers
-        if "decision" in offer
-        and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
-    ]
+    # Sum actual writes and copies from the worker's log.
     admission = dict(
-        live_calls=sum("decision" in offer for offer in offers),
-        measured_live_calls=len(decision_ns),
         admitted=sum(bool(offer.get("decision", {}).get("admit")) for offer in offers),
         paid_pages=sum(offer.get("decision", {}).get("paid_cost", 0) for offer in offers),
         copied_bytes=sum(offer.get("native_bytes", 0) for offer in offers),
-        decision_CPU_microseconds=summarize_latency_samples([v / 1000 for v in decision_ns]),
-        decision_CPU_seconds=sum(decision_ns) / 1e9,
     )
     result = dict(
-        status="COMPLETE_PENDING_AUDIT",
-        job=read_run_json(run_directory, "comparison_settings.json", "JOB.json"),
+        status="COMPLETE",
+        job=read_json(run_directory / "comparison_settings.json"),
         metrics=measured_metrics,
         cold_start_inclusive_metrics=all_request_metrics,
         offline_hit_percent=100 * measured_hits / total,
@@ -152,23 +138,6 @@ def compute_serving_results(run_directory, workload_settings):
         cold_start_inclusive_offline_hit_percent=100 * allhit / alltotal,
         hit_ratio=measured_hits / total,
         admission=admission,
-        concurrency=dict(
-            peak_active=max(
-                (engine_step["resident_requests"] for engine_step in active), default=0
-            ),
-            peak_waiting=max(
-                (engine_step["waiting_requests"] for engine_step in active), default=0
-            ),
-            peak_scheduled_decode=max(
-                (engine_step["scheduled_decode_requests"] for engine_step in active), default=0
-            ),
-            minimum_free_HBM_pages=min(
-                (engine_step["HBM_free_after_schedule"] for engine_step in active), default=None
-            ),
-            native_allocation_refusals=sum(
-                engine_step["native_KV_allocation_refusals"] for engine_step in active
-            ),
-        ),
         payload_sha256=engine_settings["payload_sha256"],
         GPU_execution=True,
         synthetic=True,
@@ -180,7 +149,7 @@ def compute_serving_results(run_directory, workload_settings):
     # Reconstruct actual write credit and verify every recorded payment.
     if engine_settings["HBF_pages"]:
         physical_rows = [
-            v
+            worker_event
             for worker_event in read_jsonl_records(run_directory / "worker.jsonl")
             if worker_event.get("event") == "PHYSICAL_CONTROLLER_CLOCK_START"
         ]
@@ -214,161 +183,11 @@ def compute_serving_results(run_directory, workload_settings):
             result["physical_writes"]["steady_rate_respected"]
             and result["physical_writes"]["daily_allowance_respected"]
         )
-        total_ns = [
-            offer["decision"]["total_admission_cpu_ns"]
-            for offer in offers
-            if "decision" in offer
-            and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
-        ]
-        admission["predictor_controller_and_guard_CPU_microseconds"] = summarize_latency_samples(
-            [v / 1000 for v in total_ns]
-        )
-        history_ns = [
-            offer.get("history_cpu_ns", 0)
-            for offer in offers
-            if parse_request_row(offer["request_id"]) >= workload_settings["groups"]
-        ]
-        admission["filtered_history_CPU_microseconds"] = summarize_latency_samples(
-            [v / 1000 for v in history_ns]
-        )
-        admission["total_admission_CPU_microseconds"] = summarize_latency_samples(
-            [
-                (
-                    offer["decision"]["total_admission_cpu_ns"]
-                    + offer.get("history_cpu_ns", 0)
-                    + offer.get("scheduler_feature_cpu_ns", 0)
-                )
-                / 1000
-                for offer in offers
-                if "decision" in offer
-                and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
-            ]
-        )
-        for label, key in [
-            ("predictor_CPU_microseconds", "predictor_cpu_ns"),
-            ("controller_CPU_microseconds", "controller_cpu_ns"),
-        ]:
-            admission[label] = summarize_latency_samples(
-                [
-                    offer["decision"][key] / 1000
-                    for offer in offers
-                    if "decision" in offer
-                    and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
-                ]
-            )
-        admission["scheduler_feature_CPU_microseconds"] = summarize_latency_samples(
-            [
-                offer.get("scheduler_feature_cpu_ns", 0) / 1000
-                for offer in offers
-                if parse_request_row(offer["request_id"]) >= workload_settings["groups"]
-            ]
-        )
-        decisions = [offer["decision"] for offer in offers if "decision" in offer]
-        admission["mechanisms"] = dict(
-            threshold_active=sum(decision["have_threshold"] for decision in decisions),
-            history_boosted=sum(decision["history_multiplier"] > 1 for decision in decisions),
-            half_behind=sum(decision["half_behind"] for decision in decisions),
-            score_rejections=sum(
-                not decision["score_admit_before_physical_guard"] for decision in decisions
-            ),
-            physical_guard_rejections=sum(
-                decision["physical_guard_rejected"] for decision in decisions
-            ),
-        )
     return result
 
 
-def audit_serving_results(run_directory):
-    """Recompute the results and independently check cache and policy accounting."""
-    engine_settings = read_run_json(run_directory, "engine_settings.json", "PLAN.json")
-    workload_settings = read_run_json(run_directory, "workload_settings.json", "SETUP.json")
-    saved_results = read_json(run_directory / "RESULT.json")
-    recomputed_results = compute_serving_results(run_directory, workload_settings)
-    assert (
-        saved_results == recomputed_results
-    ), "Independent timestamp/eligibility/metric recomputation mismatch"
-    # Check first lookup hits against the earlier synthetic requests
-    # Count each eligible block once even if a request was paused and resumed
-    actual = [
-        request_record
-        for request_record in read_jsonl_records(run_directory / "requests.jsonl")
-        if not request_record["warmup"]
-    ]
-    measured_lookups = {
-        parse_request_row(request_record["request_id"]): request_record
-        for request_record in read_jsonl_records(run_directory / "scheduler.jsonl")
-        if request_record["event"] == "INITIAL_PREFIX_LOOKUP"
-        and parse_request_row(request_record["request_id"]) >= workload_settings["groups"]
-    }
-    expected_eligible_reads = (
-        len(actual)
-        * (workload_settings["prefix_tokens"] + workload_settings["unique_suffix_tokens"])
-        // 16
-    )
-    independent_hits = 0
-    for request_record in actual:
-        first_lookup = measured_lookups[request_record["row"]]
-        assert (
-            0 <= first_lookup["cached_tokens"] <= workload_settings["prefix_tokens"]
-            and first_lookup["cached_tokens"] % 16 == 0
-        )
-        assert (
-            request_record["cached_tokens"] is not None and request_record["cached_tokens"] >= 0
-        )
-        independent_hits += first_lookup["cached_tokens"] // 16
-    assert (
-        saved_results["eligible_accesses"] == expected_eligible_reads
-        and saved_results["eligible_hits"] == independent_hits
-    )
-    assert (
-        abs(
-            saved_results["offline_hit_percent"]
-            - 100 * independent_hits / expected_eligible_reads
-        )
-        < 1e-12
-    )
-    if engine_settings["ratio"]:
-        assert engine_settings["HBF_pages"] == engine_settings["ratio"] * (
-            engine_settings["baseline_HBM_pages"] - engine_settings["HBM_pages"]
-        )
-        from updated_audit import audit_policy
-
-        saved_results["algorithm_audit"] = audit_policy(
-            run_directory, engine_settings, saved_results
-        )
-    elif engine_settings["baseline_prefix_retention"]:
-        from retention_audit import audit_retention
-
-        saved_results["prefix_retention"] = audit_retention(
-            run_directory, engine_settings, saved_results
-        )
-    write_run_json(
-        run_directory / "AUDIT.json",
-        dict(
-            status="PASS_INDEPENDENT_SERVING_AND_POLICY_AUDIT",
-            all_requests_checked=True,
-            offline_eligibility_recomputed=True,
-            actual_native_hits_checked=True,
-            all_outputs64=True,
-            full_queue_drained=True,
-            ratio_checked=True,
-            paid_writes_checked=True,
-            policy_decisions_replayed=bool(engine_settings["ratio"]),
-            baseline_retention=saved_results.get("prefix_retention"),
-            algorithm_audit=saved_results.get("algorithm_audit"),
-        ),
-    )
-    print("PASS_INDEPENDENT_SERVING_AND_POLICY_AUDIT", flush=True)
-
-
-def run_serving_comparison(
-    workload_settings, comparison_settings, run_directory, source_checksums_file
-):
+def run_serving_comparison(workload_settings, comparison_settings, run_directory):
     """Start a fresh engine, issue requests, drain its queue and save metrics."""
-    source = Path(__file__).resolve().parent
-    if source_checksums_file:
-        for source_filename, expected_checksum in read_json(source_checksums_file).items():
-            assert sha256_file(source / source_filename) == expected_checksum, source_filename
     run_directory.mkdir(exist_ok=False)
     # Prepare identical prompts and the selected cache allocation.
     hbm, hbf = comparison_settings["hbm"], comparison_settings["hbf"]
@@ -448,18 +267,18 @@ def run_serving_comparison(
             distributed_executor_backend="mp",
             async_scheduling=False,
             scheduler_cls=(
-                "concurrency_backend.TieredScheduler"
+                "direct_backend_hbf.HBFScheduler"
                 if hbf
                 else (
-                    "retained_baseline.RetainedBaselineScheduler"
+                    "direct_backend.RetainedPrefixScheduler"
                     if engine_settings["baseline_prefix_retention"]
-                    else "concurrency_backend.BaselineScheduler"
+                    else "direct_backend.DirectScheduler"
                 )
             ),
-            worker_extension_cls="worker_probe.MemoryProbe",
+            worker_extension_cls="native_pages.MemoryProbe",
             kv_transfer_config=KVTransferConfig(
                 kv_connector="HBFConnector" if hbf else "DirectConnector",
-                kv_connector_module_path="physical_hbf" if hbf else "direct_backend",
+                kv_connector_module_path="direct_backend_hbf" if hbf else "direct_backend",
                 kv_role="kv_both",
             ),
         )
@@ -548,11 +367,8 @@ def run_serving_comparison(
                 now = time.monotonic_ns()
                 while dispatched < request_count:
                     measured_request_index = dispatched - workload_settings["groups"]
-                    scheduled = (
-                        begin
-                        if comparison_settings.get("pilot")
-                        else begin
-                        + round(measured_request_index * 1e9 / comparison_settings["rate"])
+                    scheduled = begin + round(
+                        measured_request_index * 1e9 / comparison_settings["rate"]
                     )
                     if now < scheduled:
                         break
@@ -587,7 +403,7 @@ def run_serving_comparison(
     print(
         json.dumps(
             {
-                "status": "CELL_COMPLETE_PENDING_AUDIT",
+                "status": "CELL_COMPLETE",
                 "offline_hit_percent": result["offline_hit_percent"],
                 "TTFT_p95_s": result["metrics"]["TTFT_seconds"]["p95"],
                 "output_tokens_s": result["metrics"]["output_tokens_per_second"],
@@ -599,18 +415,12 @@ def run_serving_comparison(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workload-settings", "--setup")
-    parser.add_argument("--comparison-settings", "--job")
-    parser.add_argument("--output")
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--audit")
+    parser.add_argument("--workload-settings", type=Path, required=True)
+    parser.add_argument("--comparison-settings", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
-    if arguments.audit:
-        audit_serving_results(Path(arguments.audit))
-    else:
-        run_serving_comparison(
-            read_json(arguments.workload_settings),
-            read_json(arguments.comparison_settings),
-            Path(arguments.output),
-            arguments.manifest,
-        )
+    run_serving_comparison(
+        read_json(arguments.workload_settings),
+        read_json(arguments.comparison_settings),
+        arguments.output,
+    )

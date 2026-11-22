@@ -1,6 +1,6 @@
 # SSD serving setup
 
-Use Linux, a compatible CUDA and vLLM setup, local Qwen3-30B-A3B-Instruct-2507 BF16 weights and a local SSD formatted as ext4. The storage code writes directly to SSD and waits for each write. It expects the 48-layer, 16-token KV block layout described in the [HBF setup](../hbf_serving/RUNNING.md). This public copy has been checked on CPU.
+Use Linux, a compatible CUDA and vLLM setup, local Qwen3-30B-A3B-Instruct-2507 BF16 weights and a local SSD formatted as ext4. The storage code writes directly to SSD and waits for each write. It expects the 48-layer, 16-token KV block layout described in the [HBF setup](../hbf_serving/README.md#run-the-demo). This public copy has been checked on CPU.
 
 ## Save and restore
 

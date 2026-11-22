@@ -6,24 +6,42 @@ vLLM finds the cached beginning of a prompt and computes the KV it is missing. R
 
 This prototype uses a separate region of GPU memory to stand in for HBF. Reads run at GPU-memory speed. Writes are limited to **8 GB/s**. The serving integration is under development.
 
+## Run the demo
+
+Use one CUDA GPU and local Qwen3-30B-A3B-Instruct-2507 BF16 weights. The recorded
+run used vLLM 0.27.1 and PyTorch 2.13.0 with 48 layers and 16-token KV blocks.
+Install the Python dependencies in that environment with
+`pip install -r hbf_serving/requirements.txt`.
+
+```bash
+export RANCHO_MODEL_PATH=/path/to/local/model
+python hbf_serving/run.py --arm hbm --output /path/to/new/baseline-output
+python hbf_serving/run.py --arm rancho16 --predictor /path/to/saved/predictor --output /path/to/new/rancho-output
+```
+
+The HBF run takes the saved four-feature predictor fitted at hour 72. Its folder
+contains `model.pkl` and `model_fit_summary.json` (or `COMPLETE.json` for an older
+fit). Set `synthetic_user` in [synthetic_setup.json](synthetic_setup.json) to the
+user value the predictor expects. For a self-contained CPU example that trains
+its own predictor, run `make demo-serving`.
+
+The demo runs 1,200 requests across eight chats at 20 requests per second. Each
+run writes hit rate, throughput, latency and flash writes to `cell/RESULT.json`.
+
 ## Code
 
 | File | What it does |
 | --- | --- |
-| [run.py](run.py) | Choose the HBM-only or HBF run and start it |
-| [code/run_serving.py](code/run_serving.py) | Send requests and measure hits, throughput and latency |
-| [code/direct_backend.py](code/direct_backend.py) | Connect the scheduler to the cache and the GPU worker |
-| [code/direct_backend_hbf.py](code/direct_backend_hbf.py) | Ask RANCHO what to write and move accepted KV |
-| [code/hbf_admission.py](code/hbf_admission.py) | Use the predictor, reuse history and write budget to decide |
-| [code/physical_hbf.py](code/physical_hbf.py) | Limit writes using time and the allowance |
+| [run.py](run.py) | Pick a cache setup and start the demo |
+| [run_serving.py](code/run_serving.py) | Start vLLM, send requests and report results |
+| [direct_backend.py](code/direct_backend.py) | Connect the scheduler to the worker and set up the HBM-only baseline |
+| [direct_backend_hbf.py](code/direct_backend_hbf.py) | Apply the write limit and copy accepted KV to HBF |
+| [hbf_admission.py](code/hbf_admission.py) | Decide what to write using the reuse model and write budget |
 
-## Synthetic run
-
-Eight conversations share prefixes that use most of the baseline's GPU cache. At 20 requests per second, the smaller HBM cache with HBF leaves more room for requests to run together.
-
-| Configuration | HBM replaced | Output tokens/s | p95 time to first token | KV hit rate |
-| --- | ---: | ---: | ---: | ---: |
-| HBM only | — | 67.6 | 1,020.2 s | 95.12% |
-| RANCHO at 16:1 | 85% | 429.9 | 109.6 s | 95.12% |
-
-Here p95 means the time by which 95% of requests got their first token. These are measurements from one run on one GPU. See [commands and setup](RUNNING.md) or try the [same prompts on CPU](../hbf_simulator/examples/README.md).
+[synthetic_requests.py](code/synthetic_requests.py) builds the prompts and model
+inputs. [reuse_predictor.py](code/reuse_predictor.py) loads the model.
+[write_controller.py](code/write_controller.py) sets cutoffs and tracks writes.
+[tier_pool.py](code/tier_pool.py) manages page ownership, and
+[native_pages.py](code/native_pages.py) reads and copies vLLM's pages.
+[metrics.py](code/metrics.py) and [run_files.py](code/run_files.py) handle timing
+and file I/O.

@@ -6,12 +6,13 @@ CostBandWriteController adjusts the cutoff and keeps track of writes
 """
 
 from collections import OrderedDict
-import math, time
-from write_controller import Wallet, Observation, seeded_tie_break_value, DAY
+import math
+import time
+from write_controller import WriteController, Observation, seeded_tie_break_value, DAY
 from reuse_predictor import SuffixReusePredictor, CUT
 
 
-class CostBandWriteController(Wallet):
+class CostBandWriteController(WriteController):
     """Keep write spending and choose cutoffs for groups of similar write costs."""
 
     def update_admission_cutoffs(self, now):
@@ -41,7 +42,7 @@ class CostBandWriteController(Wallet):
             1.0,
             max(
                 0.0,
-                (self.current_spending_limit - self.blocks_written) / max(1e-9, demand),
+                (self.budget - self.blocks_written) / max(1e-9, demand),
             ),
         )
         # Find score cutoffs within groups of similarly priced writes.
@@ -85,7 +86,6 @@ class CostBandWriteController(Wallet):
         )
         assert distinct or not cost
         self.last_id, self.last_us = event, now
-        self.release_reserved_budget_if_due(now)
         # Combine the prediction with reuse observed before this request.
         multiplier = 1 + past / distinct if distinct else 1.0
         score = prediction * float(distinct) / float(cost) * multiplier if cost else math.inf
@@ -110,7 +110,6 @@ class CostBandWriteController(Wallet):
             and (
                 not cost
                 or cost <= self.budget - self.blocks_written
-                and cost <= self.current_spending_limit - self.blocks_written
                 and (
                     not self.cutoff_ready
                     or score > cutoff
@@ -219,12 +218,9 @@ class HbfAdmissionPolicy:
         self.model = SuffixReusePredictor(config["fit"])
         assert self.model.model_sha256 == receipt["model_sha256"]
         self.wallet = CostBandWriteController(
-            "hbf",
             config["HBF_pages"],
             config["repetition"],
             end_us=CUT + DAY,
-            release_us=CUT + DAY,
-            reserve=0.0,
         )
         self.completed = set()
         self.past = 0

@@ -20,6 +20,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "hbf_serving/code"))
 from synthetic_requests import (
+    RequestHistory,
     SYNTHETIC_TRAINING_CUTOFF_US,
     block_keys,
     build_eligible_read_mask,
@@ -27,7 +28,6 @@ from synthetic_requests import (
     build_request_feature_records,
     build_prompt_tokens,
 )
-from request_history import RequestHistory
 
 from hbf_simulator.experiments.run_simulation import run_cache_simulation, run_program
 from hbf_simulator.experiments.synthetic_training import (

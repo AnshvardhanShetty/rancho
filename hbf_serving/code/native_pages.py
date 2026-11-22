@@ -164,3 +164,10 @@ class NativeCachePages:
                 device=target.device,
             )
             target.index_copy_(0, indices, snapshot.pages[name])
+
+
+class MemoryProbe:
+    """Report the number of cache pages vLLM allocated."""
+
+    def rancho_memory_snapshot(self):
+        return {"native_cache_blocks": self.model_runner.kv_cache_config.num_blocks}
