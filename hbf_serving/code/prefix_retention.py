@@ -38,9 +38,7 @@ class PrefixRetention:
         def guarded_evict(block):
             if block.block_id in self.by_id:
                 self.eviction_attempts += 1
-                raise RuntimeError(
-                    "Attempted eviction of a retained shared-prefix page"
-                )
+                raise RuntimeError("Attempted eviction of a retained shared-prefix page")
             return original(block)
 
         pool._maybe_evict_cached_block = guarded_evict
@@ -54,9 +52,7 @@ class PrefixRetention:
             if block.is_null or not 0 < block.block_id <= self.hbm_pages:
                 raise ValueError("Retention requires a real HBM page")
             if expected_hash is None or block.block_hash != expected_hash:
-                raise ValueError(
-                    "Shared-prefix hash missing or changed before retention"
-                )
+                raise ValueError("Shared-prefix hash missing or changed before retention")
             if expected_hash in self.by_hash:
                 # One retained copy is enough even if computation produced duplicates.
                 continue
@@ -70,18 +66,14 @@ class PrefixRetention:
 
     def verify_retained_prefixes(self):
         """Full invariant check at new pin events and completion, not every token."""
-        free_ids = {
-            b.block_id for b in self.pool.free_block_queue.get_all_free_blocks()
-        }
+        free_ids = {block.block_id for block in self.pool.free_block_queue.get_all_free_blocks()}
         for expected_hash, block in self.by_hash.items():
             if (
                 block.block_hash != expected_hash
                 or block.ref_cnt < 1
                 or block.block_id in free_ids
             ):
-                raise RuntimeError(
-                    "Retained prefix was changed, released or made evictable"
-                )
+                raise RuntimeError("Retained prefix was changed, released or made evictable")
         return dict(
             retained_pages=len(self.by_id),
             expected_shared_pages=self.expected_pages,

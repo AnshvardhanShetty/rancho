@@ -21,4 +21,4 @@ From the repo root, run `make demo` for three requests or `make demo-serving` fo
 | [hbm_only_readable_prefix.cpp](hbm_only_readable_prefix.cpp) | What GPU memory alone could serve for each request |
 | [simulation_io.hpp](simulation_io.hpp) | What files the simulator reads and saves |
 
-[Label tools](reproduction_support/README.md) show how to build the training counts from a trace. [Tests](tests/README.md) show what the public examples check.
+[Tests](tests/README.md) show what the public examples check.

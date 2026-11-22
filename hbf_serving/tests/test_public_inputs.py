@@ -7,13 +7,13 @@ import json
 from pathlib import Path
 import unittest
 
-from controlled_workload import (
+from synthetic_requests import (
     build_workload_prompts,
     build_request_feature_records,
     build_eligible_read_mask,
 )
-from updated_policy import BandWallet, FilteredHistory
-from reference_wallet_check import BandWallet as ReferenceWallet
+from hbf_admission import CostBandWriteController, HbmMissReuseHistory
+from reference_wallet_check import CostBandWriteController as ReferenceWallet
 
 
 class PublicInputs(unittest.TestCase):
@@ -33,7 +33,7 @@ class PublicInputs(unittest.TestCase):
         self.assertEqual(sum(map(sum, bits[8:])), 147600)
 
     def test_history_updates_after_decision(self):
-        history = FilteredHistory(1)
+        history = HbmMissReuseHistory(1)
         first = history.collect_request_reuse("first", ["A", "B"], 1, 0)
         self.assertEqual(first["past_filtered_reuses"], 0)
         history.record_request_reuse(first)
@@ -42,20 +42,16 @@ class PublicInputs(unittest.TestCase):
         self.assertEqual(second["pending"], ["A", "B"])
         history.record_request_reuse(second)
         self.assertEqual(
-            history.collect_request_reuse("third", ["A", "B"], 1, 0)[
-                "past_filtered_reuses"
-            ],
+            history.collect_request_reuse("third", ["A", "B"], 1, 0)["past_filtered_reuses"],
             2,
         )
 
     def test_cutoffs_match_independent_reference(self):
-        from controllers import Observation, DAY
-        from controllers_reference import Observation as ReferenceObservation
+        from write_controller import Observation, DAY
+        from reference_write_controller import Observation as ReferenceObservation
 
-        live = BandWallet("hbf", 50000, 17, end_us=DAY, release_us=DAY, reserve=0.0)
-        reference = ReferenceWallet(
-            "hbf", 50000, 17, end_us=DAY, release_us=DAY, reserve=0.0
-        )
+        live = CostBandWriteController("hbf", 50000, 17, end_us=DAY, release_us=DAY, reserve=0.0)
+        reference = ReferenceWallet("hbf", 50000, 17, end_us=DAY, release_us=DAY, reserve=0.0)
         for i in range(1200):
             values = (i, float(i % 37), 1 << (i % 4), i * 1000000, 1 << (i % 4))
             live._record_offer(Observation(*values))

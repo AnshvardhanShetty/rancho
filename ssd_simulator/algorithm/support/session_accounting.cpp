@@ -26,16 +26,15 @@ void require_condition(bool x, const std::string &s) {
     throw std::runtime_error(s);
 }
 
-struct File {
+struct MappedFile {
   int fd;
   size_t bytes;
   void *p = nullptr;
   struct stat before{};
 
-  explicit File(const fs::path &path) {
+  explicit MappedFile(const fs::path &path) {
     fd = open(path.c_str(), O_RDONLY);
-    require_condition(fd >= 0 && fstat(fd, &before) == 0 &&
-                          S_ISREG(before.st_mode),
+    require_condition(fd >= 0 && fstat(fd, &before) == 0 && S_ISREG(before.st_mode),
                       "input " + path.string());
     bytes = size_t(before.st_size);
     if (bytes) {
@@ -44,7 +43,7 @@ struct File {
     }
   }
 
-  ~File() {
+  ~MappedFile() {
     if (bytes)
       munmap(p, bytes);
     close(fd);
@@ -55,24 +54,23 @@ struct File {
     return static_cast<const T *>(p);
   }
 
-  template <class T> size_t element_count() const { return bytes / sizeof(T); }
+  template <class T> size_t element_count() const {
+    return bytes / sizeof(T);
+  }
 
   void verify_inputs_unchanged() const {
     struct stat s{};
     require_condition(fstat(fd, &s) == 0 && s.st_ino == before.st_ino &&
-                          s.st_size == before.st_size &&
-                          s.st_mtime == before.st_mtime,
+                          s.st_size == before.st_size && s.st_mtime == before.st_mtime,
                       "input changed");
   }
 };
 
-template <class T>
-void write_binary_array(const fs::path &p, const std::vector<T> &v) {
+template <class T> void write_binary_array(const fs::path &p, const std::vector<T> &v) {
   require_condition(!fs::exists(p), "existing output");
   std::ofstream f(p, std::ios::binary);
   require_condition(bool(f), "output");
-  f.write(reinterpret_cast<const char *>(v.data()),
-          std::streamsize(v.size() * sizeof(T)));
+  f.write(reinterpret_cast<const char *>(v.data()), std::streamsize(v.size() * sizeof(T)));
   f.close();
   require_condition(bool(f), "flush");
 }
@@ -87,13 +85,16 @@ void write_result_report(const fs::path &out, const std::string &s) {
 }
 
 void create_output_directory(const fs::path &p) {
-  require_condition(!fs::exists(p) && fs::create_directories(p),
-                    "fresh output directory");
+  require_condition(!fs::exists(p) && fs::create_directories(p), "fresh output directory");
 }
 
-bool bit_is_set(const Q *p, Q x) { return (p[x / 64] >> (x % 64)) & 1; }
+bool bit_is_set(const Q *p, Q x) {
+  return (p[x / 64] >> (x % 64)) & 1;
+}
 
-void set_bit(std::vector<Q> &v, Q x) { v[size_t(x / 64)] |= Q(1) << (x % 64); }
+void set_bit(std::vector<Q> &v, Q x) {
+  v[size_t(x / 64)] |= Q(1) << (x % 64);
+}
 
 void write_bits_and_prefix_counts(const fs::path &out, const std::string &name,
                                   const std::vector<Q> &v) {
@@ -104,18 +105,17 @@ void write_bits_and_prefix_counts(const fs::path &out, const std::string &name,
   write_binary_array(out / (name + ".rank"), rank);
 }
 
-struct Rank {
-  File bits, rank;
+struct BitRankIndex {
+  MappedFile bits, rank;
   const Q *b, *a;
   Q positions;
 
-  Rank(const fs::path &p, const std::string &name, Q n)
-      : bits(p / (name + ".bits")), rank(p / (name + ".rank")),
-        b(bits.data_as<Q>()), a(rank.data_as<Q>()), positions(n) {
-    require_condition(
-        bits.element_count<Q>() == (n + 63) / 64 &&
-            rank.element_count<Q>() == bits.element_count<Q>() + 1 && a[0] == 0,
-        "rank extent");
+  BitRankIndex(const fs::path &p, const std::string &name, Q n)
+      : bits(p / (name + ".bits")), rank(p / (name + ".rank")), b(bits.data_as<Q>()),
+        a(rank.data_as<Q>()), positions(n) {
+    require_condition(bits.element_count<Q>() == (n + 63) / 64 &&
+                          rank.element_count<Q>() == bits.element_count<Q>() + 1 && a[0] == 0,
+                      "rank extent");
   }
 
   Q count_set_bits_before(Q x) const {
@@ -125,20 +125,18 @@ struct Rank {
   }
 
   Q count_set_bits_in_range(Q start, Q n) const {
-    require_condition(start <= positions && n <= positions - start,
-                      "rank range");
+    require_condition(start <= positions && n <= positions - start, "rank range");
     return count_set_bits_before(start + n) - count_set_bits_before(start);
   }
 };
 
-void build_eligible_read_mask(int argc, char **argv) {
-  require_condition(argc == 5, "credit PREFIX ID_COUNT OUT");
-  std::string stream_prefix = argv[2];
-  I block_id_count = std::stoll(argv[3]);
-  fs::path out = argv[4];
-  require_condition(block_id_count > 0 && block_id_count <= INT32_MAX,
-                    "ID range");
-  File nb(stream_prefix + "_nb.i32"), ids(stream_prefix + "_ids.i32"),
+void build_eligible_read_mask(int argument_count, char **arguments) {
+  require_condition(argument_count == 5, "credit PREFIX ID_COUNT OUT");
+  std::string stream_prefix = arguments[2];
+  I block_id_count = std::stoll(arguments[3]);
+  fs::path out = arguments[4];
+  require_condition(block_id_count > 0 && block_id_count <= INT32_MAX, "ID range");
+  MappedFile nb(stream_prefix + "_nb.i32"), ids(stream_prefix + "_ids.i32"),
       sessions(stream_prefix + "_sess.i32"), ts(stream_prefix + "_ts.i64");
   auto block_counts = nb.data_as<int32_t>(), block_ids = ids.data_as<int32_t>(),
        session_codes = sessions.data_as<int32_t>();
@@ -150,28 +148,20 @@ void build_eligible_read_mask(int argc, char **argv) {
                     "row shape");
   std::vector<int32_t> last_session_by_block(size_t(block_id_count), -1),
       last_seen_request_by_block(size_t(block_id_count), -1);
-  std::vector<Q> bits((ids.element_count<int32_t>() + 63) / 64, 0),
-      offset(request_count + 1, 0);
+  std::vector<Q> bits((ids.element_count<int32_t>() + 63) / 64, 0), offset(request_count + 1, 0);
   Q total = 0;
-  for (size_t request_index = 0; request_index < request_count;
-       request_index++) {
-    require_condition(block_counts[request_index] >= 0 &&
-                          session_codes[request_index] >= 0 &&
-                          (request_index == 0 ||
-                           times[request_index] >= times[request_index - 1]),
-                      "row metadata");
-    offset[request_index + 1] =
-        offset[request_index] + Q(block_counts[request_index]);
-    require_condition(offset[request_index + 1] <= ids.element_count<int32_t>(),
-                      "ID extent");
+  for (size_t request_index = 0; request_index < request_count; request_index++) {
+    require_condition(
+        block_counts[request_index] >= 0 && session_codes[request_index] >= 0 &&
+            (request_index == 0 || times[request_index] >= times[request_index - 1]),
+        "row metadata");
+    offset[request_index + 1] = offset[request_index] + Q(block_counts[request_index]);
+    require_condition(offset[request_index + 1] <= ids.element_count<int32_t>(), "ID extent");
     for (Q k = offset[request_index]; k < offset[request_index + 1]; k++) {
       int block_id = block_ids[k];
-      require_condition(block_id >= 0 && block_id < block_id_count,
-                        "raw block");
-      if (last_seen_request_by_block[size_t(block_id)] !=
-          int32_t(request_index)) {
-        if (last_session_by_block[size_t(block_id)] ==
-            session_codes[request_index]) {
+      require_condition(block_id >= 0 && block_id < block_id_count, "raw block");
+      if (last_seen_request_by_block[size_t(block_id)] != int32_t(request_index)) {
+        if (last_session_by_block[size_t(block_id)] == session_codes[request_index]) {
           set_bit(bits, k);
           total++;
         }
@@ -181,37 +171,33 @@ void build_eligible_read_mask(int argc, char **argv) {
     }
   }
   require_condition(offset.back() == ids.element_count<int32_t>(), "ID total");
-  for (File *f : {&nb, &ids, &sessions, &ts})
+  for (MappedFile *f : {&nb, &ids, &sessions, &ts})
     f->verify_inputs_unchanged();
   create_output_directory(out);
   write_binary_array(out / "offsets.i64", offset);
   write_bits_and_prefix_counts(out, "credit", bits);
   write_result_report(
       out / "RESULT.json",
-      "{\"status\":\"PASS_EXACT_RAW_SESSION_CREDIT\",\"rows\":" +
-          std::to_string(request_count) +
+      "{\"status\":\"PASS_EXACT_RAW_SESSION_CREDIT\",\"rows\":" + std::to_string(request_count) +
           ",\"positions\":" + std::to_string(offset.back()) +
           ",\"qualified_positions\":" + std::to_string(total) + "}");
 }
 
-struct Calendar {
-  File meta, rows, mo, miss, oo, offers;
+struct HourIndex {
+  MappedFile meta, rows, mo, miss, oo, offers;
   const I *m, *rr, *off, *of;
   const U *mi, *oi;
   I R, N;
 
-  explicit Calendar(const fs::path &p)
+  explicit HourIndex(const fs::path &p)
       : meta(p / "meta.i64"), rows(p / "rows.i64"), mo(p / "miss_offsets.i64"),
-        miss(p / "misses.u32"), oo(p / "offer_offsets.i64"),
-        offers(p / "offer_ids.u32") {
+        miss(p / "misses.u32"), oo(p / "offer_offsets.i64"), offers(p / "offer_ids.u32") {
     require_condition(meta.element_count<I>() == 14, "calendar schema");
     m = meta.data_as<I>();
-    require_condition(m[0] == 0x5353445052465831LL && m[1] == 1,
-                      "calendar magic");
+    require_condition(m[0] == 0x5353445052465831LL && m[1] == 1, "calendar magic");
     N = m[2];
     R = m[3];
-    require_condition(N > 0 && N <= INT32_MAX && R >= 0 && R <= INT32_MAX,
-                      "calendar geometry");
+    require_condition(N > 0 && N <= INT32_MAX && R >= 0 && R <= INT32_MAX, "calendar geometry");
     require_condition(rows.element_count<I>() == size_t(R) * 6 &&
                           mo.element_count<I>() == size_t(R + 1) &&
                           oo.element_count<I>() == size_t(R + 1) &&
@@ -223,25 +209,23 @@ struct Calendar {
     of = oo.data_as<I>();
     mi = miss.data_as<U>();
     oi = offers.data_as<U>();
-    require_condition(off[0] == 0 && off[R] == m[7] && of[0] == 0 &&
-                          of[R] == m[8],
+    require_condition(off[0] == 0 && off[R] == m[7] && of[0] == 0 && of[R] == m[8],
                       "calendar cursors");
   }
 
   void verify_inputs_unchanged() const {
-    for (const File *f : {&meta, &rows, &mo, &miss, &oo, &offers})
+    for (const MappedFile *f : {&meta, &rows, &mo, &miss, &oo, &offers})
       f->verify_inputs_unchanged();
   }
 };
 
-void verify_eligible_read_mask(int argc, char **argv) {
-  require_condition(argc == 5, "verify_credit PREFIX ID_COUNT CREDIT");
-  std::string stream_prefix = argv[2];
-  I block_id_count = std::stoll(argv[3]);
-  fs::path credit_directory = argv[4];
-  require_condition(block_id_count > 0 && block_id_count <= INT32_MAX,
-                    "ID range");
-  File nb(stream_prefix + "_nb.i32"), ids(stream_prefix + "_ids.i32"),
+void verify_eligible_read_mask(int argument_count, char **arguments) {
+  require_condition(argument_count == 5, "verify_credit PREFIX ID_COUNT CREDIT");
+  std::string stream_prefix = arguments[2];
+  I block_id_count = std::stoll(arguments[3]);
+  fs::path credit_directory = arguments[4];
+  require_condition(block_id_count > 0 && block_id_count <= INT32_MAX, "ID range");
+  MappedFile nb(stream_prefix + "_nb.i32"), ids(stream_prefix + "_ids.i32"),
       sessions(stream_prefix + "_sess.i32");
   auto block_counts = nb.data_as<int32_t>(), block_ids = ids.data_as<int32_t>(),
        session_codes = sessions.data_as<int32_t>();
@@ -249,32 +233,28 @@ void verify_eligible_read_mask(int argc, char **argv) {
   require_condition(sessions.element_count<int32_t>() == request_count &&
                         request_count <= INT32_MAX,
                     "verification shape");
-  Rank rank(credit_directory, "credit", ids.element_count<int32_t>());
+  BitRankIndex rank(credit_directory, "credit", ids.element_count<int32_t>());
   std::vector<int32_t> previous_request_by_block(size_t(block_id_count), -1);
   Q offset = 0, total = 0;
-  for (size_t request_index = 0; request_index < request_count;
-       request_index++) {
+  for (size_t request_index = 0; request_index < request_count; request_index++) {
     require_condition(block_counts[request_index] >= 0 &&
-                          offset + Q(block_counts[request_index]) <=
-                              ids.element_count<int32_t>(),
+                          offset + Q(block_counts[request_index]) <= ids.element_count<int32_t>(),
                       "verification row");
     Q count = 0;
     for (int32_t j = 0; j < block_counts[request_index]; j++) {
       int block_id = block_ids[offset + Q(j)];
-      require_condition(block_id >= 0 && block_id < block_id_count,
-                        "verification ID");
+      require_condition(block_id >= 0 && block_id < block_id_count, "verification ID");
       int previous = previous_request_by_block[size_t(block_id)];
-      bool is_session_repeat =
-          previous >= 0 && previous < int(request_index) &&
-          session_codes[size_t(previous)] == session_codes[request_index];
+      bool is_session_repeat = previous >= 0 && previous < int(request_index) &&
+                               session_codes[size_t(previous)] == session_codes[request_index];
       require_condition(is_session_repeat == bit_is_set(rank.b, offset + Q(j)),
                         "credit predicate differs from independent "
                         "previous-row implementation");
       previous_request_by_block[size_t(block_id)] = int32_t(request_index);
       count += Q(is_session_repeat);
     }
-    require_condition(rank.count_set_bits_in_range(
-                          offset, Q(block_counts[request_index])) == count,
+    require_condition(rank.count_set_bits_in_range(offset, Q(block_counts[request_index])) ==
+                          count,
                       "rank row count");
     total += count;
     offset += Q(block_counts[request_index]);
@@ -282,35 +262,32 @@ void verify_eligible_read_mask(int argc, char **argv) {
   require_condition(offset == ids.element_count<int32_t>() &&
                         rank.count_set_bits_before(offset) == total,
                     "verification complete");
-  for (File *f : {&nb, &ids, &sessions})
+  for (MappedFile *f : {&nb, &ids, &sessions})
     f->verify_inputs_unchanged();
-  std::cout << "{\"status\":\"PASS_INDEPENDENT_PREVIOUS_ROW_CREDIT\",\"rows\":"
-            << request_count << ",\"positions\":" << offset
-            << ",\"qualified_positions\":" << total << "}\n";
+  std::cout << "{\"status\":\"PASS_INDEPENDENT_PREVIOUS_ROW_CREDIT\",\"rows\":" << request_count
+            << ",\"positions\":" << offset << ",\"qualified_positions\":" << total << "}\n";
 }
 
-void build_cache_miss_masks(int argc, char **argv) {
-  require_condition(argc == 5, "misses CAL CREDIT OUT");
-  Calendar c(argv[2]);
-  fs::path cp = argv[3], out = argv[4];
-  File offsets(cp / "offsets.i64");
+void build_cache_miss_masks(int argument_count, char **arguments) {
+  require_condition(argument_count == 5, "misses CAL CREDIT OUT");
+  HourIndex c(arguments[2]);
+  fs::path cp = arguments[3], out = arguments[4];
+  MappedFile offsets(cp / "offsets.i64");
   auto os = offsets.data_as<Q>();
   require_condition(offsets.element_count<Q>() >= size_t(c.R + 1), "offsets");
   Q total = os[offsets.element_count<Q>() - 1];
-  Rank credit(cp, "credit", total);
+  BitRankIndex credit(cp, "credit", total);
   std::vector<Q> all((total + 63) / 64, 0), qualified(all.size(), 0);
   Q count = 0, credited = 0;
   for (I r = 0; r < c.R; r++) {
-    require_condition(os[r + 1] - os[r] == Q(c.rr[r * 6 + 1]),
-                      "calendar raw row length");
-    require_condition(c.off[r] >= 0 && c.off[r] <= c.off[r + 1] &&
-                          c.off[r + 1] <= c.m[7],
+    require_condition(os[r + 1] - os[r] == Q(c.rr[r * 6 + 1]), "calendar raw row length");
+    require_condition(c.off[r] >= 0 && c.off[r] <= c.off[r + 1] && c.off[r + 1] <= c.m[7],
                       "miss cursors");
     I previous = -1;
     for (I k = c.off[r]; k < c.off[r + 1]; k++) {
       U b = c.mi[2 * k], j = c.mi[2 * k + 1];
-      require_condition(b < U(c.N) && I(j) > previous &&
-                            I(j) < c.rr[r * 6 + 3] && c.rr[r * 6 + 4] == 0,
+      require_condition(b < U(c.N) && I(j) > previous && I(j) < c.rr[r * 6 + 3] &&
+                            c.rr[r * 6 + 4] == 0,
                         "miss position");
       previous = j;
       Q pos = os[r] + j;
@@ -327,30 +304,29 @@ void build_cache_miss_masks(int argc, char **argv) {
   create_output_directory(out);
   write_bits_and_prefix_counts(out, "all_misses", all);
   write_bits_and_prefix_counts(out, "credited_misses", qualified);
-  write_result_report(out / "RESULT.json",
-                      "{\"status\":\"PASS_EXACT_CALENDAR_CREDIT\",\"misses\":" +
-                          std::to_string(count) + ",\"credited_misses\":" +
-                          std::to_string(credited) + "}");
+  write_result_report(
+      out / "RESULT.json",
+      "{\"status\":\"PASS_EXACT_CALENDAR_CREDIT\",\"misses\":" + std::to_string(count) +
+          ",\"credited_misses\":" + std::to_string(credited) + "}");
 }
 
-void count_replay_hits_from_prefixes(int argc, char **argv) {
-  require_condition(argc == 7, "rescore CREDIT GEOMETRY CAL ROWS OUT");
-  fs::path credit_directory = argv[2], geometry_directory = argv[3],
-           out = argv[6];
-  Calendar calendar(argv[4]);
-  File offsets(credit_directory / "offsets.i64"), rows(argv[5]);
+void count_replay_hits_from_prefixes(int argument_count, char **arguments) {
+  require_condition(argument_count == 7, "rescore CREDIT GEOMETRY CAL ROWS OUT");
+  fs::path credit_directory = arguments[2], geometry_directory = arguments[3], out = arguments[6];
+  HourIndex calendar(arguments[4]);
+  MappedFile offsets(credit_directory / "offsets.i64"), rows(arguments[5]);
   auto request_offsets = offsets.data_as<Q>();
   require_condition(offsets.element_count<Q>() >= size_t(calendar.R + 1) &&
                         rows.element_count<I>() % 13 == 0,
                     "rescore shape");
   Q total = request_offsets[offsets.element_count<Q>() - 1];
-  Rank credit(credit_directory, "credit", total),
+  BitRankIndex credit(credit_directory, "credit", total),
       miss(geometry_directory, "all_misses", total),
       cmiss(geometry_directory, "credited_misses", total);
   auto saved = rows.data_as<I>();
-  Q count = rows.element_count<I>() / 13, total_requested_blocks = 0,
-    total_hbm_hits = 0, combined = 0, ssd = 0, raw_hbm_prefix_positions = 0,
-    raw_combined_prefix_positions = 0, raw_ssd_positions = 0, writes = 0;
+  Q count = rows.element_count<I>() / 13, total_requested_blocks = 0, total_hbm_hits = 0,
+    combined = 0, ssd = 0, raw_hbm_prefix_positions = 0, raw_combined_prefix_positions = 0,
+    raw_ssd_positions = 0, writes = 0;
   I previous = -1;
   std::vector<U> newrows;
   newrows.reserve(size_t(count) * 3);
@@ -362,32 +338,26 @@ void count_replay_hits_from_prefixes(int argc, char **argv) {
                       "saved row index");
     previous = request_index;
     auto calendar_row = calendar.rr + request_index * 6;
-    require_condition(
-        saved_row[1] == calendar_row[0] && saved_row[1] >= calendar.m[5] &&
-            saved_row[1] < calendar.m[6] && saved_row[2] == calendar_row[1] &&
-            saved_row[3] == calendar_row[5] &&
-            saved_row[9] == calendar_row[4] &&
-            saved_row[10] == calendar_row[1] - calendar_row[3] &&
-            saved_row[12] == calendar_row[2],
-        "saved row identity");
+    require_condition(saved_row[1] == calendar_row[0] && saved_row[1] >= calendar.m[5] &&
+                          saved_row[1] < calendar.m[6] && saved_row[2] == calendar_row[1] &&
+                          saved_row[3] == calendar_row[5] && saved_row[9] == calendar_row[4] &&
+                          saved_row[10] == calendar_row[1] - calendar_row[3] &&
+                          saved_row[12] == calendar_row[2],
+                      "saved row identity");
     require_condition(saved_row[3] >= 0 && saved_row[3] <= saved_row[4] &&
                           saved_row[4] <= calendar_row[3] && saved_row[7] >= 0,
                       "saved prefix");
-    require_condition((calendar_row[4] == 0) || saved_row[4] == 0,
-                      "bypass prefix");
+    require_condition((calendar_row[4] == 0) || saved_row[4] == 0, "bypass prefix");
     Q base = request_offsets[request_index], combined_prefix = Q(saved_row[4]),
       hbm_prefix = Q(saved_row[3]);
-    require_condition(miss.count_set_bits_in_range(base, combined_prefix) ==
-                          Q(saved_row[5]),
+    require_condition(miss.count_set_bits_in_range(base, combined_prefix) == Q(saved_row[5]),
                       "original SSD count mismatch");
     Q eligible_hbm_hits = credit.count_set_bits_in_range(base, hbm_prefix),
-      eligible_combined_hits =
-          credit.count_set_bits_in_range(base, combined_prefix),
+      eligible_combined_hits = credit.count_set_bits_in_range(base, combined_prefix),
       eligible_ssd_hits = cmiss.count_set_bits_in_range(base, combined_prefix);
     require_condition(eligible_hbm_hits <= eligible_combined_hits &&
                           eligible_ssd_hits <= Q(saved_row[5]) &&
-                          eligible_ssd_hits <=
-                              eligible_combined_hits - eligible_hbm_hits,
+                          eligible_ssd_hits <= eligible_combined_hits - eligible_hbm_hits,
                       "weighted counts");
     require_condition(eligible_combined_hits <= UINT32_MAX, "row credit range");
     newrows.push_back(U(eligible_hbm_hits));
@@ -402,8 +372,7 @@ void count_replay_hits_from_prefixes(int argc, char **argv) {
     raw_ssd_positions += Q(saved_row[5]);
     writes += Q(saved_row[7]);
   }
-  require_condition(count == Q(calendar.R - calendar.m[12]),
-                    "evaluation coverage");
+  require_condition(count == Q(calendar.R - calendar.m[12]), "evaluation coverage");
   calendar.verify_inputs_unchanged();
   rows.verify_inputs_unchanged();
   offsets.verify_inputs_unchanged();
@@ -411,54 +380,46 @@ void count_replay_hits_from_prefixes(int argc, char **argv) {
   write_binary_array(out / "CREDITED_ROWS.u32", newrows);
   write_result_report(
       out / "RESULT.json",
-      "{\"status\":\"PASS_EXACT_SAVED_PREFIX_RESCORE\",\"requests\":" +
-          std::to_string(count) +
-          ",\"denominator\":" + std::to_string(total_requested_blocks) +
-          ",\"credited_hbm\":" + std::to_string(total_hbm_hits) +
-          ",\"credited_combined\":" + std::to_string(combined) +
-          ",\"credited_ssd\":" + std::to_string(ssd) + ",\"original_hbm\":" +
-          std::to_string(raw_hbm_prefix_positions) + ",\"original_combined\":" +
-          std::to_string(raw_combined_prefix_positions) +
+      "{\"status\":\"PASS_EXACT_SAVED_PREFIX_RESCORE\",\"requests\":" + std::to_string(count) +
+          ",\"denominator\":" + std::to_string(total_requested_blocks) + ",\"credited_hbm\":" +
+          std::to_string(total_hbm_hits) + ",\"credited_combined\":" + std::to_string(combined) +
+          ",\"credited_ssd\":" + std::to_string(ssd) +
+          ",\"original_hbm\":" + std::to_string(raw_hbm_prefix_positions) +
+          ",\"original_combined\":" + std::to_string(raw_combined_prefix_positions) +
           ",\"original_ssd\":" + std::to_string(raw_ssd_positions) +
           ",\"evaluation_writes\":" + std::to_string(writes) + "}");
 }
 
-void verify_recounted_replay_hits(int argc, char **argv) {
-  require_condition(argc == 7,
-                    "verify_rescore CREDIT GEOMETRY CAL ROWS RESCORE_OUT");
-  fs::path credit_directory = argv[2], out = argv[6];
-  Calendar calendar(argv[4]);
-  File offsets(credit_directory / "offsets.i64"), rows(argv[5]),
+void verify_recounted_replay_hits(int argument_count, char **arguments) {
+  require_condition(argument_count == 7, "verify_rescore CREDIT GEOMETRY CAL ROWS RESCORE_OUT");
+  fs::path credit_directory = arguments[2], out = arguments[6];
+  HourIndex calendar(arguments[4]);
+  MappedFile offsets(credit_directory / "offsets.i64"), rows(arguments[5]),
       credited(out / "CREDITED_ROWS.u32");
   auto request_offsets = offsets.data_as<Q>();
   auto saved = rows.data_as<I>();
   auto target = credited.data_as<U>();
   Q count = rows.element_count<I>() / 13;
-  Rank credit(credit_directory, "credit",
-              request_offsets[offsets.element_count<Q>() - 1]);
-  require_condition(rows.element_count<I>() % 13 == 0 &&
-                        credited.element_count<U>() == count * 3,
+  BitRankIndex credit(credit_directory, "credit",
+                      request_offsets[offsets.element_count<Q>() - 1]);
+  require_condition(rows.element_count<I>() % 13 == 0 && credited.element_count<U>() == count * 3,
                     "reference row shapes");
   Q total_hbm_hits = 0, combined = 0, ssd = 0;
   for (Q k = 0; k < count; k++) {
     auto saved_row = saved + k * 13;
     I request_index = saved_row[0];
-    require_condition(request_index >= 0 && request_index < calendar.R,
-                      "reference row");
+    require_condition(request_index >= 0 && request_index < calendar.R, "reference row");
     Q eligible_hbm_hits = 0, eligible_combined_hits = 0, eligible_ssd_hits = 0;
     for (I j = 0; j < saved_row[4]; j++) {
-      bool is_session_repeat =
-          bit_is_set(credit.b, request_offsets[request_index] + Q(j));
+      bool is_session_repeat = bit_is_set(credit.b, request_offsets[request_index] + Q(j));
       eligible_hbm_hits += Q(is_session_repeat && j < saved_row[3]);
       eligible_combined_hits += Q(is_session_repeat);
     }
-    for (I j = calendar.off[request_index]; j < calendar.off[request_index + 1];
-         j++) {
+    for (I j = calendar.off[request_index]; j < calendar.off[request_index + 1]; j++) {
       I pos = calendar.mi[2 * j + 1];
       if (pos >= saved_row[4])
         break;
-      eligible_ssd_hits +=
-          Q(bit_is_set(credit.b, request_offsets[request_index] + Q(pos)));
+      eligible_ssd_hits += Q(bit_is_set(credit.b, request_offsets[request_index] + Q(pos)));
     }
     require_condition(target[k * 3] == eligible_hbm_hits &&
                           target[k * 3 + 1] == eligible_combined_hits &&
@@ -468,18 +429,15 @@ void verify_recounted_replay_hits(int argc, char **argv) {
     combined += eligible_combined_hits;
     ssd += eligible_ssd_hits;
   }
-  std::cout
-      << "{\"status\":\"PASS_INDEPENDENT_LITERAL_PREFIX_RESCORE\",\"requests\":"
-      << count << ",\"credited_hbm\":" << total_hbm_hits
-      << ",\"credited_combined\":" << combined << ",\"credited_ssd\":" << ssd
-      << "}\n";
+  std::cout << "{\"status\":\"PASS_INDEPENDENT_LITERAL_PREFIX_RESCORE\",\"requests\":" << count
+            << ",\"credited_hbm\":" << total_hbm_hits << ",\"credited_combined\":" << combined
+            << ",\"credited_ssd\":" << ssd << "}\n";
 }
 
 Q sum_largest_values(std::vector<Q> &v, Q k) {
   k = std::min(k, Q(v.size()));
   if (k && k < v.size())
-    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(k), v.end(),
-                     std::greater<Q>());
+    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(k), v.end(), std::greater<Q>());
   Q sum = 0;
   for (Q j = 0; j < k; j++)
     sum += v[j];
@@ -500,28 +458,27 @@ std::vector<Q> count_occurrences_per_block(std::vector<U> &ids) {
   return w;
 }
 
-void calculate_hit_upper_bound(int argc, char **argv) {
-  require_condition(argc == 10, "upper CAL CREDIT BOUNDARY WARM_S PERIOD_US "
-                                "SORT_REFERENCE OUT EXTRA_SCHEMA");
-  require_condition(std::string(argv[9]) == "v1", "explicit upper schema");
-  Calendar c(argv[2]);
-  fs::path cp = argv[3], out = argv[8];
-  File offsets(cp / "offsets.i64"), boundary(argv[4]), warmfile(argv[5]);
+void calculate_hit_upper_bound(int argument_count, char **arguments) {
+  require_condition(argument_count == 10, "upper CAL CREDIT BOUNDARY WARM_S PERIOD_US "
+                                          "SORT_REFERENCE OUT EXTRA_SCHEMA");
+  require_condition(std::string(arguments[9]) == "v1", "explicit upper schema");
+  HourIndex c(arguments[2]);
+  fs::path cp = arguments[3], out = arguments[8];
+  MappedFile offsets(cp / "offsets.i64"), boundary(arguments[4]), warmfile(arguments[5]);
   auto os = offsets.data_as<Q>();
   auto bd = boundary.data_as<I>();
-  require_condition(
-      boundary.element_count<I>() == 12 && bd[0] == 0x5353445741524d31LL &&
-          bd[1] == 1 && bd[6] == c.N && bd[7] == c.m[4] && bd[10] == c.m[5] &&
-          bd[11] == c.m[6] && bd[5] >= 0 && bd[9] >= bd[5] && bd[8] > 0,
-      "upper fixed geometry");
-  require_condition(offsets.element_count<Q>() >= size_t(c.R + 1) &&
-                        bd[2] == c.m[12] && bd[4] == c.of[bd[2]],
+  require_condition(boundary.element_count<I>() == 12 && bd[0] == 0x5353445741524d31LL &&
+                        bd[1] == 1 && bd[6] == c.N && bd[7] == c.m[4] && bd[10] == c.m[5] &&
+                        bd[11] == c.m[6] && bd[5] >= 0 && bd[9] >= bd[5] && bd[8] > 0,
+                    "upper fixed geometry");
+  require_condition(offsets.element_count<Q>() >= size_t(c.R + 1) && bd[2] == c.m[12] &&
+                        bd[4] == c.of[bd[2]],
                     "upper cursor");
   Q capacity = Q(bd[8]), remaining = Q(bd[9] - bd[5]);
-  I period = std::stoll(argv[6]);
-  bool reference = std::stoi(argv[7]) != 0;
+  I period = std::stoll(arguments[6]);
+  bool reference = std::stoi(arguments[7]) != 0;
   require_condition(period > 0, "window period");
-  Rank credit(cp, "credit", os[offsets.element_count<Q>() - 1]);
+  BitRankIndex credit(cp, "credit", os[offsets.element_count<Q>() - 1]);
   std::vector<int32_t> last(size_t(c.N), -1);
   std::vector<uint8_t> warm(size_t(c.N), 0);
   for (size_t j = 0; j < warmfile.element_count<int32_t>(); j++) {
@@ -530,8 +487,7 @@ void calculate_hit_upper_bound(int argc, char **argv) {
     warm[size_t(b)] = 1;
     last[size_t(b)] = -2;
   }
-  require_condition(warmfile.element_count<int32_t>() <= capacity,
-                    "warm capacity");
+  require_condition(warmfile.element_count<int32_t>() <= capacity, "warm capacity");
   std::vector<U> global_ids, window_ids, touched;
   std::vector<Q> global, window;
   if (!reference) {
@@ -564,8 +520,7 @@ void calculate_hit_upper_bound(int argc, char **argv) {
   };
   for (I r = bd[2]; r < c.R; r++) {
     auto cr = c.rr + r * 6;
-    require_condition(cr[0] >= c.m[5] && cr[0] < c.m[6] &&
-                          os[r + 1] - os[r] == Q(cr[1]),
+    require_condition(cr[0] >= c.m[5] && cr[0] < c.m[6] && os[r + 1] - os[r] == Q(cr[1]),
                       "upper row");
     I next = (cr[0] - c.m[5]) / period;
     while (group < next)
@@ -574,8 +529,7 @@ void calculate_hit_upper_bound(int argc, char **argv) {
     I previous = -1;
     for (I k = c.off[r]; k < c.off[r + 1]; k++) {
       U b = c.mi[2 * k], pos = c.mi[2 * k + 1];
-      require_condition(b < U(c.N) && I(pos) > previous && I(pos) < cr[3],
-                        "upper miss");
+      require_condition(b < U(c.N) && I(pos) > previous && I(pos) < cr[3], "upper miss");
       previous = pos;
       if (last[b] == -1)
         possible = false;
@@ -634,39 +588,37 @@ void calculate_hit_upper_bound(int argc, char **argv) {
   warmfile.verify_inputs_unchanged();
   create_output_directory(out);
   write_binary_array(out / "WINDOW_CERTIFICATE.u64", cert);
-  write_result_report(
-      out / "RESULT.json",
-      "{\"status\":\"PASS_INTEGER_SESSION_UPPER_ACCOUNTING\",\"sorted_"
-      "reference\":" +
-          (reference ? std::string("true") : std::string("false")) +
-          ",\"period_us\":" + std::to_string(period) +
-          ",\"remaining\":" + std::to_string(remaining) +
-          ",\"capacity\":" + std::to_string(capacity) +
-          ",\"immortal\":" + std::to_string(immortal) +
-          ",\"free_warm\":" + std::to_string(freewarm) +
-          ",\"top_remaining\":" + std::to_string(top) +
-          ",\"budget_upper\":" + std::to_string(budgetbound) +
-          ",\"window_upper\":" + std::to_string(windowbound) +
-          ",\"zero_write_warm_prefix\":" + std::to_string(warmonly) +
-          ",\"upper\":" + std::to_string(Ubound) + "}");
+  write_result_report(out / "RESULT.json",
+                      "{\"status\":\"PASS_INTEGER_SESSION_UPPER_ACCOUNTING\",\"sorted_"
+                      "reference\":" +
+                          (reference ? std::string("true") : std::string("false")) +
+                          ",\"period_us\":" + std::to_string(period) +
+                          ",\"remaining\":" + std::to_string(remaining) + ",\"capacity\":" +
+                          std::to_string(capacity) + ",\"immortal\":" + std::to_string(immortal) +
+                          ",\"free_warm\":" + std::to_string(freewarm) +
+                          ",\"top_remaining\":" + std::to_string(top) +
+                          ",\"budget_upper\":" + std::to_string(budgetbound) +
+                          ",\"window_upper\":" + std::to_string(windowbound) +
+                          ",\"zero_write_warm_prefix\":" + std::to_string(warmonly) +
+                          ",\"upper\":" + std::to_string(Ubound) + "}");
 }
 
-int main(int argc, char **argv) {
+int main(int argument_count, char **arguments) {
   try {
-    require_condition(argc > 1, "command required");
-    std::string mode = argv[1];
+    require_condition(argument_count > 1, "command required");
+    std::string mode = arguments[1];
     if (mode == "credit")
-      build_eligible_read_mask(argc, argv);
+      build_eligible_read_mask(argument_count, arguments);
     else if (mode == "verify_credit")
-      verify_eligible_read_mask(argc, argv);
+      verify_eligible_read_mask(argument_count, arguments);
     else if (mode == "misses")
-      build_cache_miss_masks(argc, argv);
+      build_cache_miss_masks(argument_count, arguments);
     else if (mode == "rescore")
-      count_replay_hits_from_prefixes(argc, argv);
+      count_replay_hits_from_prefixes(argument_count, arguments);
     else if (mode == "verify_rescore")
-      verify_recounted_replay_hits(argc, argv);
+      verify_recounted_replay_hits(argument_count, arguments);
     else if (mode == "upper")
-      calculate_hit_upper_bound(argc, argv);
+      calculate_hit_upper_bound(argument_count, arguments);
     else
       require_condition(false, "unknown command");
     return 0;

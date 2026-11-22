@@ -12,9 +12,7 @@ def find_existing_hbf_copy(tiers, source_id):
         return None
     entry = tiers.pool.cached_block_hash_to_block._cache.get(source.block_hash)
     values = (
-        list(entry.values())
-        if isinstance(entry, dict)
-        else ([] if entry is None else [entry])
+        list(entry.values()) if isinstance(entry, dict) else ([] if entry is None else [entry])
     )
     for block in values:
         if tiers.is_hbf_page(block.block_id):
@@ -27,17 +25,13 @@ def remap_to_existing_hbf_copies(tiers, pairs, *, gpu_completed):
     if gpu_completed is not True:
         raise ValueError("Prefill GPU work must complete before remapping")
     pairs = list(pairs)
-    if len(set(source_page_id for source_page_id, target_page_id in pairs)) != len(
-        pairs
-    ):
+    if len(set(source_page_id for source_page_id, target_page_id in pairs)) != len(pairs):
         raise ValueError("Duplicate reuse source")
     pool = tiers.pool
     tables = tiers.managers[0].req_to_blocks
     references = {}
     for source_page_id, target_page_id in pairs:
-        if not tiers.is_hbm_page(source_page_id) or not tiers.is_hbf_page(
-            target_page_id
-        ):
+        if not tiers.is_hbm_page(source_page_id) or not tiers.is_hbf_page(target_page_id):
             raise ValueError("Wrong reuse tier")
         source_block, target_block = (
             pool.blocks[source_page_id],
@@ -72,6 +66,4 @@ def remap_to_existing_hbf_copies(tiers, pairs, *, gpu_completed):
         target_block.ref_cnt += len(active_references)
         source_block.ref_cnt = 0
         pool.free_block_queue.prepend_n([source_block])
-    return dict(
-        reused_HBF_pages=len(pairs), freed_HBM_pages=len(pairs), additional_writes=0
-    )
+    return dict(reused_HBF_pages=len(pairs), freed_HBM_pages=len(pairs), additional_writes=0)

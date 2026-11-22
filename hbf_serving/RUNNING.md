@@ -12,7 +12,7 @@ python hbf_serving/run.py --arm hbm --output /path/to/new/baseline-output
 python hbf_serving/run.py --arm rancho16 --predictor /path/to/saved/predictor --output /path/to/new/rancho-output
 ```
 
-The RANCHO run needs a predictor folder with `model.pkl` and `model_fit_summary.json` (called `COMPLETE.json` in older runs) from the four-input offered-suffix fit at hour 72. [updated_model.py](code/updated_model.py) checks the inputs, cutoff, tree count and checksum. Set the user value in [synthetic_setup.json](synthetic_setup.json) to the value your predictor expects. The predictor stays fixed during the run. Reuse history and the cutoff continue to update.
+The RANCHO run needs a predictor folder with `model.pkl` and `model_fit_summary.json` (called `COMPLETE.json` in older runs) from the four-input offered-suffix fit at hour 72. [reuse_predictor.py](code/reuse_predictor.py) checks the inputs, cutoff, tree count and checksum. Set the user value in [synthetic_setup.json](synthetic_setup.json) to the value your predictor expects. The predictor stays fixed during the run. Reuse history and the cutoff continue to update.
 
 For a self-contained CPU run that trains its own predictor, use `make demo-serving`.
 

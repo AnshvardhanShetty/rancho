@@ -22,15 +22,13 @@ def audit_serving_example(root, accept):
         settings_file = cell / "plan.json"
     serving_settings = read_json(settings_file)
     assert serving_settings["batch_invariant"]
-    assert serving_settings["verify_payloads"] and serving_settings[
-        "policy_factory"
-    ] == ("ssd_policy:accept_fixture" if accept else "ssd_policy:reject_fixture")
+    assert serving_settings["verify_payloads"] and serving_settings["policy_factory"] == (
+        "ssd_policy:accept_fixture" if accept else "ssd_policy:reject_fixture"
+    )
     metrics = read_json(cell / "metrics.json")
     request_records = read_json(cell / "requests.json")
     measured = [
-        request_record
-        for request_record in request_records
-        if not request_record["warmup"]
+        request_record for request_record in request_records if not request_record["warmup"]
     ]
     assert (
         len(request_records) == len(serving_settings["requests"])
@@ -38,9 +36,7 @@ def audit_serving_example(root, accept):
     )
     begin = metrics["measurement_start_ns"]
     for request_record in measured:
-        scheduled_request = serving_settings["requests"][
-            "row" + str(request_record["row"])
-        ]
+        scheduled_request = serving_settings["requests"]["row" + str(request_record["row"])]
         assert (
             request_record["status"] == "COMPLETE"
             and len(request_record["output_ids"]) == serving_settings["output_tokens"]
@@ -76,9 +72,7 @@ def audit_serving_example(root, accept):
         metrics["output_tokens_per_second"],
     )
     geometry = read_json(cell / "geometry.jsonl")
-    assert (
-        geometry["direct"] and geometry["dsync"] and geometry["page_bytes"] == 1572864
-    )
+    assert geometry["direct"] and geometry["dsync"] and geometry["page_bytes"] == 1572864
     final_io_counters = json.loads((cell / "io.jsonl").read_text().splitlines()[-1])
     assert (
         final_io_counters["evictions"]
@@ -90,17 +84,12 @@ def audit_serving_example(root, accept):
     )
     assert final_io_counters["resident_ssd_pages"] <= serving_settings["ssd_pages"]
     if accept:
-        assert (
-            0 < final_io_counters["restored_pages"] <= final_io_counters["read_pages"]
-        )
+        assert 0 < final_io_counters["restored_pages"] <= final_io_counters["read_pages"]
         assert (
             final_io_counters["written_pages"] == serving_settings["write_budget_pages"]
             and final_io_counters["unwritten_offers"] > 0
         )
-        assert (
-            final_io_counters["replacements"] > 0
-            and final_io_counters["free_retentions"] > 0
-        )
+        assert final_io_counters["replacements"] > 0 and final_io_counters["free_retentions"] > 0
     else:
         assert (
             final_io_counters["written_pages"]
@@ -110,9 +99,9 @@ def audit_serving_example(root, accept):
         )
         assert final_io_counters["unwritten_offers"] > 0
     comparable_settings = {
-        p95_index: v
-        for p95_index, v in serving_settings.items()
-        if p95_index not in ("output", "policy_factory")
+        setting_name: setting_value
+        for setting_name, setting_value in serving_settings.items()
+        if setting_name not in ("output", "policy_factory")
     }
     return (
         comparable_settings,
@@ -130,12 +119,8 @@ def audit_serving_example(root, accept):
 
 def main(accept_directory, reject_directory, report_path):
     """Check matching outputs and save the paired correctness report."""
-    accept_settings, accept_tokens, accept_report = audit_serving_example(
-        accept_directory, True
-    )
-    reject_settings, reject_tokens, reject_report = audit_serving_example(
-        reject_directory, False
-    )
+    accept_settings, accept_tokens, accept_report = audit_serving_example(accept_directory, True)
+    reject_settings, reject_tokens, reject_report = audit_serving_example(reject_directory, False)
     assert accept_settings == reject_settings and accept_tokens == reject_tokens
     result = dict(
         status="PASS",
@@ -149,8 +134,8 @@ def main(accept_directory, reject_directory, report_path):
         restored_gpu_bytes_checked=True,
         performance_benchmark=False,
         source_sha256={
-            f.name: hashlib.sha256(f.read_bytes()).hexdigest()
-            for f in sorted(Path(__file__).resolve().parent.glob("*.py"))
+            source_file.name: hashlib.sha256(source_file.read_bytes()).hexdigest()
+            for source_file in sorted(Path(__file__).resolve().parent.glob("*.py"))
         },
     )
     report_path.write_text(json.dumps(result, indent=2) + "\n")

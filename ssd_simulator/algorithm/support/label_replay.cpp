@@ -67,12 +67,16 @@ template <class T> struct Map {
   }
 };
 
-struct Hash {
+struct BlockDigest {
   SHA256_CTX c;
 
-  Hash() { SHA256_Init(&c); }
+  BlockDigest() {
+    SHA256_Init(&c);
+  }
 
-  void add(int32_t x) { SHA256_Update(&c, &x, 4); }
+  void add(int32_t x) {
+    SHA256_Update(&c, &x, 4);
+  }
 
   string finish_sha256() const {
     auto q = c;
@@ -85,11 +89,11 @@ struct Hash {
   }
 };
 
-struct Eviction {
+struct EvictionRecord {
   int32_t row, block, last, freq, nev, born;
 };
 
-static_assert(sizeof(Eviction) == 24);
+static_assert(sizeof(EvictionRecord) == 24);
 
 static uint64_t mix(uint64_t x) {
   x ^= x >> 33;
@@ -101,15 +105,13 @@ static uint64_t mix(uint64_t x) {
 }
 
 static double seeded_admission_draw(int64_t id, uint64_t seed) {
-  return double(
-             mix(uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >>
-             11) /
+  return double(mix(uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL) >> 11) /
          9007199254740992.;
 }
 
 // Portable order-statistics treap. Allocation is bounded by live history plus
 // one temporary observation; deleting old observations recycles their nodes.
-class OST {
+class ScoreHistory {
   using Key = pair<double, int64_t>;
 
   struct Item {
@@ -122,7 +124,9 @@ class OST {
   vector<int> free;
   int root = -1;
 
-  int count(int x) const { return x < 0 ? 0 : nodes[x].size; }
+  int count(int x) const {
+    return x < 0 ? 0 : nodes[x].size;
+  }
 
   void update_subtree_size(int x) {
     if (x >= 0)
@@ -214,7 +218,9 @@ public:
     root = insert_subtree_node(root, x);
   }
 
-  void erase(Key k) { root = remove(root, k); }
+  void erase(Key k) {
+    root = remove(root, k);
+  }
 
   size_t order_of_key(Key k) const {
     int x = root;
@@ -256,9 +262,13 @@ struct Cache {
   int cap, n = 0, head = -1, tail = -1;
   int64_t peak = 0;
 
-  Cache(int nb, int c) : slot(nb, -1), cap(c) { nd.reserve(min(c, 1000000)); }
+  Cache(int nb, int c) : slot(nb, -1), cap(c) {
+    nd.reserve(min(c, 1000000));
+  }
 
-  bool contains_block(int b) const { return slot[b] >= 0; }
+  bool contains_block(int b) const {
+    return slot[b] >= 0;
+  }
 
   void mark_block_used(int b) {
     int s = slot[b];
@@ -322,7 +332,7 @@ struct Cache {
   }
 
   string cache_order_sha256() const {
-    Hash h;
+    BlockDigest h;
     int count = 0;
     for (int s = head; s >= 0; s = nd[s].next) {
       h.add(nd[s].b);
@@ -349,20 +359,20 @@ struct Cache {
 
 #include "marginal_labels.hpp"
 
-struct Obs {
+struct OfferObservation {
   double score;
   int64_t id, time;
 };
 
-struct Wallet {
+struct WriteBudgetController {
   int64_t budget, end, release, update, limit, W = 0, observations = 0, cap;
   double reserve, demand, threshold = -INFINITY, tie = 1;
   bool have = false, released = false;
-  deque<Obs> hist;
-  OST order;
+  deque<OfferObservation> hist;
+  ScoreHistory order;
 
-  Wallet(int64_t b, int64_t e, int64_t r, int64_t u, int64_t l, double res,
-         double d)
+  WriteBudgetController(int64_t b, int64_t e, int64_t r, int64_t u, int64_t l, double res,
+                        double d)
       : budget(b), end(e), release(r), update(u), limit(l),
         cap(int64_t(floor((1 - res) * double(b)))), reserve(res), demand(d) {}
 
@@ -385,9 +395,7 @@ struct Wallet {
     double span = max((hist.back().time - hist.front().time) / 1e6, 1.0),
            rate = hist.size() / span,
            horizon = max(((released ? end : release) - now) / 1e6, 1.0);
-    double frac =
-        clamp(demand * max(double(cap - W), 0.0) / max(rate * horizon, 1e-9),
-              0.0, 1.0);
+    double frac = clamp(demand * max(double(cap - W), 0.0) / max(rate * horizon, 1e-9), 0.0, 1.0);
     if (frac <= 0) {
       threshold = INFINITY;
       tie = 0;
@@ -398,16 +406,14 @@ struct Wallet {
       double wanted = frac * hist.size();
       size_t k = min(hist.size() - 1, size_t(floor(hist.size() - wanted)));
       double th = order.find_by_order(k)->first;
-      auto lo = order.order_of_key({th, LLONG_MIN}),
-           hi = order.order_of_key({th, LLONG_MAX});
+      auto lo = order.order_of_key({th, LLONG_MIN}), hi = order.order_of_key({th, LLONG_MAX});
       threshold = th;
       tie = clamp((wanted - (hist.size() - hi)) / double(hi - lo), 0.0, 1.0);
     }
     have = true;
   }
 
-  bool passes_admission_cutoff(double score, int64_t id, uint64_t seed,
-                               int64_t now) {
+  bool passes_admission_cutoff(double score, int64_t id, uint64_t seed, int64_t now) {
     release_reserved_budget_if_due(now);
     return W < budget && W < cap &&
            (!have || score > threshold ||
@@ -415,8 +421,7 @@ struct Wallet {
   }
 
   void record_eviction_score(double score, int64_t id, int64_t now) {
-    require_condition(isfinite(score) && score >= 0,
-                      "nonfinite/negative score");
+    require_condition(isfinite(score) && score >= 0, "nonfinite/negative score");
     hist.push_back({score, id, now});
     order.insert({score, id});
     if (hist.size() > size_t(limit)) {
@@ -432,12 +437,10 @@ struct Wallet {
 
 // The driver emits this restricted JSON shape. Parse numeric arrays exactly;
 // do not accept a different ID order or infer scores from missing entries.
-static string find_json_field_value(const string &response_json,
-                                    const string &field_name) {
+static string find_json_field_value(const string &response_json, const string &field_name) {
   string key = '"' + field_name + '"';
   auto field_position = response_json.find(key);
-  require_condition(field_position != string::npos,
-                    "missing response " + field_name);
+  require_condition(field_position != string::npos, "missing response " + field_name);
   field_position = response_json.find(':', field_position + key.size());
   require_condition(field_position != string::npos, "response colon");
   return response_json.substr(field_position + 1);
@@ -457,15 +460,14 @@ static vector<double> read_json_number_array(const string &response_json,
       break;
     char *number_end = nullptr;
     double parsed_value = strtod(cursor, &number_end);
-    require_condition(number_end != cursor && isfinite(parsed_value),
-                      "invalid response number");
+    require_condition(number_end != cursor && isfinite(parsed_value), "invalid response number");
     values.push_back(parsed_value);
     cursor = number_end;
   }
   return values;
 }
 
-static void refresh_offer_scores(Wallet &w, int64_t cut) {
+static void refresh_offer_scores(WriteBudgetController &w, int64_t cut) {
   cout << "{\"event\":\"reprice\",\"cut_us\":" << cut << ",\"ids\":[";
   bool comma = false;
   for (auto &o : w.hist) {
@@ -478,16 +480,12 @@ static void refresh_offer_scores(Wallet &w, int64_t cut) {
   string s;
   require_condition(bool(getline(cin, s)), "reprice response missing");
   require_condition(s.find("reprice_scores") != string::npos, "reprice event");
-  require_condition(stoll(find_json_field_value(s, "cut_us")) == cut,
-                    "reprice cut mismatch");
-  auto ids = read_json_number_array(s, "ids"),
-       scores = read_json_number_array(s, "scores");
-  require_condition(ids.size() == w.hist.size() && scores.size() == ids.size(),
-                    "reprice length");
+  require_condition(stoll(find_json_field_value(s, "cut_us")) == cut, "reprice cut mismatch");
+  auto ids = read_json_number_array(s, "ids"), scores = read_json_number_array(s, "scores");
+  require_condition(ids.size() == w.hist.size() && scores.size() == ids.size(), "reprice length");
   w.order.clear();
   for (size_t j = 0; j < ids.size(); j++) {
-    require_condition(ids[j] == double(w.hist[j].id) && scores[j] >= 0,
-                      "reprice IDs/score");
+    require_condition(ids[j] == double(w.hist[j].id) && scores[j] >= 0, "reprice IDs/score");
     w.hist[j].score = scores[j];
     w.order.insert({scores[j], w.hist[j].id});
   }
@@ -495,17 +493,15 @@ static void refresh_offer_scores(Wallet &w, int64_t cut) {
 }
 
 struct Metrics {
-  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail_tokens = 0,
-          hbm_prefix = 0, prefix = 0, ssd_positions = 0, ssd_payloads = 0,
-          writes = 0, evictions = 0, absent_offers = 0, free_retained = 0,
-          eligible_raw = 0, bypass = 0, cap_lost = 0, reprograms = 0,
-          ssd_evictions = 0;
+  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail_tokens = 0, hbm_prefix = 0,
+          prefix = 0, ssd_positions = 0, ssd_payloads = 0, writes = 0, evictions = 0,
+          absent_offers = 0, free_retained = 0, eligible_raw = 0, bypass = 0, cap_lost = 0,
+          reprograms = 0, ssd_evictions = 0;
 };
 
 static string metrics_json(const Metrics &m) {
   ostringstream s;
-  s << "{\"requests\":" << m.requests
-    << ",\"prompt_blocks\":" << m.prompt_blocks
+  s << "{\"requests\":" << m.requests << ",\"prompt_blocks\":" << m.prompt_blocks
     << ",\"prompt_tokens\":" << m.prompt_tokens
     << ",\"unrepresented_tail_tokens\":" << m.tail_tokens
     << ",\"hbm_only_prefix_positions\":" << m.hbm_prefix
@@ -513,19 +509,16 @@ static string metrics_json(const Metrics &m) {
     << ",\"ssd_fetched_prefix_positions\":" << m.ssd_positions
     << ",\"ssd_payload_reads\":" << m.ssd_payloads
     << ",\"incremental_prefix_positions\":" << m.prefix - m.hbm_prefix
-    << ",\"physical_writes\":" << m.writes
-    << ",\"hbm_evictions\":" << m.evictions
-    << ",\"absent_offers\":" << m.absent_offers
-    << ",\"free_retained\":" << m.free_retained
+    << ",\"physical_writes\":" << m.writes << ",\"hbm_evictions\":" << m.evictions
+    << ",\"absent_offers\":" << m.absent_offers << ",\"free_retained\":" << m.free_retained
     << ",\"raw_repeated_hbm_misses_diagnostic\":" << m.eligible_raw
     << ",\"oversized_bypass\":" << m.bypass
     << ",\"last_token_cap_excluded_positions\":" << m.cap_lost
-    << ",\"reprograms\":" << m.reprograms
-    << ",\"ssd_evictions\":" << m.ssd_evictions << '}';
+    << ",\"reprograms\":" << m.reprograms << ",\"ssd_evictions\":" << m.ssd_evictions << '}';
   return s.str();
 }
 
-int main(int argc, char **argv) {
+int main(int argument_count, char **arguments) {
   try {
     const set<string> allowed = {"--prefix",
                                  "--out-prefix",
@@ -558,18 +551,17 @@ int main(int argc, char **argv) {
                                  "--debug-jsonl"};
     map<string, string> options;
     set<string> flags;
-    for (int j = 1; j < argc; j++) {
-      string option_name = argv[j];
+    for (int j = 1; j < argument_count; j++) {
+      string option_name = arguments[j];
       require_condition(option_name.rfind("--", 0) == 0, "expected option");
       if (option_name == "--reprice-stdio") {
         require_condition(!flags.count(option_name), "duplicate flag");
         flags.insert(option_name);
       } else {
-        require_condition(allowed.count(option_name),
-                          "unknown option " + option_name);
-        require_condition(j + 1 < argc, "option value");
+        require_condition(allowed.count(option_name), "unknown option " + option_name);
+        require_condition(j + 1 < argument_count, "option value");
         require_condition(!options.count(option_name), "duplicate option");
-        options[option_name] = argv[++j];
+        options[option_name] = arguments[++j];
       }
     }
     auto required_option = [&](string option_name) {
@@ -596,24 +588,19 @@ int main(int argc, char **argv) {
     double reserve = stod(option_or_default("--reserve", "0")),
            demand = stod(option_or_default("--demand-multiplier", "1")),
            coin = stod(option_or_default("--coin-probability", "0.5"));
-    require_condition(block_id_count > 0 && hbm_capacity > 0 &&
-                          ssd_capacity > 0 && write_budget >= 0 && split >= 0 &&
-                          end > split && stop <= end && stop >= 0,
+    require_condition(block_id_count > 0 && hbm_capacity > 0 && ssd_capacity > 0 &&
+                          write_budget >= 0 && split >= 0 && end > split && stop <= end &&
+                          stop >= 0,
                       "geometry");
-    require_condition(update > 0 && history >= 100 && release > 0 &&
-                          release <= end && reserve >= 0 && reserve < 1 &&
-                          isfinite(demand) && demand > 0 && coin >= 0 &&
-                          coin <= 1,
+    require_condition(update > 0 && history >= 100 && release > 0 && release <= end &&
+                          reserve >= 0 && reserve < 1 && isfinite(demand) && demand > 0 &&
+                          coin >= 0 && coin <= 1,
                       "controller configuration");
-    require_condition(mode == "quantile" || mode == "all" || mode == "coin" ||
-                          mode == "bits",
+    require_condition(mode == "quantile" || mode == "all" || mode == "coin" || mode == "bits",
                       "policy mode");
-    Map<int32_t> block_counts(stream_prefix + "_nb.i32"),
-        block_ids(stream_prefix + "_ids.i32");
-    Map<int64_t> arrival_times(stream_prefix + "_ts.i64"),
-        tokens(required_option("--tokens"));
-    require_condition(block_counts.n == arrival_times.n &&
-                          block_counts.n == tokens.n &&
+    Map<int32_t> block_counts(stream_prefix + "_nb.i32"), block_ids(stream_prefix + "_ids.i32");
+    Map<int64_t> arrival_times(stream_prefix + "_ts.i64"), tokens(required_option("--tokens"));
+    require_condition(block_counts.n == arrival_times.n && block_counts.n == tokens.n &&
                           block_counts.n <= INT_MAX,
                       "request shapes");
     unique_ptr<Map<double>> scores;
@@ -626,9 +613,9 @@ int main(int argc, char **argv) {
     if (options.count("--fixed-program-bits"))
       fixedbits = make_unique<Map<uint8_t>>(options["--fixed-program-bits"]);
     require_condition(mode != "bits" || fixedbits, "fixed bits required");
-    unique_ptr<Map<Eviction>> expected;
+    unique_ptr<Map<EvictionRecord>> expected;
     if (options.count("--expected-evictions"))
-      expected = make_unique<Map<Eviction>>(options["--expected-evictions"]);
+      expected = make_unique<Map<EvictionRecord>>(options["--expected-evictions"]);
     unique_ptr<Map<int64_t>> cuts;
     if (options.count("--cuts-i64")) {
       cuts = make_unique<Map<int64_t>>(options["--cuts-i64"]);
@@ -639,30 +626,24 @@ int main(int argc, char **argv) {
                               (j == 0 || (*cuts)[j] > (*cuts)[j - 1]),
                           "invalid fit cuts");
     }
-    require_condition(!flags.count("--reprice-stdio") || cuts,
-                      "repricing cuts required");
-    require_condition(!cuts || flags.count("--reprice-stdio"),
-                      "cuts without repricing");
+    require_condition(!flags.count("--reprice-stdio") || cuts, "repricing cuts required");
+    require_condition(!cuts || flags.count("--reprice-stdio"), "cuts without repricing");
     require_condition(!cuts || mode == "quantile", "only quantile reprices");
-    require_condition(
-        access((output_prefix + ".rows.i64").c_str(), F_OK) != 0 &&
-            access((output_prefix + ".programs.bits").c_str(), F_OK) != 0,
-        "output already exists");
-    for (string option_name :
-         {"--evictions-out", "--events-out", "--debug-jsonl"})
+    require_condition(access((output_prefix + ".rows.i64").c_str(), F_OK) != 0 &&
+                          access((output_prefix + ".programs.bits").c_str(), F_OK) != 0,
+                      "output already exists");
+    for (string option_name : {"--evictions-out", "--events-out", "--debug-jsonl"})
       if (options.count(option_name))
         require_condition(access(options[option_name].c_str(), F_OK) != 0,
                           "output already exists " + option_name);
     Cache hbm_cache(block_id_count, min(block_id_count, hbm_capacity)),
-        ssd_cache(block_id_count,
-                  int(min<int64_t>(block_id_count, ssd_capacity)));
+        ssd_cache(block_id_count, int(min<int64_t>(block_id_count, ssd_capacity)));
     vector<int32_t> mark(block_id_count, -1), fetched(block_id_count, -1),
         last(block_id_count, -1), freq(block_id_count), nev(block_id_count),
         born(block_id_count, -1);
     vector<uint8_t> ever(block_id_count), programs;
-    Wallet wallet(write_budget, end, release, update, history, reserve, demand);
-    ofstream rows(output_prefix + ".rows.i64", ios::binary), evout, eventsout,
-        debug;
+    WriteBudgetController wallet(write_budget, end, release, update, history, reserve, demand);
+    ofstream rows(output_prefix + ".rows.i64", ios::binary), evout, eventsout, debug;
     require_condition(bool(rows), "rows output");
     if (options.count("--evictions-out")) {
       evout.open(options["--evictions-out"], ios::binary);
@@ -679,7 +660,7 @@ int main(int argc, char **argv) {
     Marginal marginal(block_id_count, required_option("--label-samples"),
                       required_option("--label-credit"), output_prefix,
                       stoll(option_or_default("--label-event-offset", "0")));
-    Hash evhash, eventhash;
+    BlockDigest evhash, eventhash;
     Metrics total, eval;
     int64_t eviction_count = 0, writes_before_evaluation = 0;
     size_t block_offset = 0, next_model_cutoff = 0;
@@ -698,26 +679,21 @@ int main(int argc, char **argv) {
       require_condition(size_t(e / 8) < m.n, "decision bit coverage");
       return bool((m[e / 8] >> (e % 8)) & 1);
     };
-    for (int request_index = 0; request_index < int(block_counts.n);
-         request_index++) {
+    for (int request_index = 0; request_index < int(block_counts.n); request_index++) {
       int64_t now = arrival_times[request_index];
-      require_condition(request_index == 0 ||
-                            now >= arrival_times[request_index - 1],
+      require_condition(request_index == 0 || now >= arrival_times[request_index - 1],
                         "nonmonotonic timestamps");
-      require_condition(
-          block_counts[request_index] >= 0 &&
-              block_offset + size_t(block_counts[request_index]) <=
-                  block_ids.n &&
-              tokens[request_index] >= 0 &&
-              tokens[request_index] / 16 == block_counts[request_index],
-          "token/hash mapping");
+      require_condition(block_counts[request_index] >= 0 &&
+                            block_offset + size_t(block_counts[request_index]) <= block_ids.n &&
+                            tokens[request_index] >= 0 &&
+                            tokens[request_index] / 16 == block_counts[request_index],
+                        "token/hash mapping");
       if (now < split) {
         block_offset += block_counts[request_index];
         continue;
       }
       if (now >= split && !snapped) {
-        require_condition(hbm_cache.n == 0 && ssd_cache.n == 0 && wallet.W == 0,
-                          "cold day4");
+        require_condition(hbm_cache.n == 0 && ssd_cache.n == 0 && wallet.W == 0, "cold day4");
         writes_before_evaluation = wallet.W;
         warmE = eviction_count;
         warmh = hbm_cache.cache_order_sha256();
@@ -730,8 +706,7 @@ int main(int argc, char **argv) {
         wallet.recalculate_admission_cutoff(split);
         initialized = true;
       }
-      while (cuts && next_model_cutoff < cuts->n &&
-             (*cuts)[next_model_cutoff] <= now) {
+      while (cuts && next_model_cutoff < cuts->n && (*cuts)[next_model_cutoff] <= now) {
         refresh_offer_scores(wallet, (*cuts)[next_model_cutoff]);
         next_model_cutoff++;
       }
@@ -740,11 +715,9 @@ int main(int argc, char **argv) {
       row.prompt_blocks = block_counts[request_index];
       row.prompt_tokens = tokens[request_index];
       row.tail_tokens = tokens[request_index] % 16;
-      int64_t cap =
-          tokens[request_index] > 0 ? (tokens[request_index] - 1) / 16 : 0;
+      int64_t cap = tokens[request_index] > 0 ? (tokens[request_index] - 1) / 16 : 0;
       row.cap_lost = block_counts[request_index] - cap;
-      require_condition(cap >= 0 && cap <= block_counts[request_index] &&
-                            row.cap_lost <= 1,
+      require_condition(cap >= 0 && cap <= block_counts[request_index] && row.cap_lost <= 1,
                         "prefix cap");
       vector<int> ds;
       ds.reserve(block_counts[request_index]);
@@ -785,9 +758,8 @@ int main(int argc, char **argv) {
             rowfetches.push_back(b);
           }
         }
-        marginal.count_marginal_read_savings(hbm_cache, ssd_cache, block_ids,
-                                             block_offset, cap, row.prefix,
-                                             request_index);
+        marginal.count_marginal_read_savings(hbm_cache, ssd_cache, block_ids, block_offset, cap,
+                                             row.prefix, request_index);
         int missing = 0;
         for (int b : ds) {
           if (hbm_cache.contains_block(b))
@@ -799,18 +771,15 @@ int main(int argc, char **argv) {
         while (hbm_capacity - hbm_cache.n < missing) {
           int b = hbm_cache.least_recent_block();
           require_condition(last[b] >= 0 && born[b] >= 0, "victim history");
-          Eviction ev{request_index, b, last[b], freq[b], nev[b], born[b]};
+          EvictionRecord ev{request_index, b, last[b], freq[b], nev[b], born[b]};
           if (expected) {
-            require_condition(
-                size_t(eviction_count) < expected->n &&
-                    !memcmp(&ev, &(*expected)[eviction_count], sizeof ev),
-                "HBM eviction identity mismatch at " +
-                    to_string(eviction_count));
+            require_condition(size_t(eviction_count) < expected->n &&
+                                  !memcmp(&ev, &(*expected)[eviction_count], sizeof ev),
+                              "HBM eviction identity mismatch at " + to_string(eviction_count));
           }
           if (evout)
             evout.write((char *)&ev, sizeof ev);
-          for (int32_t x :
-               {ev.row, ev.block, ev.last, ev.freq, ev.nev, ev.born})
+          for (int32_t x : {ev.row, ev.block, ev.last, ev.freq, ev.nev, ev.born})
             evhash.add(x);
           emit_event(b, request_index);
           nev[b]++;
@@ -823,9 +792,7 @@ int main(int argc, char **argv) {
               b, eid + stoll(option_or_default("--label-event-offset", "0")));
           bool forced = mode == "bits" || (warmbits && now < split);
           bool desired =
-              forced
-                  ? bit(warmbits && now < split ? *warmbits : *fixedbits, eid)
-                  : false;
+              forced ? bit(warmbits && now < split ? *warmbits : *fixedbits, eid) : false;
           if (ssd_cache.contains_block(b)) {
             require_condition(!desired, "fixed program on resident copy");
             ssd_cache.mark_block_used(b);
@@ -837,8 +804,7 @@ int main(int argc, char **argv) {
             bool admit = false;
             double score = 0;
             if (mode == "quantile") {
-              require_condition(scores && size_t(eid) < scores->n,
-                                "score coverage");
+              require_condition(scores && size_t(eid) < scores->n, "score coverage");
               score = (*scores)[eid];
               require_condition(isfinite(score) && score >= 0, "score value");
             }
@@ -849,8 +815,7 @@ int main(int argc, char **argv) {
             } else if (mode == "all")
               admit = wallet.W < write_budget;
             else if (mode == "coin")
-              admit = wallet.W < write_budget &&
-                      seeded_admission_draw(eid, seed) < coin;
+              admit = wallet.W < write_budget && seeded_admission_draw(eid, seed) < coin;
             else
               admit = wallet.passes_admission_cutoff(score, eid, seed, now);
             if (admit) {
@@ -921,18 +886,16 @@ int main(int argc, char **argv) {
         add(total);
       if (now >= split) {
         add(eval);
-        int64_t z[13] = {
-            request_index,        now,          block_counts[request_index],
-            row.hbm_prefix,       row.prefix,   row.ssd_positions,
-            row.ssd_payloads,     row.writes,   row.evictions,
-            row.bypass,           row.cap_lost, row.eligible_raw,
-            tokens[request_index]};
+        int64_t z[13] = {request_index,        now,          block_counts[request_index],
+                         row.hbm_prefix,       row.prefix,   row.ssd_positions,
+                         row.ssd_payloads,     row.writes,   row.evictions,
+                         row.bypass,           row.cap_lost, row.eligible_raw,
+                         tokens[request_index]};
         rows.write((char *)z, sizeof z);
       }
       if (debug) {
         debug << "{\"row\":" << request_index << ",\"now\":" << now
-              << ",\"metrics\":" << metrics_json(row)
-              << ",\"writes_total\":" << wallet.W
+              << ",\"metrics\":" << metrics_json(row) << ",\"writes_total\":" << wallet.W
               << ",\"hbm\":" << hbm_cache.cache_order_json()
               << ",\"ssd\":" << ssd_cache.cache_order_json() << ",\"offers\":[";
         for (size_t j = 0; j < rowoffers.size(); j++) {
@@ -982,22 +945,18 @@ int main(int argc, char **argv) {
          << write_budget << ",\"writes\":" << wallet.W
          << ",\"W_pre\":" << writes_before_evaluation
          << ",\"W_test\":" << wallet.W - writes_before_evaluation
-         << ",\"processed_evictions\":" << eviction_count
-         << ",\"warm_evictions\":" << warmE
+         << ",\"processed_evictions\":" << eviction_count << ",\"warm_evictions\":" << warmE
          << ",\"controller_observations\":" << wallet.observations
-         << ",\"repricing_snapshots\":" << next_model_cutoff
-         << ",\"peak_hbm\":" << hbm_cache.peak
-         << ",\"peak_ssd\":" << ssd_cache.peak << ",\"warm_hbm_sha256\":\""
-         << warmh << "\",\"warm_ssd_sha256\":\"" << warms
-         << "\",\"final_hbm_sha256\":\"" << hbm_cache.cache_order_sha256()
-         << "\",\"final_ssd_sha256\":\"" << ssd_cache.cache_order_sha256()
-         << "\",\"eviction_records_sha256\":\"" << evhash.finish_sha256()
-         << "\",\"hbm_signed_event_sha256\":\"" << eventhash.finish_sha256()
-         << "\",\"total\":" << metrics_json(total)
+         << ",\"repricing_snapshots\":" << next_model_cutoff << ",\"peak_hbm\":" << hbm_cache.peak
+         << ",\"peak_ssd\":" << ssd_cache.peak << ",\"warm_hbm_sha256\":\"" << warmh
+         << "\",\"warm_ssd_sha256\":\"" << warms << "\",\"final_hbm_sha256\":\""
+         << hbm_cache.cache_order_sha256() << "\",\"final_ssd_sha256\":\""
+         << ssd_cache.cache_order_sha256() << "\",\"eviction_records_sha256\":\""
+         << evhash.finish_sha256() << "\",\"hbm_signed_event_sha256\":\""
+         << eventhash.finish_sha256() << "\",\"total\":" << metrics_json(total)
          << ",\"evaluation\":" << metrics_json(eval) << "}" << endl;
     marginal.events.close();
-    require_condition(bool(marginal.events) && marginal.tests > 0,
-                      "label verification");
+    require_condition(bool(marginal.events) && marginal.tests > 0, "label verification");
     cerr << "explicit toggles verified " << marginal.tests << endl;
     return 0;
   } catch (const exception &e) {

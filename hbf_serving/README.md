@@ -11,10 +11,10 @@ This prototype uses a separate region of GPU memory to stand in for HBF. Reads r
 | File | What it does |
 | --- | --- |
 | [run.py](run.py) | Choose the HBM-only or HBF run and start it |
-| [code/run_cell.py](code/run_cell.py) | Send requests and measure hits, throughput and latency |
+| [code/run_serving.py](code/run_serving.py) | Send requests and measure hits, throughput and latency |
 | [code/direct_backend.py](code/direct_backend.py) | Connect the scheduler to the cache and the GPU worker |
 | [code/direct_backend_hbf.py](code/direct_backend_hbf.py) | Ask RANCHO what to write and move accepted KV |
-| [code/updated_policy.py](code/updated_policy.py) | Use the predictor, reuse history and write budget to decide |
+| [code/hbf_admission.py](code/hbf_admission.py) | Use the predictor, reuse history and write budget to decide |
 | [code/physical_hbf.py](code/physical_hbf.py) | Limit writes using time and the allowance |
 
 ## Synthetic run

@@ -37,13 +37,9 @@ class NativeCachePages:
             if getattr(tensor, "block_stride", 0) > 0
             for name in tensor.shared_by
         }
-        expected = [
-            name for group in config.kv_cache_groups for name in group.layer_names
-        ]
+        expected = [name for group in config.kv_cache_groups for name in group.layer_names]
         if len(set(expected)) != len(expected) or set(caches) != set(expected):
-            raise ValueError(
-                "Registration must contain every native layer exactly once"
-            )
+            raise ValueError("Registration must contain every native layer exactly once")
         for group_index, group in enumerate(config.kv_cache_groups):
             per_layer = (
                 group.kv_cache_spec.kv_cache_specs
@@ -54,20 +50,14 @@ class NativeCachePages:
                 spec = per_layer.get(name, group.kv_cache_spec)
                 tensor = caches[name]
                 if not isinstance(tensor, torch.Tensor):
-                    raise TypeError(
-                        "Use registered raw page tensors, not partial state views"
-                    )
+                    raise TypeError("Use registered raw page tensors, not partial state views")
                 page = spec.page_size_bytes
-                raw_page_view = torch.empty(
-                    0, dtype=torch.uint8, device=tensor.device
-                ).set_(tensor.untyped_storage())
+                raw_page_view = torch.empty(0, dtype=torch.uint8, device=tensor.device).set_(
+                    tensor.untyped_storage()
+                )
                 offset = tensor.storage_offset() * tensor.element_size()
                 if isinstance(spec, AttentionSpec):
-                    stride = (
-                        tensor.stride(0) * tensor.element_size()
-                        if name in packed
-                        else page
-                    )
+                    stride = tensor.stride(0) * tensor.element_size() if name in packed else page
                 elif isinstance(spec, MambaSpec):
                     if tensor.dtype != torch.int8 or not tensor.is_contiguous():
                         raise ValueError(
@@ -79,8 +69,7 @@ class NativeCachePages:
                 if (
                     stride < page
                     or offset < 0
-                    or offset + (self.num_blocks - 1) * stride + page
-                    > raw_page_view.numel()
+                    or offset + (self.num_blocks - 1) * stride + page > raw_page_view.numel()
                 ):
                     raise ValueError("Page layout exceeds registered allocation")
                 self.pages[name] = torch.as_strided(
@@ -111,7 +100,8 @@ class NativeCachePages:
         for group, page_ids in blocks.items():
             page_ids = list(page_ids)
             if not page_ids or any(
-                type(i) is not int or not 0 <= i < self.num_blocks for i in page_ids
+                type(page_id) is not int or not 0 <= page_id < self.num_blocks
+                for page_id in page_ids
             ):
                 raise ValueError("Invalid native page index")
             if len(set(page_ids)) != len(page_ids):
@@ -132,9 +122,11 @@ class NativeCachePages:
             pages[name] = view.index_select(0, indices).clone()
         return Snapshot(
             self.layout_sha256,
-            tuple(sorted((g, len(v)) for g, v in selected.items())),
+            tuple(sorted((cache_group, len(layers)) for cache_group, layers in selected.items())),
             pages,
-            sum(x.numel() * x.element_size() for x in pages.values()),
+            sum(
+                page_tensor.numel() * page_tensor.element_size() for page_tensor in pages.values()
+            ),
         )
 
     def restore_page_data(self, snapshot, blocks):
@@ -142,17 +134,16 @@ class NativeCachePages:
         import torch
 
         selected = self._prepare_page_indices(blocks)
-        if snapshot.layout_sha256 != self.layout_sha256 or set(snapshot.pages) != set(
-            self.pages
-        ):
+        if snapshot.layout_sha256 != self.layout_sha256 or set(snapshot.pages) != set(self.pages):
             raise ValueError("Incomplete or incompatible hybrid snapshot")
         if (
-            tuple(sorted((g, len(v)) for g, v in selected.items()))
+            tuple(sorted((cache_group, len(layers)) for cache_group, layers in selected.items()))
             != snapshot.rows_per_group
         ):
             raise ValueError("Source and destination group lengths differ")
         if snapshot.bytes != sum(
-            x.numel() * x.element_size() for x in snapshot.pages.values()
+            page_tensor.numel() * page_tensor.element_size()
+            for page_tensor in snapshot.pages.values()
         ):
             raise ValueError("Snapshot byte accounting changed")
         for name, target in self.pages.items():
@@ -163,9 +154,7 @@ class NativeCachePages:
                 or source.device != target.device
                 or source.shape != (count, target.shape[1])
             ):
-                raise ValueError(
-                    "A layer snapshot has the wrong shape, dtype or device"
-                )
+                raise ValueError("A layer snapshot has the wrong shape, dtype or device")
         # All validation above precedes the first mutation. GPU completion and
         # cache visibility are deliberately the caller's explicit responsibility.
         for name, target in self.pages.items():

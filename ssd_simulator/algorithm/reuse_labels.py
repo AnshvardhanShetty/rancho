@@ -28,9 +28,7 @@ def build_hourly_saved_read_counts(
     # Row h contains only gains observed strictly before hour h starts.
     with Path(destination).open("xb") as label_file:
         for cutoff_us in np.arange(169, dtype=np.int64) * 3600000000:
-            for stream_index, (events, observed_at) in enumerate(
-                zip(streams, event_times_us)
-            ):
+            for stream_index, (events, observed_at) in enumerate(zip(streams, event_times_us)):
                 stop_event = int(observed_at.searchsorted(cutoff_us, side="left"))
                 batch = events[next_event_by_stream[stream_index] : stop_event]
                 next_event_by_stream[stream_index] = stop_event
@@ -45,6 +43,4 @@ def build_hourly_saved_read_counts(
         for events_consumed, events in zip(next_event_by_stream, streams)
     ):
         raise ValueError("Unconsumed events after the final cutoff")
-    return dict(
-        shape=[169, len(sampled_eviction_ids)], sum_observed=int(reads_unlocked.sum())
-    )
+    return dict(shape=[169, len(sampled_eviction_ids)], sum_observed=int(reads_unlocked.sum()))

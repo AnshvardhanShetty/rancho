@@ -28,7 +28,7 @@ static void require_condition(bool b, const string &s) {
     throw runtime_error(s);
 }
 
-template <class T> class Input {
+template <class T> class RequestArray {
   int fd;
   size_t bytes;
   const T *data = nullptr;
@@ -36,7 +36,7 @@ template <class T> class Input {
 public:
   size_t size;
 
-  explicit Input(const string &p) {
+  explicit RequestArray(const string &p) {
     fd = open(p.c_str(), O_RDONLY);
     require_condition(fd >= 0, "open " + p);
     struct stat st{};
@@ -51,7 +51,7 @@ public:
     }
   }
 
-  ~Input() {
+  ~RequestArray() {
     if (bytes)
       munmap((void *)data, bytes);
     close(fd);
@@ -63,13 +63,17 @@ public:
   }
 };
 
-class Digest {
+class BlockDigest {
   SHA256_CTX h;
 
 public:
-  Digest() { SHA256_Init(&h); }
+  BlockDigest() {
+    SHA256_Init(&h);
+  }
 
-  void add_block_id(int32_t n) { SHA256_Update(&h, &n, 4); }
+  void add_block_id(int32_t n) {
+    SHA256_Update(&h, &n, 4);
+  }
 
   string str() const {
     auto c = h;
@@ -86,7 +90,7 @@ public:
 // parity against the original hash/list auditor is required by dense_gate.py.
 static int audit_domain = 0;
 
-class LRU {
+class ReferenceCache {
   vector<int32_t> previous, next;
   int head = -1, tail = -1;
   size_t count = 0;
@@ -95,12 +99,16 @@ public:
   int capacity;
   int64_t peak = 0;
 
-  explicit LRU(int c)
+  explicit ReferenceCache(int c)
       : previous(audit_domain, -2), next(audit_domain, -1), capacity(c) {}
 
-  bool contains_block(int b) const { return previous[b] != -2; }
+  bool contains_block(int b) const {
+    return previous[b] != -2;
+  }
 
-  size_t size() const { return count; }
+  size_t size() const {
+    return count;
+  }
 
   void mark_block_used(int b) {
     require_condition(contains_block(b), "touch missing");
@@ -123,8 +131,7 @@ public:
   }
 
   void insert(int b) {
-    require_condition(!contains_block(b) && int(count) < capacity,
-                      "insert capacity");
+    require_condition(!contains_block(b) && int(count) < capacity, "insert capacity");
     previous[b] = tail;
     next[b] = -1;
     if (tail >= 0)
@@ -155,7 +162,7 @@ public:
   }
 
   string cache_order_sha256() const {
-    Digest h;
+    BlockDigest h;
     size_t n = 0;
     for (int b = tail; b >= 0; b = previous[b]) {
       h.add_block_id(b);
@@ -166,13 +173,12 @@ public:
   }
 };
 
-struct Count {
-  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail = 0, hbm = 0,
-          prefix = 0, ssd = 0, payloads = 0, writes = 0, evictions = 0,
-          absent = 0, free = 0, raw = 0, bypass = 0, capped = 0, reprograms = 0,
-          ssd_evictions = 0;
+struct ReplayCounts {
+  int64_t requests = 0, prompt_blocks = 0, prompt_tokens = 0, tail = 0, hbm = 0, prefix = 0,
+          ssd = 0, payloads = 0, writes = 0, evictions = 0, absent = 0, free = 0, raw = 0,
+          bypass = 0, capped = 0, reprograms = 0, ssd_evictions = 0;
 
-  void add(const Count &a) {
+  void add(const ReplayCounts &a) {
     requests += a.requests;
     prompt_blocks += a.prompt_blocks;
     prompt_tokens += a.prompt_tokens;
@@ -195,30 +201,24 @@ struct Count {
   string json() const {
     ostringstream o;
     o << "{\"requests\":" << requests << ",\"prompt_blocks\":" << prompt_blocks
-      << ",\"prompt_tokens\":" << prompt_tokens
-      << ",\"unrepresented_tail_tokens\":" << tail
-      << ",\"hbm_only_prefix_positions\":" << hbm
-      << ",\"combined_prefix_positions\":" << prefix
-      << ",\"ssd_fetched_prefix_positions\":" << ssd
-      << ",\"ssd_payload_reads\":" << payloads
-      << ",\"incremental_prefix_positions\":" << prefix - hbm
-      << ",\"physical_writes\":" << writes << ",\"hbm_evictions\":" << evictions
-      << ",\"absent_offers\":" << absent << ",\"free_retained\":" << free
-      << ",\"raw_repeated_hbm_misses_diagnostic\":" << raw
-      << ",\"oversized_bypass\":" << bypass
-      << ",\"last_token_cap_excluded_positions\":" << capped
-      << ",\"reprograms\":" << reprograms
-      << ",\"ssd_evictions\":" << ssd_evictions << '}';
+      << ",\"prompt_tokens\":" << prompt_tokens << ",\"unrepresented_tail_tokens\":" << tail
+      << ",\"hbm_only_prefix_positions\":" << hbm << ",\"combined_prefix_positions\":" << prefix
+      << ",\"ssd_fetched_prefix_positions\":" << ssd << ",\"ssd_payload_reads\":" << payloads
+      << ",\"incremental_prefix_positions\":" << prefix - hbm << ",\"physical_writes\":" << writes
+      << ",\"hbm_evictions\":" << evictions << ",\"absent_offers\":" << absent
+      << ",\"free_retained\":" << free << ",\"raw_repeated_hbm_misses_diagnostic\":" << raw
+      << ",\"oversized_bypass\":" << bypass << ",\"last_token_cap_excluded_positions\":" << capped
+      << ",\"reprograms\":" << reprograms << ",\"ssd_evictions\":" << ssd_evictions << '}';
     return o.str();
   }
 };
 
-int main(int argc, char **argv) {
+int main(int argument_count, char **arguments) {
   try {
     map<string, string> options;
-    for (int j = 1; j < argc; j += 2) {
-      require_condition(j + 1 < argc, "option value");
-      options[argv[j]] = argv[j + 1];
+    for (int j = 1; j < argument_count; j += 2) {
+      require_condition(j + 1 < argument_count, "option value");
+      options[arguments[j]] = arguments[j + 1];
     }
     auto required_option = [&](string option_name) {
       require_condition(options.count(option_name), "missing " + option_name);
@@ -232,12 +232,10 @@ int main(int argc, char **argv) {
             write_budget = stoll(required_option("--budget")),
             split = stoll(required_option("--eval-start-us")),
             stop = stoll(required_option("--stop-us"));
-    require_condition(block_id_count > 0 && hbm_capacity > 0 &&
-                          ssd_capacity > 0 && write_budget >= 0 && split >= 0 &&
-                          stop >= 0,
+    require_condition(block_id_count > 0 && hbm_capacity > 0 && ssd_capacity > 0 &&
+                          write_budget >= 0 && split >= 0 && stop >= 0,
                       "geometry");
-    string policy =
-        options.count("--verify-policy") ? options["--verify-policy"] : "bits";
+    string policy = options.count("--verify-policy") ? options["--verify-policy"] : "bits";
     uint64_t seed = stoull(options.count("--seed") ? options["--seed"] : "17");
     int64_t numerator = stoll(options.count("--probability-numerator")
                                   ? options["--probability-numerator"]
@@ -245,48 +243,42 @@ int main(int argc, char **argv) {
             denominator = stoll(options.count("--probability-denominator")
                                     ? options["--probability-denominator"]
                                     : "1");
-    int threshold =
-        stoi(options.count("--threshold") ? options["--threshold"] : "0");
+    int threshold = stoi(options.count("--threshold") ? options["--threshold"] : "0");
     require_condition(policy == "bits" || policy == "all" || policy == "coin" ||
                           policy == "stride" || policy == "access_min" ||
-                          policy == "eviction_min" ||
-                          policy == "eviction_exact",
+                          policy == "eviction_min" || policy == "eviction_exact",
                       "audit policy");
     if (policy != "bits" && policy != "all" && policy != "coin")
       require_condition(threshold > 0, "audit threshold");
-    require_condition(numerator >= 0 && denominator > 0 &&
-                          numerator <= denominator,
+    require_condition(numerator >= 0 && denominator > 0 && numerator <= denominator,
                       "audit probability");
     auto choose = [&](int64_t id) {
       uint64_t x = uint64_t(id) * 0x9e3779b97f4a7c15ULL ^ seed ^ 0x5bf03635ULL;
       x = (x ^ (x >> 33)) * 0xff51afd7ed558ccdULL;
       x = (x ^ (x >> 33)) * 0xc4ceb9fe1a85ec53ULL;
       x ^= x >> 33;
-      return __int128(x >> 11) * denominator <
-             __int128(numerator) * (uint64_t(1) << 53);
+      return __int128(x >> 11) * denominator < __int128(numerator) * (uint64_t(1) << 53);
     };
-    Input<int32_t> block_counts(stream_prefix + "_nb.i32"),
+    RequestArray<int32_t> block_counts(stream_prefix + "_nb.i32"),
         block_ids(stream_prefix + "_ids.i32");
-    Input<int64_t> arrival_times(stream_prefix + "_ts.i64"),
+    RequestArray<int64_t> arrival_times(stream_prefix + "_ts.i64"),
         tokens(required_option("--tokens"));
-    Input<uint8_t> bits(required_option("--program-bits"));
-    require_condition(block_counts.size == arrival_times.size &&
-                          block_counts.size == tokens.size,
+    RequestArray<uint8_t> bits(required_option("--program-bits"));
+    require_condition(block_counts.size == arrival_times.size && block_counts.size == tokens.size,
                       "request length");
     audit_domain = block_id_count;
-    LRU hbm_cache(min(block_id_count, hbm_capacity)),
+    ReferenceCache hbm_cache(min(block_id_count, hbm_capacity)),
         ssd_cache(int(min<int64_t>(block_id_count, ssd_capacity)));
-    vector<int32_t> last(block_id_count, -1), born(block_id_count, -1),
-        frequency(block_id_count), eviction_count(block_id_count);
+    vector<int32_t> last(block_id_count, -1), born(block_id_count, -1), frequency(block_id_count),
+        eviction_count(block_id_count);
     vector<uint8_t> written(block_id_count);
     size_t offset = 0;
-    int64_t blocks_written = 0, eviction_total = 0,
-            writes_before_evaluation = 0, evictions_before_evaluation = 0,
-            positive = 0;
+    int64_t blocks_written = 0, eviction_total = 0, writes_before_evaluation = 0,
+            evictions_before_evaluation = 0, positive = 0;
     bool snapped = false;
     string warmh, warms;
-    Digest event_hash, eviction_hash;
-    Count total, evaluation;
+    BlockDigest event_hash, eviction_hash;
+    ReplayCounts total, evaluation;
     ofstream rows(output_prefix + ".rows.i64", ios::binary);
     require_condition(bool(rows), "row output");
     auto event = [&](int32_t b, int32_t r) {
@@ -295,20 +287,17 @@ int main(int argc, char **argv) {
     };
     for (size_t row = 0; row < block_counts.size; row++) {
       auto now = arrival_times[row];
-      require_condition(row == 0 || now >= arrival_times[row - 1],
-                        "timestamp order");
-      require_condition(
-          block_counts[row] >= 0 &&
-              offset + size_t(block_counts[row]) <= block_ids.size &&
-              tokens[row] >= 0 && tokens[row] / 16 == block_counts[row],
-          "token/hash mapping");
+      require_condition(row == 0 || now >= arrival_times[row - 1], "timestamp order");
+      require_condition(block_counts[row] >= 0 &&
+                            offset + size_t(block_counts[row]) <= block_ids.size &&
+                            tokens[row] >= 0 && tokens[row] / 16 == block_counts[row],
+                        "token/hash mapping");
       if (now < split) {
         offset += block_counts[row];
         continue;
       }
       if (now >= split && !snapped) {
-        require_condition(hbm_cache.size() == 0 && ssd_cache.size() == 0 &&
-                              blocks_written == 0,
+        require_condition(hbm_cache.size() == 0 && ssd_cache.size() == 0 && blocks_written == 0,
                           "cold day4");
         writes_before_evaluation = blocks_written;
         evictions_before_evaluation = eviction_total;
@@ -318,7 +307,7 @@ int main(int argc, char **argv) {
       }
       if (now >= stop)
         break;
-      Count m;
+      ReplayCounts m;
       m.requests = 1;
       m.prompt_blocks = block_counts[row];
       m.prompt_tokens = tokens[row];
@@ -372,14 +361,13 @@ int main(int argc, char **argv) {
         while (hbm_cache.size() + missing.size() > size_t(hbm_capacity)) {
           int b = hbm_cache.least_recent_block();
           require_condition(last[b] >= 0 && born[b] >= 0, "victim history");
-          for (int32_t x : {int32_t(row), int32_t(b), last[b], frequency[b],
-                            eviction_count[b], born[b]})
+          for (int32_t x :
+               {int32_t(row), int32_t(b), last[b], frequency[b], eviction_count[b], born[b]})
             eviction_hash.add_block_id(x);
           eviction_count[b]++;
           event(b, row);
           m.evictions++;
-          require_condition(size_t(eviction_total / 8) < bits.size,
-                            "missing program bit");
+          require_condition(size_t(eviction_total / 8) < bits.size, "missing program bit");
           int64_t eviction_id = eviction_total;
           bool program = (bits[eviction_total / 8] >> (eviction_total % 8)) & 1;
           eviction_total++;
@@ -406,12 +394,10 @@ int main(int argc, char **argv) {
             else if (policy == "eviction_exact")
               wanted = eviction_count[b] == threshold;
             if (policy != "bits")
-              require_condition(
-                  program == (blocks_written < write_budget && wanted),
-                  "admission rule or hard-budget decision mismatch");
+              require_condition(program == (blocks_written < write_budget && wanted),
+                                "admission rule or hard-budget decision mismatch");
             if (program) {
-              require_condition(blocks_written < write_budget,
-                                "budget violation");
+              require_condition(blocks_written < write_budget, "budget violation");
               blocks_written++;
               m.writes++;
               m.reprograms += written[b];
@@ -423,8 +409,7 @@ int main(int argc, char **argv) {
               ssd_cache.insert(b);
             }
           }
-          require_condition(hbm_cache.evict_least_recent_block() == b,
-                            "victim changed");
+          require_condition(hbm_cache.evict_least_recent_block() == b, "victim changed");
         }
         for (int b : missing) {
           if (last[b] >= 0) {
@@ -439,16 +424,14 @@ int main(int argc, char **argv) {
           frequency[b]++;
         }
       }
-      require_condition(m.prefix >= m.hbm && m.ssd <= m.prefix - m.hbm,
-                        "prefix identity");
+      require_condition(m.prefix >= m.hbm && m.ssd <= m.prefix - m.hbm, "prefix identity");
       if (now >= 0)
         total.add(m);
       if (now >= split) {
         evaluation.add(m);
-        int64_t z[13] = {int64_t(row), now,      block_counts[row], m.hbm,
-                         m.prefix,     m.ssd,    m.payloads,        m.writes,
-                         m.evictions,  m.bypass, m.capped,          m.raw,
-                         tokens[row]};
+        int64_t z[13] = {int64_t(row), now,        block_counts[row], m.hbm,       m.prefix,
+                         m.ssd,        m.payloads, m.writes,          m.evictions, m.bypass,
+                         m.capped,     m.raw,      tokens[row]};
         rows.write((char *)z, sizeof z);
       }
       offset += block_counts[row];
@@ -459,15 +442,12 @@ int main(int argc, char **argv) {
       warmh = hbm_cache.cache_order_sha256();
       warms = ssd_cache.cache_order_sha256();
     }
-    require_condition(bits.size == size_t((eviction_total + 7) / 8),
-                      "program file size");
-    for (size_t option_name = eviction_total; option_name < bits.size * 8;
-         option_name++)
+    require_condition(bits.size == size_t((eviction_total + 7) / 8), "program file size");
+    for (size_t option_name = eviction_total; option_name < bits.size * 8; option_name++)
       require_condition(!((bits[option_name / 8] >> (option_name % 8)) & 1),
                         "nonzero program padding");
     require_condition(blocks_written <= write_budget &&
-                          evaluation.writes ==
-                              blocks_written - writes_before_evaluation,
+                          evaluation.writes == blocks_written - writes_before_evaluation,
                       "wallet accounting");
     rows.close();
     require_condition(bool(rows), "rows flush");
@@ -478,15 +458,14 @@ int main(int argc, char **argv) {
          << ",\"W_test\":" << blocks_written - writes_before_evaluation
          << ",\"processed_evictions\":" << eviction_total
          << ",\"warm_evictions\":" << evictions_before_evaluation
-         << ",\"peak_hbm\":" << hbm_cache.peak
-         << ",\"peak_ssd\":" << ssd_cache.peak << ",\"warm_hbm_sha256\":\""
-         << warmh << "\",\"warm_ssd_sha256\":\"" << warms
+         << ",\"peak_hbm\":" << hbm_cache.peak << ",\"peak_ssd\":" << ssd_cache.peak
+         << ",\"warm_hbm_sha256\":\"" << warmh << "\",\"warm_ssd_sha256\":\"" << warms
          << "\",\"final_hbm_sha256\":\"" << hbm_cache.cache_order_sha256()
          << "\",\"final_ssd_sha256\":\"" << ssd_cache.cache_order_sha256()
          << "\",\"eviction_records_sha256\":\"" << eviction_hash.str()
          << "\",\"hbm_signed_event_sha256\":\"" << event_hash.str()
-         << "\",\"total\":" << total.json()
-         << ",\"evaluation\":" << evaluation.json() << "}" << endl;
+         << "\",\"total\":" << total.json() << ",\"evaluation\":" << evaluation.json() << "}"
+         << endl;
     return 0;
   } catch (const exception &e) {
     cerr << "independent_audit: " << e.what() << endl;

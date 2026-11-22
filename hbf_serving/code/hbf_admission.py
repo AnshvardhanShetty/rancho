@@ -1,17 +1,17 @@
 """Decide whether to save completed KV to HBF
 
-FilteredHistory counts earlier reuse that GPU memory alone would miss
-UpdatedAdmission combines the prediction with that history
-BandWallet adjusts the cutoff and keeps track of writes
+HbmMissReuseHistory counts earlier reuse that GPU memory alone would miss
+HbfAdmissionPolicy combines the prediction with that history
+CostBandWriteController adjusts the cutoff and keeps track of writes
 """
 
 from collections import OrderedDict
 import math, time
-from controllers import Wallet, Observation, seeded_tie_break_value, DAY
-from updated_model import SuffixGBT, CUT
+from write_controller import Wallet, Observation, seeded_tie_break_value, DAY
+from reuse_predictor import SuffixReusePredictor, CUT
 
 
-class BandWallet(Wallet):
+class CostBandWriteController(Wallet):
     """Keep write spending and choose cutoffs for groups of similar write costs."""
 
     def update_admission_cutoffs(self, now):
@@ -19,9 +19,7 @@ class BandWallet(Wallet):
         super().update_admission_cutoffs(now)
         # Estimate future write demand from recent positive-cost offers.
         values = [
-            offer
-            for offer in self.offer_history
-            if offer.cost > 0 and math.isfinite(offer.score)
+            offer for offer in self.offer_history if offer.cost > 0 and math.isfinite(offer.score)
         ]
         if len(values) < 100:
             return
@@ -90,11 +88,7 @@ class BandWallet(Wallet):
         self.release_reserved_budget_if_due(now)
         # Combine the prediction with reuse observed before this request.
         multiplier = 1 + past / distinct if distinct else 1.0
-        score = (
-            prediction * float(distinct) / float(cost) * multiplier
-            if cost
-            else math.inf
-        )
+        score = prediction * float(distinct) / float(cost) * multiplier if cost else math.inf
         # Select the cutoff; coin controls ties at exactly that score.
         cutoff, coin = (
             getattr(self, "cutoffs_by_cost_band", {}).get(
@@ -106,8 +100,7 @@ class BandWallet(Wallet):
         behind = bool(
             cost
             and self.cutoff_ready
-            and self.blocks_written * (self.end_us - split)
-            < self.budget * (now - split)
+            and self.blocks_written * (self.end_us - split) < self.budget * (now - split)
         )
         if behind:
             cutoff *= 0.5
@@ -148,7 +141,7 @@ class BandWallet(Wallet):
         return admit, details
 
 
-class FilteredHistory:
+class HbmMissReuseHistory:
     """Keep past reuse counts and an independent HBM-only comparison cache."""
 
     def __init__(self, capacity):
@@ -169,9 +162,7 @@ class FilteredHistory:
             self.cache.move_to_end(key)
             readable += 1
         suffix = list(dict.fromkeys(keys[suffix_begin:]))
-        past_filtered_reuses = sum(
-            self.counts.get(block_hash, 0) for block_hash in suffix
-        )
+        past_filtered_reuses = sum(self.counts.get(block_hash, 0) for block_hash in suffix)
         pending = []
         seen = set()
         for position, key in enumerate(keys):
@@ -205,7 +196,7 @@ class FilteredHistory:
         self.processed.add(reuse_history["request_id"])
 
 
-class UpdatedAdmission:
+class HbfAdmissionPolicy:
     """Connect the saved predictor to reuse history and the write controller."""
 
     def __init__(self, config):
@@ -225,9 +216,9 @@ class UpdatedAdmission:
             and receipt["observations"] == receipt["paid_pages"] == 0
             and receipt["fit"] == config["fit"]
         )
-        self.model = SuffixGBT(config["fit"])
+        self.model = SuffixReusePredictor(config["fit"])
         assert self.model.model_sha256 == receipt["model_sha256"]
-        self.wallet = BandWallet(
+        self.wallet = CostBandWriteController(
             "hbf",
             config["HBF_pages"],
             config["repetition"],

@@ -14,8 +14,7 @@ import unittest
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "hbf_simulator/experiments"))
-from synthetic_training import SyntheticTrainingData, model_training
+from hbf_simulator.experiments.synthetic_training import SyntheticTrainingData, model_training
 
 
 class ServingReplayTest(unittest.TestCase):
@@ -24,7 +23,8 @@ class ServingReplayTest(unittest.TestCase):
             output = Path(tmp) / "summary.json"
             command = [
                 sys.executable,
-                str(ROOT / "hbf_simulator/examples/serving_replay.py"),
+                "-m",
+                "hbf_simulator.examples.serving_replay",
                 "--output",
                 str(output),
             ]
@@ -36,9 +36,7 @@ class ServingReplayTest(unittest.TestCase):
                 self.assertEqual(row["eligible_accesses"], 1200 * 123)
                 self.assertEqual(row["cache_hits"], 1200 * 117)
                 self.assertEqual(row["prefill_blocks_recomputed"], 1200 * 6)
-                self.assertLessEqual(
-                    row["flash_blocks_written"], row["write_allowance_blocks"]
-                )
+                self.assertLessEqual(row["flash_blocks_written"], row["write_allowance_blocks"])
                 self.assertAlmostEqual(row["hit_ratio_percent"], 100 * 117 / 123)
             self.assertEqual(rows[0]["hbm_blocks"], 960)
             self.assertEqual(rows[1]["hbm_blocks"], 320)
@@ -53,7 +51,7 @@ class ServingReplayTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), before)
 
     def test_research_labels_and_cutoff(self):
-        hour = model_training.H
+        hour = model_training.HOUR_US
         blocks = [[10, 20, 10], [10], [20], [30], [10], [10]]
         times = np.arange(len(blocks)) * hour
         sessions = [1, 1, 1, 2, 2, 2]

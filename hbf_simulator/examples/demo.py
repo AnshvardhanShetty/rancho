@@ -2,35 +2,42 @@
 
 import array
 import json
-import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-# Use the shared trace reader and simulator helpers.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hbf_simulator/experiments"))
-from trace_reader import prepare_trace
-from run_simulation import ROOT, read_json, run_cache_simulation, run_program
-from run_experiment import build_request_features
-
-sys.path.insert(0, str(ROOT / "hbf_simulator/model"))
-import model_training
+from hbf_simulator.experiments.request_features import build_request_features
+from hbf_simulator.experiments.run_simulation import (
+    REPO_ROOT,
+    load_json_file,
+    run_cache_simulation,
+    run_program,
+)
+from hbf_simulator.experiments.trace_reader import ARRIVAL_ORDER_PREFIX, prepare_trace
+from hbf_simulator.model import model_training
 
 
 def prepare_example():
     """Fit the bundled synthetic predictor and prepare the three-request fixture."""
     # Each independent training session requests its single block twice.
     history = []
-    for i in range(240):
+    for session_index in range(240):
         for turn in range(2):
-            history.append(dict(time=i * 100 + turn, session=i, user=i % 8, blocks=[i]))
-    requests = history + read_json(ROOT / "hbf_simulator/examples/demo_requests.json")
+            history.append(
+                dict(
+                    time=session_index * 100 + turn,
+                    session=session_index,
+                    user=session_index % 8,
+                    blocks=[session_index],
+                )
+            )
+    requests = history + load_json_file(REPO_ROOT / "hbf_simulator/examples/demo_requests.json")
     split = requests[len(history)]["time"]
     features, sessions, offered, labels = [], {}, [], []
     last = {}
-    for i, request in enumerate(requests):
+    for request_index, request in enumerate(requests):
         session, now = request["session"], request["time"]
         count, start, previous = sessions.get(session, (0, now, now))
         features.append(
@@ -50,7 +57,7 @@ def prepare_example():
                     labels[last[key]] += 1
                 else:
                     last[key] = len(labels)
-                    offered.append(i)
+                    offered.append(request_index)
                     labels.append(0)
     feature_table = np.array(features, float)
     train_rows = np.array(offered)
@@ -72,7 +79,7 @@ def prepare_example():
         categorical_columns=lambda names: [0],
     )
     model, _ = model_training.fit_tree_model(
-        data, split, read_json(ROOT / "hbf_simulator/model/model_settings.json")
+        data, split, load_json_file(REPO_ROOT / "hbf_simulator/model/model_settings.json")
     )
     if model["kind"] != "expanded_tree":
         raise RuntimeError("Expected a fitted tree in the demo")
@@ -109,24 +116,26 @@ def run_demo():
 
         # Check that reading the trace produces the features we trained on.
         prepare_trace(trace_path, prepared_directory)
-        build_request_features(trace_path, prepared_directory, work)
-        feature_names = read_json(ROOT / "hbf_simulator/model/model_settings.json")["features"]
-        with np.load(work / "features.npz") as saved:
+        build_request_features(trace_path, prepared_directory, work / "request_features.npz")
+        feature_names = load_json_file(REPO_ROOT / "hbf_simulator/model/model_settings.json")[
+            "features"
+        ]
+        with np.load(work / "request_features.npz") as saved:
             rebuilt_features = np.column_stack([saved[name] for name in feature_names])
         if not np.array_equal(rebuilt_features, feature_table):
             raise RuntimeError("Feature preparation differs from the synthetic examples")
 
         # Save the request flags and one reuse prediction per request.
-        stream_prefix = prepared_directory / "dst"
-        zero_flags_path = work / "streamzero"
-        eligible_requests_path = work / "streameligible"
-        predictions_path = work / "streamscores"
+        stream_prefix = prepared_directory / ARRIVAL_ORDER_PREFIX
+        zero_flags_path = work / "zero_request_flags.u8"
+        eligible_requests_path = work / "eligible_requests.u8"
+        predictions_path = work / "predicted_reads_per_block.f64"
         zero_flags_path.write_bytes(bytes(len(requests)))
         eligible_requests_path.write_bytes(bytes([1]) * len(requests))
         predictions_path.write_bytes(array.array("d", predictions).tobytes())
 
         # Compare what HBM alone can serve, then replay RANCHO.
-        hbm_only_prefix_path = work / "shadow"
+        hbm_only_prefix_path = work / "hbm_only_prefix_lengths.i32"
         run_program(
             "hbm_only_readable_prefix",
             stream_prefix,
@@ -149,7 +158,7 @@ def run_demo():
             start_us=start_us,
             end_us=end_us,
             hbm_only_prefix_path=hbm_only_prefix_path,
-            output_directory=work / "out",
+            output_directory=work / "replay",
         )
 
         print({name: result[name] for name in ("requests", "hbf_hits", "hbm_hits", "writes")})

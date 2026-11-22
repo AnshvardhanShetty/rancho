@@ -24,9 +24,9 @@ class IndexedQueue:
         return self.hbm if block.block_id <= self.hbm_pages else self.hbf
 
     def _check_blocks_are_absent(self, blocks):
-        ids = [b.block_id for b in blocks]
+        ids = [block.block_id for block in blocks]
         if len(ids) != len(set(ids)) or any(
-            b.block_id in self._index_for_block_tier(b) for b in blocks
+            block.block_id in self._index_for_block_tier(block) for block in blocks
         ):
             raise ValueError("Duplicate free-page insertion")
 
@@ -76,10 +76,10 @@ class IndexedQueue:
         """Check that the queue and the request index agree"""
         native = self.native.get_all_free_blocks()
         for index, predicate in [
-            (self.hbm, lambda b: b.block_id <= self.hbm_pages),
-            (self.hbf, lambda b: b.block_id > self.hbm_pages),
+            (self.hbm, lambda block: block.block_id <= self.hbm_pages),
+            (self.hbf, lambda block: block.block_id > self.hbm_pages),
         ]:
-            expected = [b.block_id for b in native if predicate(b)]
+            expected = [block.block_id for block in native if predicate(block)]
             if list(index) != expected:
                 raise ValueError("Native eviction order and tier index diverged")
         return True

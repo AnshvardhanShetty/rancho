@@ -19,19 +19,18 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "hbf_serving/code"))
-from controlled_workload import (
+from synthetic_requests import (
+    SYNTHETIC_TRAINING_CUTOFF_US,
     block_keys,
     build_eligible_read_mask,
     build_workload_prompts,
     build_request_feature_records,
     build_prompt_tokens,
 )
-from features import RequestHistory
-from synthetic_workload import FIT
+from request_history import RequestHistory
 
-sys.path.insert(0, str(ROOT / "hbf_simulator/experiments"))
-from run_simulation import run_cache_simulation, run_program
-from synthetic_training import (
+from hbf_simulator.experiments.run_simulation import run_cache_simulation, run_program
+from hbf_simulator.experiments.synthetic_training import (
     SyntheticTrainingData,
     predict_hourly_reuse_for_offer_replay,
     fit_synthetic_reuse_model,
@@ -40,7 +39,7 @@ from synthetic_training import (
 
 
 def write_array(path, kind, values):
-    """Write the little-endian arrays expected by the existing C++ replay."""
+    """Write numbers in the binary format the C++ replay reads."""
     data = array.array(kind, values)
     if sys.byteorder != "little":
         data.byteswap()
@@ -51,9 +50,7 @@ def build_synthetic_request_stream(setup, folder):
     """Use shared content hashes to identify blocks, including their prefix."""
     payload = build_workload_prompts(setup)
     # These references establish eligibility; they do not populate either cache.
-    history = [
-        build_prompt_tokens(setup, i) for i in range(setup["max_reference_requests"])
-    ]
+    history = [build_prompt_tokens(setup, i) for i in range(setup["max_reference_requests"])]
     history += [
         build_prompt_tokens(setup, i, calibration=True)
         for i in range(setup["calibration_requests"])
@@ -70,19 +67,15 @@ def build_synthetic_request_stream(setup, folder):
     measured_begin = split + warmup
     times = list(range(-history_count, 0))
     times += [split + i for i in range(warmup)]
-    times += [
-        measured_begin + round(i * 1_000_000 / 20) for i in range(setup["requests"])
-    ]
+    times += [measured_begin + round(i * 1_000_000 / 20) for i in range(setup["requests"])]
     sessions = [i % warmup for i in range(setup["max_reference_requests"])]
     sessions += [10_000 + i for i in range(setup["calibration_requests"])]
     sessions += [r["session"] for r in build_request_feature_records(setup)[1]]
-    names = json.loads((ROOT / "hbf_simulator/model/model_settings.json").read_text())[
-        "features"
-    ]
+    names = json.loads((ROOT / "hbf_simulator/model/model_settings.json").read_text())["features"]
     history_clock = RequestHistory()
     request_gap_us = setup["logical_gap_seconds"] * 1_000_000
     policy_times = [
-        FIT["cut_us"] - (history_count - i) * request_gap_us
+        SYNTHETIC_TRAINING_CUTOFF_US - (history_count - i) * request_gap_us
         for i in range(history_count)
     ]
     policy_times += [r["policy_us"] for r in build_request_feature_records(setup)[1]]
@@ -103,11 +96,11 @@ def build_synthetic_request_stream(setup, folder):
     if not np.array_equal(features[history_count:], expected_features):
         raise RuntimeError("Features differ from the serving workload generator")
     stream = folder / "requests"
-    write_array(Path(str(stream) + "_nb.i32"), "i", map(len, block_rows))
-    write_array(Path(str(stream) + "_sess.i32"), "i", sessions)
-    write_array(Path(str(stream) + "_ts.i64"), "q", times)
+    write_array(Path(str(stream) + "_block_counts.i32"), "i", map(len, block_rows))
+    write_array(Path(str(stream) + "_session_numbers.i32"), "i", sessions)
+    write_array(Path(str(stream) + "_timestamps_us.i64"), "q", times)
     write_array(
-        Path(str(stream) + "_ids.i32"),
+        Path(str(stream) + "_block_ids.i32"),
         "i",
         (block for row in block_rows for block in row),
     )
@@ -130,9 +123,7 @@ def build_synthetic_request_stream(setup, folder):
 
 def fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages):
     """Collect suffix offers using the arm's capacities and one-capacity allowance."""
-    settings = json.loads(
-        (ROOT / "hbf_simulator/model/model_settings.json").read_text()
-    )
+    settings = json.loads((ROOT / "hbf_simulator/model/model_settings.json").read_text())
     training_request_count = data["history_count"]
     names = settings["features"]
     initial = SyntheticTrainingData(
@@ -144,11 +135,11 @@ def fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages):
     )
     predicted = predict_hourly_reuse_for_offer_replay(initial, settings)
     stream = folder / "training"
-    write_array(Path(str(stream) + "_nb.i32"), "i", map(len, data["history_rows"]))
-    write_array(Path(str(stream) + "_sess.i32"), "i", data["history_sessions"])
-    write_array(Path(str(stream) + "_ts.i64"), "q", data["history_times"])
+    write_array(Path(str(stream) + "_block_counts.i32"), "i", map(len, data["history_rows"]))
+    write_array(Path(str(stream) + "_session_numbers.i32"), "i", data["history_sessions"])
+    write_array(Path(str(stream) + "_timestamps_us.i64"), "q", data["history_times"])
     write_array(
-        Path(str(stream) + "_ids.i32"),
+        Path(str(stream) + "_block_ids.i32"),
         "i",
         (block for row in data["history_rows"] for block in row),
     )
@@ -163,7 +154,7 @@ def fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages):
         data["block_count"],
         hbm_pages,
         start,
-        FIT["cut_us"],
+        SYNTHETIC_TRAINING_CUTOFF_US,
         shadow,
     )
     output = folder / "training_replay"
@@ -178,16 +169,14 @@ def fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages):
         setup["repetition"],
         hbf_pages,
         start,
-        FIT["cut_us"],
+        SYNTHETIC_TRAINING_CUTOFF_US,
         shadow,
         output,
     )
     observed = np.fromfile(output / "rows.i64", dtype="<i8").reshape(-1, 10)
     if len(observed) != training_request_count:
         raise RuntimeError("Training replay omitted earlier requests")
-    offers = [
-        blocks[int(row[3]) :] for blocks, row in zip(data["history_rows"], observed)
-    ]
+    offers = [blocks[int(row[3]) :] for blocks, row in zip(data["history_rows"], observed)]
     final = SyntheticTrainingData(
         data["history_rows"],
         data["history_times"],
@@ -196,12 +185,12 @@ def fit_suffix_reuse_predictor(setup, data, folder, hbm_pages, hbf_pages):
         names,
         offered=offers,
     )
-    model, record = fit_synthetic_reuse_model(final, FIT["cut_us"], settings)
+    model, record = fit_synthetic_reuse_model(final, SYNTHETIC_TRAINING_CUTOFF_US, settings)
     scores = [0.0] * training_request_count + model_training.predict_reuse(
         model, data["features"][training_request_count:]
     ).tolist()
     write_array(folder / "predictions", "d", scores)
-    _, labels = final.get_training_rows_and_reuse(FIT["cut_us"])
+    _, labels = final.get_training_rows_and_reuse(SYNTHETIC_TRAINING_CUTOFF_US)
     return dict(
         training_examples=len(labels),
         unique_labels=len(np.unique(labels)),
@@ -328,14 +317,10 @@ def run_demo():
         for hbm_pages, ratio in [(320, 8), (144, 16)]:
             arm_output = folder / f"rancho{ratio}"
             arm_output.mkdir()
-            results.append(
-                replay_hbf_configuration(setup, data, arm_output, hbm_pages, ratio)
-            )
+            results.append(replay_hbf_configuration(setup, data, arm_output, hbm_pages, ratio))
     print("CPU cache replay of the bundled synthetic serving prompts")
     print(f"{setup['groups']} warm-up requests; {setup['requests']} measured requests")
-    print(
-        "Research training pipeline fitted on earlier requests from the same generator."
-    )
+    print("Research training pipeline fitted on earlier requests from the same generator.")
     print(
         f"{'Policy':<16} {'HBM blocks':>11} {'HBM saved':>11} {'Cache hits':>12} "
         f"{'Recomputed':>12} {'Flash writes':>13}"
@@ -349,9 +334,7 @@ def run_demo():
             f"{row['flash_blocks_written']:>13}"
         )
     print("Writes include warm-up. Hit ratios and recomputation exclude warm-up.")
-    print(
-        "Prompt-cache replay only; GPU scheduling and write timing are not simulated."
-    )
+    print("Prompt-cache replay only; GPU scheduling and write timing are not simulated.")
     if args.output:
         summary = dict(
             workload="bundled synthetic serving prompts",

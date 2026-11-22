@@ -66,13 +66,9 @@ class Wallet:
         self.design, self.budget, self.seed = design, budget, seed
         self.end_us = end_us
         self.release_us = (
-            release_us
-            if release_us is not None
-            else (7 * DAY if design == "hbf" else 5 * DAY)
+            release_us if release_us is not None else (7 * DAY if design == "hbf" else 5 * DAY)
         )
-        self.reserve = (
-            reserve if reserve is not None else (0.0 if design == "hbf" else 0.3)
-        )
+        self.reserve = reserve if reserve is not None else (0.0 if design == "hbf" else 0.3)
         if not (
             0 < self.release_us <= end_us
             and 0 <= self.reserve < 1
@@ -186,32 +182,35 @@ class Wallet:
                 values = sorted(values, key=lambda offer: -offer.score)
                 wanted, above = fraction * total, 0.0
                 self.threshold = values[-1].score
-                i = 0
-                while i < len(values):
-                    j, equal = i, 0.0
-                    while j < len(values) and values[j].score == values[i].score:
-                        equal += values[j].cost
-                        j += 1
+                score_start = 0
+                while score_start < len(values):
+                    score_end, equal = score_start, 0.0
+                    while (
+                        score_end < len(values)
+                        and values[score_end].score == values[score_start].score
+                    ):
+                        equal += values[score_end].cost
+                        score_end += 1
                     if above + equal >= wanted:
-                        self.threshold = values[i].score
+                        self.threshold = values[score_start].score
                         break
                     above += equal
-                    i = j
+                    score_start = score_end
                 self.tie_probability = max(
                     0.0, min(1.0, (wanted - above) / equal if equal > 0 else 0.0)
                 )
         self.cutoff_ready = True
 
-    def _record_offer(self, v):
+    def _record_offer(self, offer):
         """Save this offer and record what the policy decided"""
         if len(self.offer_history) < self.history_capacity:
-            self.offer_history.append(v)
+            self.offer_history.append(offer)
         else:
-            self.offer_history[self.next_history_slot] = v
+            self.offer_history[self.next_history_slot] = offer
         self.next_history_slot = (self.next_history_slot + 1) % self.history_capacity
         self.observations += 1
         if self.observations % self.update == 0:
-            self.update_admission_cutoffs(v.time_us)
+            self.update_admission_cutoffs(offer.time_us)
 
     def decide_write_admission(
         self,
@@ -233,28 +232,17 @@ class Wallet:
         """
         if type(event_id) is not int or not self.last_id < event_id < (1 << 63):
             raise ValueError("Event IDs must strictly increase")
-        if (
-            type(now_us) is not int
-            or not self.last_us <= now_us < self.end_us
-            or now_us < 0
-        ):
+        if type(now_us) is not int or not self.last_us <= now_us < self.end_us or now_us < 0:
             raise ValueError("Invalid logical event clock")
         if not math.isfinite(prediction) or prediction < 0:
             raise ValueError("Invalid causal prediction")
-        if (
-            type(cost) is not int
-            or type(distinct) is not int
-            or cost < 0
-            or distinct < 0
-        ):
+        if type(cost) is not int or type(distinct) is not int or cost < 0 or distinct < 0:
             raise ValueError("Invalid cost or distinct count")
         if self.design == "ssd" and (cost != 1 or distinct != 1):
             raise ValueError("SSD wallet sees only absent single-block offers")
         if self.design == "hbf" and distinct == 0 and cost != 0:
             raise ValueError("An empty suffix cannot cost writes")
-        if forced_warm is not None and (
-            type(forced_warm) is not bool or now_us >= split_us
-        ):
+        if forced_warm is not None and (type(forced_warm) is not bool or now_us >= split_us):
             raise ValueError("Saved warm decisions are warmup-only")
         self.last_id, self.last_us = event_id, now_us
         score = (
@@ -306,39 +294,37 @@ class Wallet:
             self._record_offer(observation)
         return admit
 
-    def refresh_offer_scores(
-        self, event_ids, predictions, cut_us, *, initialization=False
-    ):
+    def refresh_offer_scores(self, event_ids, predictions, cut_us, *, initialization=False):
         """Re-score the exact retained past history without changing past actions."""
         values = self.offers_in_arrival_order()
-        if list(event_ids) != [v.event_id for v in values] or len(predictions) != len(
+        if list(event_ids) != [offer.event_id for offer in values] or len(predictions) != len(
             values
         ):
             raise ValueError("Repricing must cover the exact ordered history")
-        if cut_us < self.last_us or any(v.time_us >= cut_us for v in values):
+        if cut_us < self.last_us or any(offer.time_us >= cut_us for offer in values):
             raise ValueError("Repricing requires strictly past observations")
         if self.design == "hbf" and not initialization:
             raise ValueError("Selected HBF C7 does not reprice at later model updates")
-        if any(not math.isfinite(p) or p < 0 for p in predictions):
+        if any(not math.isfinite(prediction) or prediction < 0 for prediction in predictions):
             raise ValueError("Invalid reprice prediction")
         by_id = dict(zip(event_ids, predictions))
         self.offer_history = [
             Observation(
-                v.event_id,
+                offer.event_id,
                 (
                     (
-                        by_id[v.event_id] * float(v.distinct) / float(v.cost)
-                        if v.cost
+                        by_id[offer.event_id] * float(offer.distinct) / float(offer.cost)
+                        if offer.cost
                         else math.inf
                     )
                     if self.design == "hbf"
-                    else by_id[v.event_id]
+                    else by_id[offer.event_id]
                 ),
-                v.cost,
-                v.time_us,
-                v.distinct,
+                offer.cost,
+                offer.time_us,
+                offer.distinct,
             )
-            for v in self.offer_history
+            for offer in self.offer_history
         ]
         self.cutoff_ready, self.threshold, self.tie_probability = False, -math.inf, 1.0
         self.update_admission_cutoffs(cut_us)
@@ -352,36 +338,34 @@ class Wallet:
         }
         state["ring"] = [asdict(v) for v in self.offer_history]
 
-        def encode_infinite_values(x):
-            if isinstance(x, float) and math.isinf(x):
-                return "+inf" if x > 0 else "-inf"
-            if isinstance(x, dict):
-                return {k: encode_infinite_values(v) for k, v in x.items()}
-            if isinstance(x, list):
-                return [encode_infinite_values(v) for v in x]
-            return x
+        def encode_infinite_values(value):
+            if isinstance(value, float) and math.isinf(value):
+                return "+inf" if value > 0 else "-inf"
+            if isinstance(value, dict):
+                return {key: encode_infinite_values(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [encode_infinite_values(item) for item in value]
+            return value
 
         return encode_infinite_values(state)
 
     @classmethod
     def restore_controller_state(cls, state, expected_sha256):
         """Restore controller fields from a checked saved state."""
-        raw = json.dumps(
-            state, sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode()
+        raw = json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         if hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise ValueError("Controller snapshot hash mismatch")
 
-        def decode_infinite_values(x):
-            if x == "+inf":
+        def decode_infinite_values(value):
+            if value == "+inf":
                 return math.inf
-            if x == "-inf":
+            if value == "-inf":
                 return -math.inf
-            if isinstance(x, dict):
-                return {k: decode_infinite_values(v) for k, v in x.items()}
-            if isinstance(x, list):
-                return [decode_infinite_values(v) for v in x]
-            return x
+            if isinstance(value, dict):
+                return {key: decode_infinite_values(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [decode_infinite_values(item) for item in value]
+            return value
 
         saved_fields = decode_infinite_values(state)
         controller = cls(
@@ -402,9 +386,7 @@ class Wallet:
             fields_by_key.get(key, key): value for key, value in saved_fields.items()
         }
         controller.__dict__.update(restored_fields)
-        controller.offer_history = [
-            Observation(**offer) for offer in saved_fields["ring"]
-        ]
+        controller.offer_history = [Observation(**offer) for offer in saved_fields["ring"]]
         history_count = len(controller.offer_history)
         if not (
             0 <= controller.blocks_written <= controller.budget
@@ -412,8 +394,7 @@ class Wallet:
             and controller.observations >= history_count
             and controller.next_history_slot
             == controller.observations % controller.history_capacity
-            and history_count
-            == min(controller.observations, controller.history_capacity)
+            and history_count == min(controller.observations, controller.history_capacity)
         ):
             raise ValueError("Controller snapshot geometry mismatch")
         return controller

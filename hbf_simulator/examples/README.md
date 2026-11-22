@@ -23,5 +23,5 @@ The output shows cache hits, blocks recomputed and writes. Hits and recomputatio
 Save the counts in a new file with:
 
 ```bash
-python hbf_simulator/examples/serving_replay.py --output demo-summary.json
+python -m hbf_simulator.examples.serving_replay --output demo-summary.json
 ```

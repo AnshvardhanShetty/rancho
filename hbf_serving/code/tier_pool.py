@@ -1,21 +1,13 @@
-"""Manage HBM and HBF block allocation across vLLM cache-manager versions.
+"""Manage HBM and HBF blocks in vLLM.
 
 New computation uses HBM. Completed HBF copies remain directly readable.
-Block 0 is reserved; the remaining blocks are split at the supplied HBM limit.
-The older interface is handled by legacy_tier_pool.py."""
+Block 0 is reserved; the remaining blocks are split at the supplied HBM limit."""
 
 from indexed_queue import IndexedQueue
 
 
 class TierPool:
     """Give vLLM separate sets of page IDs for HBM and HBF"""
-
-    def __new__(cls, *args, **kwargs):
-        if __import__("os").environ.get("RANCHO_DIAGNOSTIC_QUEUE") == "legacy":
-            from legacy_tier_pool import TierPool as Legacy
-
-            return Legacy(*args, **kwargs)
-        return super().__new__(cls)
 
     def __init__(self, pool, managers, hbm_pages, hbf_pages):
         if type(hbm_pages) is not int or hbm_pages <= 0:
@@ -39,8 +31,8 @@ class TierPool:
         # free budget. Only HBM hits consume pages in that HBM free budget.
         for manager in managers:
             manager._get_num_evictable_blocks = lambda blocks: sum(
-                b.ref_cnt == 0 and self.is_hbm_page(b.block_id) and not b.is_null
-                for b in blocks
+                block.ref_cnt == 0 and self.is_hbm_page(block.block_id) and not block.is_null
+                for block in blocks
             )
 
     def is_hbm_page(self, block_id):
@@ -57,9 +49,9 @@ class TierPool:
 
     def hbm_usage_fraction(self):
         # Native usage describes referenced pages, not writable capacity.
-        return 1 - (
-            len(self.pool.free_block_queue.hbm) + len(self.pool.free_block_queue.hbf)
-        ) / (self.hbm_pages + self.hbf_pages)
+        return 1 - (len(self.pool.free_block_queue.hbm) + len(self.pool.free_block_queue.hbf)) / (
+            self.hbm_pages + self.hbf_pages
+        )
 
     def allocate_hbm_pages(self, count):
         """Keep new allocations in the HBM page range"""
@@ -88,19 +80,15 @@ class TierPool:
         if gpu_completed is not True:
             raise ValueError("Cannot publish a pending GPU copy")
         pairs = list(pairs)
-        sources, destinations = [a for a, b in pairs], [b for a, b in pairs]
-        if len(set(sources)) != len(sources) or len(set(destinations)) != len(
-            destinations
-        ):
+        sources, destinations = [a for a, block in pairs], [block for a, block in pairs]
+        if len(set(sources)) != len(sources) or len(set(destinations)) != len(destinations):
             raise ValueError("Duplicate source/destination in one atomic migration")
-        free_ids = {b.block_id for b in self.free_pages_in_queue_order()}
+        free_ids = {block.block_id for block in self.free_pages_in_queue_order()}
         tables = self.managers[0].req_to_blocks
         references = {}
         # Validate the entire transaction before changing a hash or a table.
         for source_page_id, target_page_id in pairs:
-            if not self.is_hbm_page(source_page_id) or not self.is_hbf_page(
-                target_page_id
-            ):
+            if not self.is_hbm_page(source_page_id) or not self.is_hbf_page(target_page_id):
                 raise ValueError("Migration must be from HBM to HBF")
             source_block, target_block = (
                 self.pool.blocks[source_page_id],
@@ -119,9 +107,7 @@ class TierPool:
                 or source_block.ref_cnt != len(active_references)
                 or source_block.block_hash is None
             ):
-                raise ValueError(
-                    "Source references/hash do not match immutable prefix state"
-                )
+                raise ValueError("Source references/hash do not match immutable prefix state")
             references[source_page_id] = active_references
         for source_page_id, target_page_id in pairs:
             source_block, target_block = (
@@ -150,7 +136,7 @@ class TierPool:
         for request_index, request_id in enumerate(cached.req_ids):
             if request_id in self.dirty_requests:
                 cached.new_block_ids[request_index] = (
-                    [b.block_id for b in tables[request_id]],
+                    [block.block_id for block in tables[request_id]],
                 )
                 cached.resumed_req_ids.add(request_id)
                 self.dirty_requests.remove(request_id)

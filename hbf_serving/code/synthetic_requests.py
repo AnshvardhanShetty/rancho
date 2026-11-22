@@ -1,8 +1,9 @@
 """Make synthetic chats with shared prompt blocks and unique endings"""
 
 import hashlib, struct
-from features import RequestHistory
-from synthetic_workload import FIT
+from request_history import RequestHistory
+
+SYNTHETIC_TRAINING_CUTOFF_US = 259_200_000_000
 
 
 def build_prompt_tokens(setup, request_index, calibration=False, warm=False):
@@ -19,11 +20,7 @@ def build_prompt_tokens(setup, request_index, calibration=False, warm=False):
     suffix_token = (
         10000 + request_index
         if calibration
-        else (
-            30000 + conversation_index
-            if warm
-            else 20000 + repetition * 1300 + request_index
-        )
+        else (30000 + conversation_index if warm else 20000 + repetition * 1300 + request_index)
     )
     return prefix + [suffix_token] * unique_token_count
 
@@ -38,10 +35,7 @@ def build_workload_prompts(setup, calibration=False):
     return [
         build_prompt_tokens(setup, conversation_index, warm=True)
         for conversation_index in range(setup["groups"])
-    ] + [
-        build_prompt_tokens(setup, request_index)
-        for request_index in range(setup["requests"])
-    ]
+    ] + [build_prompt_tokens(setup, request_index) for request_index in range(setup["requests"])]
 
 
 def build_request_feature_records(setup):
@@ -50,7 +44,7 @@ def build_request_feature_records(setup):
     reference_request_count = setup["max_reference_requests"]
     calibration_request_count = setup["calibration_requests"]
     request_gap_us = setup["logical_gap_seconds"] * 1000000
-    training_cutoff_us = FIT["cut_us"]
+    training_cutoff_us = SYNTHETIC_TRAINING_CUTOFF_US
     sequence_row = 0
     for request_index in range(reference_request_count):
         request_history.record_request_arrival(
@@ -65,8 +59,7 @@ def build_request_feature_records(setup):
     earlier = []
     for request_index in range(calibration_request_count):
         arrival_us = (
-            training_cutoff_us
-            - (calibration_request_count - request_index) * request_gap_us
+            training_cutoff_us - (calibration_request_count - request_index) * request_gap_us
         )
         info = request_history.record_request_arrival(
             sequence_row, arrival_us, 10000 + request_index, setup["synthetic_user"]
@@ -112,9 +105,7 @@ def bind_features_to_request_ids(setup):
             policy_us=request_record["policy_us"],
             session=request_record["session"],
         )
-        for request_index, request_record in enumerate(
-            build_request_feature_records(setup)[1]
-        )
+        for request_index, request_record in enumerate(build_request_feature_records(setup)[1])
     }
 
 
@@ -140,9 +131,7 @@ def build_eligible_read_mask(setup):
         for block_hash in block_keys(build_prompt_tokens(setup, request_index)):
             last_session_by_block[block_hash] = request_index % setup["groups"]
     for request_index in range(setup["calibration_requests"]):
-        for block_hash in block_keys(
-            build_prompt_tokens(setup, request_index, calibration=True)
-        ):
+        for block_hash in block_keys(build_prompt_tokens(setup, request_index, calibration=True)):
             last_session_by_block[block_hash] = 10000 + request_index
     eligibility_by_request = []
     for request_index, prompt in enumerate(build_workload_prompts(setup)):
@@ -155,10 +144,7 @@ def build_eligible_read_mask(setup):
         seen = set()
         bits = []
         for block_hash in keys:
-            bits.append(
-                block_hash not in seen
-                and last_session_by_block.get(block_hash) == group
-            )
+            bits.append(block_hash not in seen and last_session_by_block.get(block_hash) == group)
             seen.add(block_hash)
             last_session_by_block[block_hash] = group
         eligibility_by_request.append(bits)

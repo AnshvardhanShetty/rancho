@@ -52,9 +52,7 @@ class Tests(unittest.TestCase):
         return b
 
     def test_new_computation_never_allocates_hbf(self):
-        self.assertEqual(
-            [b.block_id for b in self.pool.get_new_blocks(4)], [1, 2, 3, 4]
-        )
+        self.assertEqual([b.block_id for b in self.pool.get_new_blocks(4)], [1, 2, 3, 4])
         self.assertEqual(self.pool.get_num_free_blocks(), 0)
         with self.assertRaises(ValueError):
             self.pool.get_new_blocks(1)
@@ -91,9 +89,7 @@ class Tests(unittest.TestCase):
     def test_whole_transaction_checked_before_first_publication(self):
         old = self.active_page()
         with self.assertRaises(ValueError):
-            self.tiers.commit_completed_copies(
-                [(old.block_id, 5), (2, 6)], gpu_completed=True
-            )
+            self.tiers.commit_completed_copies([(old.block_id, 5), (2, 6)], gpu_completed=True)
         self.assertEqual(old.block_hash, b"prefix")
         self.assertIsNone(self.pool.blocks[5].block_hash)
 
@@ -107,12 +103,8 @@ class Tests(unittest.TestCase):
         self.assertEqual(cached.resumed_req_ids, {"a"})
 
     def test_hbf_hit_does_not_claim_evictable_hbm(self):
-        self.assertEqual(
-            self.manager._get_num_evictable_blocks([self.pool.blocks[5]]), 0
-        )
-        self.assertEqual(
-            self.manager._get_num_evictable_blocks([self.pool.blocks[1]]), 1
-        )
+        self.assertEqual(self.manager._get_num_evictable_blocks([self.pool.blocks[5]]), 0)
+        self.assertEqual(self.manager._get_num_evictable_blocks([self.pool.blocks[1]]), 1)
 
     def test_existing_copy_can_be_reused_while_another_reader_is_active(self):
         old = self.active_page()
@@ -121,13 +113,9 @@ class Tests(unittest.TestCase):
         target.ref_cnt = 1
         self.pool.free_block_queue.remove(target)
         self.manager.req_to_blocks["other"] = [target]
-        self.pool.cached_block_hash_to_block = NS(
-            _cache={old.block_hash: {1: old, 5: target}}
-        )
+        self.pool.cached_block_hash_to_block = NS(_cache={old.block_hash: {1: old, 5: target}})
         self.assertEqual(find_existing_hbf_copy(self.tiers, old.block_id), 5)
-        result = remap_to_existing_hbf_copies(
-            self.tiers, [(old.block_id, 5)], gpu_completed=True
-        )
+        result = remap_to_existing_hbf_copies(self.tiers, [(old.block_id, 5)], gpu_completed=True)
         self.assertEqual(result["additional_writes"], 0)
         self.assertEqual(target.ref_cnt, 2)
         self.assertEqual(old.ref_cnt, 0)
@@ -138,9 +126,7 @@ class Tests(unittest.TestCase):
         old = self.active_page()
         self.pool.blocks[5].block_hash = b"different"
         with self.assertRaises(ValueError):
-            remap_to_existing_hbf_copies(
-                self.tiers, [(old.block_id, 5)], gpu_completed=True
-            )
+            remap_to_existing_hbf_copies(self.tiers, [(old.block_id, 5)], gpu_completed=True)
         self.assertEqual(old.ref_cnt, 1)
 
 

@@ -66,13 +66,9 @@ class Wallet:
         self.design, self.budget, self.seed = design, budget, seed
         self.end_us = end_us
         self.release_us = (
-            release_us
-            if release_us is not None
-            else (7 * DAY if design == "hbf" else 5 * DAY)
+            release_us if release_us is not None else (7 * DAY if design == "hbf" else 5 * DAY)
         )
-        self.reserve = (
-            reserve if reserve is not None else (0.0 if design == "hbf" else 0.3)
-        )
+        self.reserve = reserve if reserve is not None else (0.0 if design == "hbf" else 0.3)
         if not (
             0 < self.release_us <= end_us
             and 0 <= self.reserve < 1
@@ -231,28 +227,17 @@ class Wallet:
         """
         if type(event_id) is not int or not self.last_id < event_id < (1 << 63):
             raise ValueError("Event IDs must strictly increase")
-        if (
-            type(now_us) is not int
-            or not self.last_us <= now_us < self.end_us
-            or now_us < 0
-        ):
+        if type(now_us) is not int or not self.last_us <= now_us < self.end_us or now_us < 0:
             raise ValueError("Invalid logical event clock")
         if not math.isfinite(prediction) or prediction < 0:
             raise ValueError("Invalid causal prediction")
-        if (
-            type(cost) is not int
-            or type(distinct) is not int
-            or cost < 0
-            or distinct < 0
-        ):
+        if type(cost) is not int or type(distinct) is not int or cost < 0 or distinct < 0:
             raise ValueError("Invalid cost or distinct count")
         if self.design == "ssd" and (cost != 1 or distinct != 1):
             raise ValueError("SSD wallet sees only absent single-block offers")
         if self.design == "hbf" and distinct == 0 and cost != 0:
             raise ValueError("An empty suffix cannot cost writes")
-        if forced_warm is not None and (
-            type(forced_warm) is not bool or now_us >= split_us
-        ):
+        if forced_warm is not None and (type(forced_warm) is not bool or now_us >= split_us):
             raise ValueError("Saved warm decisions are warmup-only")
         self.last_id, self.last_us = event_id, now_us
         score = (
@@ -300,14 +285,10 @@ class Wallet:
             self._record_offer(observation)
         return admit
 
-    def refresh_offer_scores(
-        self, event_ids, predictions, cut_us, *, initialization=False
-    ):
+    def refresh_offer_scores(self, event_ids, predictions, cut_us, *, initialization=False):
         """Re-score the exact retained past history without changing past actions."""
         values = self.offers_in_arrival_order()
-        if list(event_ids) != [v.event_id for v in values] or len(predictions) != len(
-            values
-        ):
+        if list(event_ids) != [v.event_id for v in values] or len(predictions) != len(values):
             raise ValueError("Repricing must cover the exact ordered history")
         if cut_us < self.last_us or any(v.time_us >= cut_us for v in values):
             raise ValueError("Repricing requires strictly past observations")
@@ -360,9 +341,7 @@ class Wallet:
     @classmethod
     def restore_controller_state(cls, state, expected_sha256):
         """Restore controller fields from a checked saved state."""
-        raw = json.dumps(
-            state, sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode()
+        raw = json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         if hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise ValueError("Controller snapshot hash mismatch")
 
@@ -396,9 +375,7 @@ class Wallet:
             fields_by_key.get(key, key): value for key, value in saved_fields.items()
         }
         controller.__dict__.update(restored_fields)
-        controller.offer_history = [
-            Observation(**offer) for offer in saved_fields["ring"]
-        ]
+        controller.offer_history = [Observation(**offer) for offer in saved_fields["ring"]]
         history_count = len(controller.offer_history)
         if not (
             0 <= controller.blocks_written <= controller.budget
@@ -406,8 +383,7 @@ class Wallet:
             and controller.observations >= history_count
             and controller.next_history_slot
             == controller.observations % controller.history_capacity
-            and history_count
-            == min(controller.observations, controller.history_capacity)
+            and history_count == min(controller.observations, controller.history_capacity)
         ):
             raise ValueError("Controller snapshot geometry mismatch")
         return controller

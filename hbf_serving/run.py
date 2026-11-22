@@ -14,8 +14,8 @@ import sys
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "code"))
-from campaign_state import write_run_json
-from updated_model import CUT, SuffixGBT, model_fit_summary_path
+from run_files import write_run_json
+from reuse_predictor import CUT, SuffixReusePredictor, model_fit_summary_path
 
 
 def main():
@@ -34,9 +34,7 @@ def main():
     workload_settings = json.loads(args.workload_settings.read_text())
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    hbm_pages, ratio = {"hbm": (960, 0), "rancho8": (320, 8), "rancho16": (144, 16)}[
-        args.arm
-    ]
+    hbm_pages, ratio = {"hbm": (960, 0), "rancho8": (320, 8), "rancho16": (144, 16)}[args.arm]
     hbf_pages = ratio * (workload_settings["baseline_pages"] - hbm_pages)
     comparison_settings = dict(
         arm=args.arm,
@@ -62,7 +60,7 @@ def main():
                 model_fit_summary_path(predictor).read_bytes()
             ).hexdigest(),
         )
-        model = SuffixGBT(predictor_settings)
+        model = SuffixReusePredictor(predictor_settings)
         controller_start_state = output / "controller_start_state.json"
         write_run_json(
             controller_start_state,
@@ -74,16 +72,14 @@ def main():
                 model_sha256=model.model_sha256,
             ),
         )
-        comparison_settings.update(
-            fit=predictor_settings, controller=str(controller_start_state)
-        )
+        comparison_settings.update(fit=predictor_settings, controller=str(controller_start_state))
     workload_settings_file = output / "workload_settings.json"
     comparison_settings_file = output / "comparison_settings.json"
     write_run_json(workload_settings_file, workload_settings)
     write_run_json(comparison_settings_file, comparison_settings)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(HERE / "code") + os.pathsep + env.get("PYTHONPATH", "")
-    runner = HERE / "code/run_cell.py"
+    runner = HERE / "code/run_serving.py"
     subprocess.run(
         [
             sys.executable,

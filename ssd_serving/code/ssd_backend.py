@@ -67,9 +67,9 @@ class Connector(KVConnectorBase_V1):
             self.history = {}
             self.resident = {}
             self.request_touched = {}
-            self.evictions = self.absent = self.retained = self.rejected = (
-                self.restored
-            ) = self.local_islands = 0
+            self.evictions = self.absent = self.retained = self.rejected = self.restored = (
+                self.local_islands
+            ) = 0
             self.new_pages = set()
             self.now = 0.0
 
@@ -138,10 +138,7 @@ class Connector(KVConnectorBase_V1):
             blocks, request.block_hashes[: len(request.prompt_token_ids) // 16]
         ):
             key = bytes(block_hash)
-            if (
-                block.block_hash is None
-                or bytes(get_block_hash(block.block_hash)) != key
-            ):
+            if block.block_hash is None or bytes(get_block_hash(block.block_hash)) != key:
                 continue
             page = block.block_id
             acquired = page not in self.resident
@@ -180,9 +177,7 @@ class Connector(KVConnectorBase_V1):
             and get_block_hash(block.block_hash) == key
         )
         if block.block_id in self.new_pages:
-            raise RuntimeError(
-                "Attempted to evict unfinished KV in the same scheduler step"
-            )
+            raise RuntimeError("Attempted to evict unfinished KV in the same scheduler step")
         block_history = self.history[key]
         prior_evictions = block_history["evictions"]
         block_history["evictions"] += 1
@@ -220,9 +215,7 @@ class Connector(KVConnectorBase_V1):
         """Find how much more of the input is available from GPU or SSD."""
         begin = num_computed_tokens // 16
         matches = []
-        for block_hash in request.block_hashes[
-            begin : (len(request.prompt_token_ids) - 1) // 16
-        ]:
+        for block_hash in request.block_hashes[begin : (len(request.prompt_token_ids) - 1) // 16]:
             key = bytes(block_hash)
             local = self.pool.get_cached_block(block_hash, [0])
             if local and local[0].block_id not in self.new_pages:
@@ -237,9 +230,7 @@ class Connector(KVConnectorBase_V1):
     def stage_cached_blocks_before_allocation(self, request):
         """Preserve needed KV before allocation can recycle its source."""
         staged = []
-        for block_key, local_hbm_page in self.pending.get(request.request_id, (0, []))[
-            1
-        ]:
+        for block_key, local_hbm_page in self.pending.get(request.request_id, (0, []))[1]:
             if local_hbm_page is None:
                 payload = store.read_block_from_ssd(block_key)
             else:

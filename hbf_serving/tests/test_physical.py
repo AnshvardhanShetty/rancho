@@ -1,8 +1,8 @@
 """Check startup writes and elapsed-time write credits with synthetic clocks."""
 
 import unittest
-from physical_time import PhysicalBudget, DAY_NS
-from controllers import Wallet, DAY
+from write_bandwidth import PhysicalBudget, DAY_NS
+from write_controller import Wallet, DAY
 
 
 class PhysicalTests(unittest.TestCase):
@@ -14,9 +14,7 @@ class PhysicalTests(unittest.TestCase):
         self.assertEqual(b.available_write_pages(1000 + 60_000_000_000, False, 1000), 1)
         b.charge_write_pages(1, False, 1)
         self.assertEqual(b.available_write_pages(1000 + 60_000_000_000, False, 1000), 0)
-        self.assertEqual(
-            b.available_write_pages(1000 + 120_000_000_000, False, 1000), 1
-        )
+        self.assertEqual(b.available_write_pages(1000 + 120_000_000_000, False, 1000), 1)
 
     def test_startup_is_charged_and_no_refunds(self):
         b = PhysicalBudget(10, 0)
@@ -48,17 +46,13 @@ class PhysicalTests(unittest.TestCase):
         )
         self.assertEqual(w.blocks_written, 0)
         self.assertEqual(w.observations, 1)
-        self.assertTrue(
-            w.decide_write_admission(1, 2, 10.0, distinct=8, cost=8, payment_limit=8)
-        )
+        self.assertTrue(w.decide_write_admission(1, 2, 10.0, distinct=8, cost=8, payment_limit=8))
         self.assertEqual(w.blocks_written, 8)
         self.assertEqual(w.observations, 2)
 
     def test_zero_cost_reuse_does_not_consume_write_credit(self):
         w = Wallet("hbf", 100, 17, end_us=DAY, release_us=DAY)
-        self.assertTrue(
-            w.decide_write_admission(0, 1, 10.0, distinct=8, cost=0, payment_limit=0)
-        )
+        self.assertTrue(w.decide_write_admission(0, 1, 10.0, distinct=8, cost=0, payment_limit=0))
         self.assertEqual(w.blocks_written, 0)
 
     def test_daily_cap_survives_large_external_credit(self):

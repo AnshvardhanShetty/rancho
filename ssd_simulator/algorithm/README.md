@@ -11,11 +11,11 @@ This is the SSD policy used for the recorded trace results. It estimates how muc
 | --- | --- |
 | [run.py](run.py) | The steps from saved inputs to final counts |
 | [training_data.py](training_data.py) | The eight inputs and which examples are visible at each hour |
-| [training.py](training.py) | Tree fitting, validation and prediction |
-| [recorded_settings.json](recorded_settings.json) | Recorded settings whose loss override is applied in [settings.py](settings.py) |
+| [model_training.py](model_training.py) | Tree fitting, validation and prediction |
+| [recorded_settings.json](recorded_settings.json) | Recorded settings whose loss override is applied in [experiment_settings.py](experiment_settings.py) |
 | [replay.cpp](replay.cpp) | Cache updates, cutoff refreshes and write decisions |
-| [labels.py](labels.py) | The count of observed gains available at each hour |
-| [accounting.py](accounting.py) | The final count of reads SSD saved |
+| [reuse_labels.py](reuse_labels.py) | The count of observed gains available at each hour |
+| [recomputation_counts.py](recomputation_counts.py) | The final count of reads SSD saved |
 | [support](support) | Tools that make the reuse index and label data |
 
-The reconstruction was checked against saved source checksums, synthetic write logs and training outputs. The full private-trace replay has not been rerun locally. [Verification record](SOURCE_VERIFICATION.json) · [Run commands and required files](RUNNING.md)
+The [verification record](SOURCE_VERIFICATION.json) documents the original reconstruction. The public copy uses clearer names and the same replay rule. See [run commands and required files](RUNNING.md).

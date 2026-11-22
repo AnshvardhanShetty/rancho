@@ -7,13 +7,11 @@ Install the repo's Python requirements. The C++ tools also need a C++17 compiler
 From the repo root:
 
 ```bash
-make -C ssd_simulator/replay recorded-support
+make -C ssd_simulator recorded-support
 python -m unittest discover -s ssd_simulator/algorithm/tests
-python ssd_simulator/algorithm/tests/check_policy.py
-python ssd_simulator/algorithm/tests/check_pipeline.py
 ```
 
-The policy check compares write decisions and cache counts against the recorded source on small inputs. The pipeline check generates examples and runs training, replay and accounting together.
+The tests use synthetic examples to check training labels, hourly fitting and recomputation accounting.
 
 ## Prepared inputs
 
@@ -38,13 +36,13 @@ The manifest has:
 | `replay` | `block_ids`, `block_counts`, `arrival_times`, `tokens`, `measured_evictions`, `reference_rows`, `block_id_count` and a `credit` group with `offsets`, `bits` and `ranks` |
 | `expected_scores_sha256` and `expected_result` | Optional saved checksum and counts for an exact comparison |
 
-Each file record has a `path` and `sha256`. Paths can be relative to the manifest. See the [request file formats](../replay/README.md#input-files). The three credit files are `offsets.i64`, `credit.bits` and `credit.rank` in one directory. The original prediction checksum is in [SOURCE_VERIFICATION.json](SOURCE_VERIFICATION.json).
+Each file record has a `path` and `sha256`. Paths can be relative to the manifest. The block counts and IDs are signed 32-bit integers. The arrival times are signed 64-bit integers in microseconds. The IDs keep their request order and duplicates. The three credit files are `offsets.i64`, `credit.bits` and `credit.rank` in one directory. The original prediction checksum is in [SOURCE_VERIFICATION.json](SOURCE_VERIFICATION.json).
 
 ## Training labels
 
 1. Use [session_accounting.cpp](support/session_accounting.cpp) to build and check the same-session read index for the prepared request sequence. Keep the request order, session IDs, block order and duplicates from the trace.
 2. Run the reference policy with cold caches over days 1–3 and again over days 4–7. Check the writes and the request rows.
 3. [label_replay.cpp](support/label_replay.cpp) takes the reference writes and measures what saving each sampled eviction would have added. Use `--label-samples`, `--label-credit` and `--label-event-offset`. Use offset zero for training and the earlier eviction count for measurement.
-4. [labels.py](labels.py) combines the two gain files into one label row per cutoff. A read at the cutoff belongs to the following fit.
+4. [reuse_labels.py](reuse_labels.py) combines the two gain files into one label row per cutoff. A read at the cutoff belongs to the following fit.
 
 The public repo includes the code and generated examples. The full trace and prepared production inputs are private.

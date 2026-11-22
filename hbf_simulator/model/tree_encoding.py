@@ -11,15 +11,15 @@ def build_category_values(feature_table, categorical_columns):
         (
             np.unique(
                 feature_table[
-                    np.isfinite(feature_table[:, column])
-                    & (feature_table[:, column] >= 0),
-                    column,
+                    np.isfinite(feature_table[:, column_index])
+                    & (feature_table[:, column_index] >= 0),
+                    column_index,
                 ]
             )
-            if column in categorical_columns
+            if column_index in categorical_columns
             else None
         )
-        for column in range(feature_table.shape[1])
+        for column_index in range(feature_table.shape[1])
     ]
 
 
@@ -30,22 +30,20 @@ def encode_tree_features(feature_table, categories_by_column):
         np.isfinite(feature_table) & (feature_table >= 0), feature_table, np.nan
     )
     # Replace categorical values with their saved codes; unseen users receive -1.
-    for column, known_categories in enumerate(categories_by_column):
-        if known_categories is None:
+    for column_index, training_categories in enumerate(categories_by_column):
+        if training_categories is None:
             continue
-        encoded_features[:, column] = -1
-        if len(known_categories):
-            category_indices = np.searchsorted(
-                known_categories, feature_table[:, column]
+        encoded_features[:, column_index] = -1
+        if len(training_categories):
+            category_positions = np.searchsorted(
+                training_categories, feature_table[:, column_index]
             )
-            known_category_mask = category_indices < len(known_categories)
+            known_category_mask = category_positions < len(training_categories)
             known_category_mask &= (
-                known_categories[
-                    np.minimum(category_indices, len(known_categories) - 1)
-                ]
-                == feature_table[:, column]
+                training_categories[np.minimum(category_positions, len(training_categories) - 1)]
+                == feature_table[:, column_index]
             )
-            encoded_features[known_category_mask, column] = category_indices[
+            encoded_features[known_category_mask, column_index] = category_positions[
                 known_category_mask
             ]
     return encoded_features

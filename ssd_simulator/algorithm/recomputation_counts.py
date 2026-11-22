@@ -17,9 +17,9 @@ def count_eligible_reads_saved_and_compare(path, reference, credit_directory):
         rows[:, 3], reference_rows[:, 3]
     )
     # Each request starts at a different position in the saved eligibility bits
-    request_offsets = np.memmap(credit_path / "offsets.i64", "<u8", "r")[
-        rows[:, 0]
-    ].astype(np.int64)
+    request_offsets = np.memmap(credit_path / "offsets.i64", "<u8", "r")[rows[:, 0]].astype(
+        np.int64
+    )
     eligible_bits = np.memmap(credit_path / "credit.bits", "<u8", "r")
     eligible_prefix_counts = np.memmap(credit_path / "credit.rank", "<u8", "r")
     byte_popcounts = np.array([int(i).bit_count() for i in range(256)], dtype=np.uint8)
@@ -28,9 +28,7 @@ def count_eligible_reads_saved_and_compare(path, reference, credit_directory):
         """Count eligible positions up to each request's prefix boundary"""
         positions = (request_offsets + prefix_positions).astype("uint64")
         word_indices, bit_offsets = np.divmod(positions, np.uint64(64))
-        partial_word = eligible_bits[word_indices] & (
-            np.uint64(1) << bit_offsets
-        ) - np.uint64(1)
+        partial_word = eligible_bits[word_indices] & (np.uint64(1) << bit_offsets) - np.uint64(1)
         return (
             eligible_prefix_counts[word_indices]
             + byte_popcounts[partial_word.view("u1").reshape(-1, 8)].sum(axis=1)

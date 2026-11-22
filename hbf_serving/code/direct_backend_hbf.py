@@ -19,9 +19,9 @@ class HBFConnector(DirectConnector):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if self.config.get("updated_rancho"):
-            from updated_policy import FilteredHistory
+            from hbf_admission import HbmMissReuseHistory
 
-            self.history = FilteredHistory(self.config["HBM_pages"])
+            self.history = HbmMissReuseHistory(self.config["HBM_pages"])
 
     def wait_for_save(self):
         """Check each completed request and copy the KV that RANCHO accepts"""
@@ -59,9 +59,7 @@ class HBFConnector(DirectConnector):
                     if source_page not in reused_sources
                 ]
                 distinct, cost = len(all_sources), len(sources)
-                assert distinct == len(
-                    set(candidate["prompt_keys"][candidate["suffix_begin"] :])
-                )
+                assert distinct == len(set(candidate["prompt_keys"][candidate["suffix_begin"] :]))
                 event = dict(
                     request_id=candidate["request_id"],
                     source_pages=distinct,
@@ -90,9 +88,7 @@ class HBFConnector(DirectConnector):
                 if self.config.get("physical_write_accounting"):
                     self.policy.set_request_context(candidate["request_id"])
                 # Score using only reuse from before this request
-                self.policy.set_suffix_reuse_count(
-                    reuse_history["past_filtered_reuses"]
-                )
+                self.policy.set_suffix_reuse_count(reuse_history["past_filtered_reuses"])
                 decision = self.policy.decide_hbf_write_after_prefill(
                     self.event_id,
                     self.now_us,
@@ -125,12 +121,8 @@ class HBFConnector(DirectConnector):
                     target_page = targets[offset : offset + pages_per_chunk]
                     begin = time.monotonic_ns()
                     for view in self.pages.pages.values():
-                        indices = torch.tensor(
-                            source_page, device=view.device, dtype=torch.long
-                        )
-                        target = torch.tensor(
-                            target_page, device=view.device, dtype=torch.long
-                        )
+                        indices = torch.tensor(source_page, device=view.device, dtype=torch.long)
+                        target = torch.tensor(target_page, device=view.device, dtype=torch.long)
                         view.index_copy_(0, target, view.index_select(0, indices))
                     torch.cuda.synchronize()
                     deadline = (
@@ -187,9 +179,7 @@ class HBFScheduler(DirectScheduler):
             for source in candidate["sources"]:
                 key = self.tiers.pool.blocks[source].block_hash
                 if key is None:
-                    raise ValueError(
-                        "An offered full native page lacks its content hash"
-                    )
+                    raise ValueError("An offered full native page lacks its content hash")
                 candidate["source_hashes"][source] = repr(key)
                 target = find_existing_hbf_copy(self.tiers, source)
                 if target is not None:
@@ -214,9 +204,7 @@ class HBFScheduler(DirectScheduler):
                     dict(event="PUBLISHED_NATIVE_HBF", **result),
                 )
                 meta.pairs = []
-            reuse = [
-                pair for event in meta.events for pair in event.get("reuse_pairs", [])
-            ]
+            reuse = [pair for event in meta.events for pair in event.get("reuse_pairs", [])]
             if reuse:
                 result = remap_to_existing_hbf_copies(
                     self.tiers, reuse, gpu_completed=meta.gpu_completed

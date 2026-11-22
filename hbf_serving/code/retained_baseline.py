@@ -19,10 +19,7 @@ class RetainedPrefixScheduler(DirectScheduler):
             engine_settings["baseline_prefix_retention"] is True
             and engine_settings["HBF_pages"] == 0
         )
-        assert (
-            engine_settings["shared_prefix_tokens"] % engine_settings["block_tokens"]
-            == 0
-        )
+        assert engine_settings["shared_prefix_tokens"] % engine_settings["block_tokens"] == 0
         self.shared_pages = (
             engine_settings["shared_prefix_tokens"] // engine_settings["block_tokens"]
         )
@@ -59,9 +56,7 @@ class RetainedPrefixScheduler(DirectScheduler):
             self.shared_pages,
         )
         result = super().update_from_output(scheduler_output, model_runner_output)
-        added = self.retention.retain_shared_prefix_blocks(
-            candidates, gpu_completed=True
-        )
+        added = self.retention.retain_shared_prefix_blocks(candidates, gpu_completed=True)
         self.retention_seen.update(complete_prefixes)
         if added:
             invariant = self.retention.verify_retained_prefixes()
@@ -81,9 +76,7 @@ class RetainedPrefixScheduler(DirectScheduler):
         # Empty engine queues can occur between rate-paced arrivals. Only finish
         # validation after every measured request has computed its shared prefix
         # and all active work has completed; never reset or release retained KV.
-        all_requests_seen = (
-            len(self.retention_seen) == self.engine_settings["n_requests"]
-        )
+        all_requests_seen = len(self.retention_seen) == self.engine_settings["n_requests"]
         if (
             all_requests_seen
             and self.get_num_unfinished_requests() == 0
@@ -94,9 +87,7 @@ class RetainedPrefixScheduler(DirectScheduler):
             log_event(
                 self.engine_settings,
                 "retention.jsonl",
-                dict(
-                    event="RETENTION_COMPLETE", step=self.retention_steps, **invariant
-                ),
+                dict(event="RETENTION_COMPLETE", step=self.retention_steps, **invariant),
             )
             self.retention_completed = True
         self.retention_steps += 1

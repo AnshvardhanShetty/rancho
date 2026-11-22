@@ -1,7 +1,6 @@
 """Connect vLLM's scheduler and GPU worker to the two cache tiers"""
 
 from dataclasses import dataclass, field
-import hashlib
 import json
 import os
 import re
@@ -80,9 +79,9 @@ class DirectConnector(KVConnectorBase_V1):
             "baseline",
         ):
             if self.config.get("updated_rancho"):
-                from updated_policy import UpdatedAdmission
+                from hbf_admission import HbfAdmissionPolicy
 
-                self.policy = UpdatedAdmission(self.config)
+                self.policy = HbfAdmissionPolicy(self.config)
                 self.event_id = 0
                 self.now_us = self.config["fit"]["cut_us"] - 1
             else:
@@ -194,12 +193,8 @@ class DirectConnector(KVConnectorBase_V1):
                 target_pages = targets[offset : offset + pages_per_chunk]
                 begin = time.monotonic_ns()
                 for view in self.pages.pages.values():
-                    source_ids = torch.tensor(
-                        source_pages, device=view.device, dtype=torch.long
-                    )
-                    target_ids = torch.tensor(
-                        target_pages, device=view.device, dtype=torch.long
-                    )
+                    source_ids = torch.tensor(source_pages, device=view.device, dtype=torch.long)
+                    target_ids = torch.tensor(target_pages, device=view.device, dtype=torch.long)
                     payload = view.index_select(0, source_ids)
                     view.index_copy_(0, target_ids, payload)
                 torch.cuda.synchronize()
@@ -298,19 +293,14 @@ class DirectScheduler(Scheduler):
                 )
             if (
                 request_id not in self.offered
-                and cached_tokens_before
-                < prompt_token_count
-                <= cached_tokens_before + count
+                and cached_tokens_before < prompt_token_count <= cached_tokens_before + count
             ):
                 if cached_tokens_before + count != prompt_token_count:
                     raise ValueError("Unqualified prefill/decode boundary")
                 trace_request_id = request_id
                 if trace_request_id not in self.engine_settings["requests"]:
                     match = re.fullmatch(r"(.+)-[0-9a-f]{8}", request_id)
-                    if (
-                        match is None
-                        or match[1] not in self.engine_settings["requests"]
-                    ):
+                    if match is None or match[1] not in self.engine_settings["requests"]:
                         raise ValueError(
                             "Unbound native/external request identity: " + request_id
                         )
@@ -369,9 +359,7 @@ class DirectScheduler(Scheduler):
     def update_from_output(self, scheduler_output, model_runner_output):
         """Apply the worker's completed moves to the cache tables"""
         connector_output = model_runner_output.kv_connector_output
-        completed_copies = (
-            connector_output.kv_connector_worker_meta if connector_output else None
-        )
+        completed_copies = connector_output.kv_connector_worker_meta if connector_output else None
         if completed_copies is not None:
             if not isinstance(completed_copies, Copied):
                 raise ValueError("Unknown worker completion metadata")

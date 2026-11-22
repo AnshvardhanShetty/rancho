@@ -7,7 +7,7 @@ are constrained not to lower predictions. Raw-label squared error is the selecte
 import time
 import numpy as np
 from .training_data import validation_start_time, select_validation_rows
-from .settings import validate_recorded_settings
+from .experiment_settings import validate_recorded_settings
 
 
 def build_category_values(feature_values, category_columns):
@@ -16,8 +16,7 @@ def build_category_values(feature_values, category_columns):
         (
             np.unique(
                 feature_values[
-                    np.isfinite(feature_values[:, column])
-                    & (feature_values[:, column] >= 0),
+                    np.isfinite(feature_values[:, column]) & (feature_values[:, column] >= 0),
                     column,
                 ]
             )
@@ -38,19 +37,13 @@ def encode_tree_features(feature_values, vocab):
             continue
         encoded_features[:, column] = -1
         if len(known_categories):
-            category_indices = np.searchsorted(
-                known_categories, feature_values[:, column]
-            )
+            category_indices = np.searchsorted(known_categories, feature_values[:, column])
             known_category_mask = category_indices < len(known_categories)
             known_category_mask &= (
-                known_categories[
-                    np.minimum(category_indices, len(known_categories) - 1)
-                ]
+                known_categories[np.minimum(category_indices, len(known_categories) - 1)]
                 == feature_values[:, column]
             )
-            encoded_features[known_category_mask, column] = category_indices[
-                known_category_mask
-            ]
+            encoded_features[known_category_mask, column] = category_indices[known_category_mask]
     return encoded_features
 
 
@@ -72,10 +65,7 @@ def predict_saved_reads(model, feature_values):
     else:
         raise ValueError(kind)
     predicted_reuse = np.maximum(np.asarray(predicted_reuse, dtype=np.float64), 0)
-    if (
-        predicted_reuse.shape != (eviction_count,)
-        or not np.isfinite(predicted_reuse).all()
-    ):
+    if predicted_reuse.shape != (eviction_count,) or not np.isfinite(predicted_reuse).all():
         raise ValueError("Invalid predictor output")
     return predicted_reuse
 
@@ -135,9 +125,7 @@ def fit_eviction_reuse_model(data, cutoff, config):
         inner = validation_start_time(
             cutoff, config["cohort_lag_hours"], config["inner_validation_hours"]
         )
-        earlier_ids, earlier_reuse, earlier_weights = data.training_examples(
-            inner, config
-        )
+        earlier_ids, earlier_reuse, earlier_weights = data.training_examples(inner, config)
         validation_rows = select_validation_rows(
             example_times, cutoff, inner, config["cohort_lag_hours"]
         )
@@ -203,9 +191,7 @@ def fit_eviction_reuse_model(data, cutoff, config):
     model["config"] = config
     model["data_identity_sha256"] = data.identity
     model["cut_us"] = int(cutoff)
-    probe = np.arange(
-        0, len(example_ids), max(1, len(example_ids) // 50000), dtype=np.int64
-    )
+    probe = np.arange(0, len(example_ids), max(1, len(example_ids) // 50000), dtype=np.int64)
     predicted = predict_saved_reads(model, feature_values[probe])
     record["prediction_bins"] = (
         np.unique(np.quantile(predicted, np.arange(0.1, 1, 0.1))).tolist()

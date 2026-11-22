@@ -15,14 +15,14 @@
 
 // Score cutoff and admission probability for exactly equal scores.
 struct AdmissionCutoff {
-  double score = 0, tie_probability = 0;
-  bool ready = false;
+  double score_cutoff = 0, tie_probability = 0;
+  bool is_ready = false;
 };
 
 // One observed offer's score, write cost, and arrival time.
 struct PricedOffer {
   double score = 0;
-  int64_t cost = 0, time = 0;
+  int64_t write_cost_blocks = 0, arrival_time_us = 0;
 };
 
 // Mix a value for deterministic equal-score decisions.
@@ -36,40 +36,42 @@ static uint64_t mix_hash(uint64_t value) {
 }
 
 // Get a reproducible value in [0, 1) from the request and seed.
-static double random_value_for_request(uint64_t row, uint64_t seed) {
-  return double(mix_hash(row * 0x9E3779B97F4A7C15ULL ^ seed) >> 11) / 9007199254740992.0;
+static double random_value_for_request(uint64_t request_index, uint64_t seed) {
+  return double(mix_hash(request_index * 0x9E3779B97F4A7C15ULL ^ seed) >> 11) /
+         9007199254740992.0;
 }
 
 // Track spending and the last 20,000 offers; update cutoffs every 1,000 offers.
 struct WriteController {
   static constexpr int64_t history_capacity = 20000;
 
-  int64_t budget, start_time, end_time;
+  int64_t write_budget_blocks, evaluation_start_us, evaluation_end_us;
 
-  int64_t spent = 0, history_count = 0, next_history_slot = 0, observations = 0;
-  double threshold = -INFINITY, tie_probability = 1;
+  int64_t blocks_written = 0, history_count = 0, next_history_slot = 0, offers_seen = 0;
+  double global_score_cutoff = -INFINITY, tie_probability = 1;
 
-  bool has_threshold = false;
-  std::array<AdmissionCutoff, 64> bands{};
-  std::vector<PricedOffer> history;
+  bool global_cutoff_ready = false;
+  std::array<AdmissionCutoff, 64> cutoffs_by_cost_band{};
+  std::vector<PricedOffer> recent_offers;
 
   // Start with the full budget and no learned cutoff.
-  WriteController(int64_t allowance, int64_t start, int64_t end)
-      : budget(allowance), start_time(start), end_time(end), history(history_capacity) {}
+  WriteController(int64_t write_allowance_blocks, int64_t start_us, int64_t end_us)
+      : write_budget_blocks(write_allowance_blocks), evaluation_start_us(start_us),
+        evaluation_end_us(end_us), recent_offers(history_capacity) {}
 
   // Save the offer after its decision and before charging any write.
-  void record_priced_offer(double score, int64_t cost, int64_t now) {
-    history[next_history_slot] = {score, cost, now};
+  void record_priced_offer(double score, int64_t write_cost_blocks, int64_t arrival_us) {
+    recent_offers[next_history_slot] = {score, write_cost_blocks, arrival_us};
     next_history_slot = (next_history_slot + 1) % history_capacity;
     if (history_count < history_capacity)
       history_count++;
-    observations++;
-    if (observations % 1000 == 0 && history_count != 0)
-      recalculate_admission_cutoffs(now);
+    offers_seen++;
+    if (offers_seen % 1000 == 0 && history_count != 0)
+      recalculate_admission_cutoffs(arrival_us);
   }
 
   // Project recent write demand to the end of the run and compare it with the budget.
-  void recalculate_admission_cutoffs(int64_t now) {
+  void recalculate_admission_cutoffs(int64_t arrival_us) {
     if (history_count == 0)
       return;
 
@@ -77,16 +79,16 @@ struct WriteController {
     std::vector<PricedOffer> priced_offers;
     priced_offers.reserve(history_count);
     double total_write_cost = 0;
-    int64_t earliest_time = history[0].time;
+    int64_t earliest_time = recent_offers[0].arrival_time_us;
     int64_t latest_time = earliest_time;
 
-    for (int64_t i = 0; i < history_count; i++) {
-      const PricedOffer &offer = history[i];
-      earliest_time = std::min(earliest_time, offer.time);
-      latest_time = std::max(latest_time, offer.time);
-      if (offer.cost > 0 && std::isfinite(offer.score)) {
-        priced_offers.push_back({offer.score, offer.cost});
-        total_write_cost += offer.cost;
+    for (int64_t history_slot = 0; history_slot < history_count; history_slot++) {
+      const PricedOffer &offer = recent_offers[history_slot];
+      earliest_time = std::min(earliest_time, offer.arrival_time_us);
+      latest_time = std::max(latest_time, offer.arrival_time_us);
+      if (offer.write_cost_blocks > 0 && std::isfinite(offer.score)) {
+        priced_offers.push_back({offer.score, offer.write_cost_blocks});
+        total_write_cost += offer.write_cost_blocks;
       }
     }
 
@@ -100,8 +102,9 @@ struct WriteController {
     double average_write_cost = total_write_cost / priced_offers.size();
 
     // Calculate the time and write allowance remaining.
-    double remaining_seconds = std::max((double(end_time) - double(now)) / 1e6, 1.0);
-    double remaining_blocks = std::max(double(budget - spent), 0.0);
+    double remaining_seconds =
+        std::max((double(evaluation_end_us) - double(arrival_us)) / 1e6, 1.0);
+    double remaining_blocks = std::max(double(write_budget_blocks - blocks_written), 0.0);
 
     // If future offers cost 100 blocks and 30 remain, aim to pay for 30%.
     double estimated_write_demand = offers_per_second * remaining_seconds * average_write_cost;
@@ -111,17 +114,17 @@ struct WriteController {
     // Recalculate stored cutoffs for subsequent decisions.
     update_cost_band_cutoffs(priced_offers, affordable_fraction);
     update_cutoff(priced_offers, affordable_fraction, total_write_cost);
-    has_threshold = true;
+    global_cutoff_ready = true;
   }
 
   // Work down the score list until we reach the target number of writes.
   void update_cutoff(std::vector<PricedOffer> &priced_offers, double affordable_fraction,
                      double total_write_cost) {
     if (affordable_fraction <= 0) {
-      threshold = INFINITY;
+      global_score_cutoff = INFINITY;
       tie_probability = 0;
     } else if (affordable_fraction >= 1) {
-      threshold = -INFINITY;
+      global_score_cutoff = -INFINITY;
       tie_probability = 1;
     } else {
       std::sort(priced_offers.begin(), priced_offers.end(),
@@ -131,17 +134,17 @@ struct WriteController {
       double desired_write_cost = affordable_fraction * total_write_cost;
       double cost_above = 0;
       double cost_at_cutoff = 0;
-      threshold = priced_offers.back().score;
+      global_score_cutoff = priced_offers.back().score;
       for (size_t score_index = 0; score_index < priced_offers.size();) {
         size_t next_score_index = score_index;
         cost_at_cutoff = 0;
         while (next_score_index < priced_offers.size() &&
                priced_offers[next_score_index].score == priced_offers[score_index].score) {
-          cost_at_cutoff += priced_offers[next_score_index].cost;
+          cost_at_cutoff += priced_offers[next_score_index].write_cost_blocks;
           next_score_index++;
         }
         if (cost_above + cost_at_cutoff >= desired_write_cost) {
-          threshold = priced_offers[score_index].score;
+          global_score_cutoff = priced_offers[score_index].score;
           break;
         }
         cost_above += cost_at_cutoff;
@@ -157,72 +160,75 @@ struct WriteController {
   // Use the cost-group cutoff when available, otherwise the global cutoff.
   // Halve it when the fraction spent is below the fraction of evaluation time
   // elapsed.
-  AdmissionCutoff select_admission_cutoff(int64_t cost, int64_t now) const {
-    AdmissionCutoff cutoff{threshold, tie_probability, has_threshold};
-    if (cost > 0 && has_threshold) {
-      const auto &band = bands[write_cost_band(cost)];
-      if (band.ready)
-        cutoff = band;
+  AdmissionCutoff select_admission_cutoff(int64_t write_cost_blocks, int64_t arrival_us) const {
+    AdmissionCutoff cutoff{global_score_cutoff, tie_probability, global_cutoff_ready};
+    if (write_cost_blocks > 0 && global_cutoff_ready) {
+      const auto &cost_band_index = cutoffs_by_cost_band[write_cost_band(write_cost_blocks)];
+      if (cost_band_index.is_ready)
+        cutoff = cost_band_index;
     }
-    if (cost > 0 && cutoff.ready &&
-        (__int128)spent * (end_time - start_time) < (__int128)budget * (now - start_time))
-      cutoff.score *= 0.5;
+    if (write_cost_blocks > 0 && cutoff.is_ready &&
+        (__int128)blocks_written * (evaluation_end_us - evaluation_start_us) <
+            (__int128)write_budget_blocks * (arrival_us - evaluation_start_us))
+      cutoff.score_cutoff *= 0.5;
     return cutoff;
   }
 
-  static int write_cost_band(int64_t cost);
+  static int write_cost_band(int64_t write_cost_blocks);
   void update_cost_band_cutoffs(const std::vector<PricedOffer> &priced_offers,
                                 double affordable_fraction);
 };
 
 // Cost-group cutoffs: use a separate cutoff for each sufficiently populated
 // price range.
-inline int WriteController::write_cost_band(int64_t cost) {
-  return cost > 0 ? 63 - __builtin_clzll(static_cast<unsigned long long>(cost)) : 0;
+inline int WriteController::write_cost_band(int64_t write_cost_blocks) {
+  return write_cost_blocks > 0
+             ? 63 - __builtin_clzll(static_cast<unsigned long long>(write_cost_blocks))
+             : 0;
 }
 
 inline void
 WriteController::update_cost_band_cutoffs(const std::vector<PricedOffer> &priced_offers,
                                           double affordable_fraction) {
-  bands = {};
-  std::array<std::vector<PricedOffer>, 64> grouped;
-  for (const auto &v : priced_offers)
-    grouped[write_cost_band(v.cost)].push_back(v);
-  for (int band = 0; band < 64; ++band) {
-    auto &group = grouped[band];
-    if (group.size() < 100)
+  cutoffs_by_cost_band = {};
+  std::array<std::vector<PricedOffer>, 64> offers_by_cost_band;
+  for (const auto &offer : priced_offers)
+    offers_by_cost_band[write_cost_band(offer.write_cost_blocks)].push_back(offer);
+  for (int cost_band_index = 0; cost_band_index < 64; ++cost_band_index) {
+    auto &band_offers = offers_by_cost_band[cost_band_index];
+    if (band_offers.size() < 100)
       continue;
-    auto &cut = bands[band];
-    cut.ready = true;
+    auto &band_cutoff = cutoffs_by_cost_band[cost_band_index];
+    band_cutoff.is_ready = true;
     if (affordable_fraction <= 0) {
-      cut.score = INFINITY;
-      cut.tie_probability = 0;
+      band_cutoff.score_cutoff = INFINITY;
+      band_cutoff.tie_probability = 0;
       continue;
     }
     if (affordable_fraction >= 1) {
-      cut.score = -INFINITY;
-      cut.tie_probability = 1;
+      band_cutoff.score_cutoff = -INFINITY;
+      band_cutoff.tie_probability = 1;
       continue;
     }
-    std::sort(group.begin(), group.end(),
+    std::sort(band_offers.begin(), band_offers.end(),
               [](const PricedOffer &left_offer, const PricedOffer &right_offer) {
                 return left_offer.score > right_offer.score;
               });
     int64_t band_write_cost = 0, cost_above = 0;
-    for (const auto &v : group)
-      band_write_cost += v.cost;
+    for (const auto &offer : band_offers)
+      band_write_cost += offer.write_cost_blocks;
     double desired_write_cost = affordable_fraction * band_write_cost;
-    for (size_t score_index = 0; score_index < group.size();) {
+    for (size_t score_index = 0; score_index < band_offers.size();) {
       size_t next_score_index = score_index;
       int64_t cost_at_cutoff = 0;
-      while (next_score_index < group.size() &&
-             group[next_score_index].score == group[score_index].score) {
-        cost_at_cutoff += group[next_score_index].cost;
+      while (next_score_index < band_offers.size() &&
+             band_offers[next_score_index].score == band_offers[score_index].score) {
+        cost_at_cutoff += band_offers[next_score_index].write_cost_blocks;
         ++next_score_index;
       }
       if (cost_above + cost_at_cutoff >= desired_write_cost) {
-        cut.score = group[score_index].score;
-        cut.tie_probability =
+        band_cutoff.score_cutoff = band_offers[score_index].score;
+        band_cutoff.tie_probability =
             std::clamp((desired_write_cost - cost_above) / cost_at_cutoff, 0.0, 1.0);
         break;
       }

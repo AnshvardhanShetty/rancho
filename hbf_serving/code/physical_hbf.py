@@ -4,9 +4,9 @@ import json
 import re
 import time
 from pathlib import Path
-from direct_backend import DirectConnector, log_event
+from direct_backend import log_event
 from direct_backend_hbf import HBFConnector as NativeHBFConnector
-from physical_time import PhysicalBudget
+from write_bandwidth import PhysicalBudget
 
 
 class PhysicalTimedPolicy:
@@ -42,9 +42,7 @@ class PhysicalTimedPolicy:
             raise ValueError("Unrecognized physical request identity")
         self.context = int(match[1])
 
-    def decide_hbf_write_after_prefill(
-        self, row, logical_us, features, distinct, cost, **kwargs
-    ):
+    def decide_hbf_write_after_prefill(self, row, logical_us, features, distinct, cost, **kwargs):
         """Apply the elapsed-time write limit before charging an accepted offer."""
         if self.context is None:
             raise ValueError("Physical phase must be bound to actual request")
@@ -61,13 +59,7 @@ class PhysicalTimedPolicy:
         physical_us = self.config["fit"]["cut_us"] + (now_ns - self.origin) // 1000
         start = time.perf_counter_ns()
         result = self.policy.decide_hbf_write_after_prefill(
-            row,
-            physical_us,
-            features,
-            distinct,
-            cost,
-            payment_limit=allowance,
-            **kwargs
+            row, physical_us, features, distinct, cost, payment_limit=allowance, **kwargs
         )
         cpu_ns = time.perf_counter_ns() - start
         self.ledger.charge_write_pages(result["paid_cost"], warmup, allowance)
@@ -95,22 +87,3 @@ class HBFConnector(NativeHBFConnector):
             if self.config.get("physical_write_accounting") is not True:
                 raise ValueError("Physical-time benchmark requires physical accounting")
             self.policy = PhysicalTimedPolicy(self.policy, self.config)
-
-
-class PhysicalCalibrationConnector(DirectConnector):
-    """Account for writes during the calibration run"""
-
-    def wait_for_save(self):
-        super().wait_for_save()
-        if self.output is not None and self.output.events:
-            now = time.monotonic_ns()
-            log_event(
-                self.config,
-                "worker.jsonl",
-                dict(
-                    event="PHYSICAL_CALIBRATION_OFFERS",
-                    completion_ns=now,
-                    offers=self.output.events,
-                    gpu_completed=True,
-                ),
-            )

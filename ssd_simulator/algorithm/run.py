@@ -13,9 +13,9 @@ import pickle
 import subprocess
 import numpy as np
 from .training_data import TrainingData, resolve_and_verify_input_file
-from .training import fit_eviction_reuse_model, predict_reuse_for_evictions
-from .settings import SETTINGS, HOUR
-from .accounting import count_eligible_reads_saved_and_compare
+from .model_training import fit_eviction_reuse_model, predict_reuse_for_evictions
+from .experiment_settings import SETTINGS, HOUR
+from .recomputation_counts import count_eligible_reads_saved_and_compare
 
 HERE = Path(__file__).resolve().parent
 BUILD = HERE.parents[1] / "build/ssd"
@@ -86,9 +86,7 @@ def replay_with_hourly_models(
         if resolve_and_verify_input_file(inputs[key], parent) != Path(prefix + suffix):
             raise ValueError("Stream filenames must share one prefix")
     tokens = resolve_and_verify_input_file(inputs["tokens"], parent)
-    expected_evictions = resolve_and_verify_input_file(
-        inputs["measured_evictions"], parent
-    )
+    expected_evictions = resolve_and_verify_input_file(inputs["measured_evictions"], parent)
     if expected_evictions.stat().st_size != measured_data.eviction_count * 24:
         raise ValueError("Measured eviction stream differs from model rows")
     cutoff_times_path = output / "cuts.i64"
@@ -209,9 +207,7 @@ def replay_with_hourly_models(
     for key, value in audit.items():
         if key != "schema" and result[key] != value:
             raise ValueError("Independent replay mismatch: " + key)
-    if sha256_file(output / "native.rows.i64") != sha256_file(
-        output / "audit.rows.i64"
-    ):
+    if sha256_file(output / "native.rows.i64") != sha256_file(output / "audit.rows.i64"):
         raise ValueError("Per-request accounting differs")
     write_json(output / "audit.json", audit)
     credit_records = inputs["credit"]
@@ -258,9 +254,7 @@ def main():
     if args.ssd_blocks <= 0 or args.budget_blocks < 0:
         parser.error("Positive capacity and nonnegative allowance required")
     args.output.mkdir(parents=True, exist_ok=False)
-    measured_data, predictions_path = train_hourly_eviction_models(
-        args.manifest, args.output
-    )
+    measured_data, predictions_path = train_hourly_eviction_models(args.manifest, args.output)
     print(
         json.dumps(
             replay_with_hourly_models(

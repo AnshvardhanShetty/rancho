@@ -9,10 +9,10 @@ from pathlib import Path
 import tempfile
 import unittest
 import numpy as np
-from ssd_simulator.algorithm.accounting import count_eligible_reads_saved_and_compare
-from ssd_simulator.algorithm.labels import build_hourly_saved_read_counts
-from ssd_simulator.algorithm.settings import RECORDED, SETTINGS, HOUR
-from ssd_simulator.algorithm.training import (
+from ssd_simulator.algorithm.recomputation_counts import count_eligible_reads_saved_and_compare
+from ssd_simulator.algorithm.reuse_labels import build_hourly_saved_read_counts
+from ssd_simulator.algorithm.experiment_settings import RECORDED, SETTINGS, HOUR
+from ssd_simulator.algorithm.model_training import (
     fit_eviction_reuse_model,
     predict_saved_reads,
     encode_tree_features,
@@ -26,9 +26,7 @@ HERE = Path(__file__).resolve().parents[1]
 class PipelineChecks(unittest.TestCase):
 
     def test_recorded_recipe_digest_and_selected_override(self):
-        digest = hashlib.sha256(
-            (HERE / "recorded_settings.json").read_bytes()
-        ).hexdigest()
+        digest = hashlib.sha256((HERE / "recorded_settings.json").read_bytes()).hexdigest()
         proof = json.loads((HERE / "SOURCE_VERIFICATION.json").read_text())
         self.assertEqual(digest, proof["recorded_recipe_sha256"])
         self.assertEqual(SETTINGS, dict(RECORDED, objective="raw_l2"))
@@ -54,9 +52,7 @@ class PipelineChecks(unittest.TestCase):
             row[0, 4] = 1
             row.tofile(root / "reference")
             self.assertEqual(
-                count_eligible_reads_saved_and_compare(
-                    root / "ours", root / "reference", root
-                ),
+                count_eligible_reads_saved_and_compare(root / "ours", root / "reference", root),
                 (2, 1, 1, 0),
             )
 

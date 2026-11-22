@@ -39,9 +39,7 @@ def plan():
         policy_clock="test",
         write_allowance="test",
         write_channel="test",
-        GPU_backend_certificate=dict(
-            status="PASS_NATIVE_RANCHO_ENGINE", GPU_execution=True
-        ),
+        GPU_backend_certificate=dict(status="PASS_NATIVE_RANCHO_ENGINE", GPU_execution=True),
     )
 
 

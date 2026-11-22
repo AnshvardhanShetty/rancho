@@ -5,27 +5,21 @@ write budget. run_cache_simulation passes them to the simulator for one seed,
 then reads metrics.json after it exits.
 """
 
-import hashlib
 import json
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def read_json(path):
-    return json.loads(path.read_text())
+def load_json_file(file_path):
+    """Read a JSON file into Python."""
+    return json.loads(file_path.read_text())
 
 
-def verify_file_hash(path, expected_sha256):
-    with path.open("rb") as input_file:
-        if hashlib.file_digest(input_file, "sha256").hexdigest() != expected_sha256:
-            raise ValueError(f"Input checksum mismatch: {path}")
-
-
-def run_program(program_name, *args):
+def run_program(program_name, *arguments):
     subprocess.run(
-        [str(ROOT / "build" / program_name), *map(str, args)],
+        [str(REPO_ROOT / "build" / program_name), *map(str, arguments)],
         check=True,
         stdout=subprocess.DEVNULL,
     )
@@ -73,4 +67,4 @@ def run_cache_simulation(
         hbm_only_prefix_path,
     )
 
-    return read_json(output_directory / "metrics.json")["evaluation"]
+    return load_json_file(output_directory / "metrics.json")["evaluation"]

@@ -28,9 +28,7 @@ def summarize_latency_samples(values):
 
 def summarize_request_performance(records):
     """Compute throughput and delays for the measured requests"""
-    if not records or any(
-        request_record["status"] != "COMPLETE" for request_record in records
-    ):
+    if not records or any(request_record["status"] != "COMPLETE" for request_record in records):
         raise ValueError("Every measured GPU request must complete")
     if len({request_record["row"] for request_record in records}) != len(records):
         raise ValueError("Duplicate measured request")
@@ -65,9 +63,7 @@ def summarize_request_performance(records):
             request_record["first_token_ns"] is not None
             or request_record["last_token_ns"] is not None
         ):
-            raise ValueError(
-                "Zero-output request must not have visible output timestamps"
-            )
+            raise ValueError("Zero-output request must not have visible output timestamps")
         request_delays.append((finish - arrival) / 1e9)
         generated_token_count += expected_tokens
     first_arrival_ns = min(request_record["scheduled_ns"] for request_record in records)
@@ -99,26 +95,15 @@ def validate_comparison_settings(plan):
         raise ValueError("Wrong selected model or exchange comparison")
     if plan["warmup_requests"] != 0 or plan["initial_cache"] != "empty":
         raise ValueError("Both arms must use the selected empty-cache start")
-    if (
-        type(plan["measured_requests"]) is not int
-        or not 100 <= plan["measured_requests"] <= 200
-    ):
+    if type(plan["measured_requests"]) is not int or not 100 <= plan["measured_requests"] <= 200:
         raise ValueError("Measured cohort must contain 100 to 200 requests")
     fields = ["baseline_HBM_bytes", "RANCHO_HBM_bytes", "RANCHO_HBF_bytes"]
-    if any(
-        type(plan[field_name]) is not int or plan[field_name] <= 0
-        for field_name in fields
-    ):
+    if any(type(plan[field_name]) is not int or plan[field_name] <= 0 for field_name in fields):
         raise ValueError("Explicit positive capacities are required")
-    if (
-        8 * plan["baseline_HBM_bytes"]
-        != 8 * plan["RANCHO_HBM_bytes"] + plan["RANCHO_HBF_bytes"]
-    ):
+    if 8 * plan["baseline_HBM_bytes"] != 8 * plan["RANCHO_HBM_bytes"] + plan["RANCHO_HBF_bytes"]:
         raise ValueError("Pair violates the selected 8:1 resource budget")
     if plan["HBM_accounting"] != "shared_active_and_retained":
-        raise ValueError(
-            "A separate fixed active-KV quota hides the intended capacity benefit"
-        )
+        raise ValueError("A separate fixed active-KV quota hides the intended capacity benefit")
     for field_name in [
         "native_block_bytes",
         "cohort_sha256",

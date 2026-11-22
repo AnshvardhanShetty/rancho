@@ -1,22 +1,27 @@
 """Run one serving benchmark and check its recorded requests and writes
 
-run sends the warmup and measured requests then saves the logs
-compute gets hit counts and timings from those logs
-audit checks the counts and the write budget again
+run_serving_comparison sends requests and saves the engine logs
+compute_serving_results counts hits and measures timings from those logs
+audit_serving_results checks the results and the write budget
 """
 
-import argparse, hashlib, json, math, os, re, time
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import time
 from pathlib import Path
-from controlled_workload import (
+from synthetic_requests import (
     build_workload_prompts,
     bind_features_to_request_ids,
     build_eligible_read_mask,
 )
-from synthetic_workload import FIT
-from updated_model import SuffixGBT
-from campaign_state import read_run_json, write_run_json
+from run_files import read_run_json, write_run_json
 from metrics import summarize_request_performance, summarize_latency_samples
-from physical_time import PhysicalBudget
+from model_location import resolve_model_path
+from write_bandwidth import PhysicalBudget
 
 
 def read_json(json_path):
@@ -47,21 +52,21 @@ def compute_serving_results(run_directory, workload_settings):
     engine_settings = read_run_json(run_directory, "engine_settings.json", "PLAN.json")
     request_records = read_jsonl_records(run_directory / "requests.jsonl")
     first_cache_lookups = [
-        x
-        for x in read_jsonl_records(run_directory / "scheduler.jsonl")
-        if x["event"] == "INITIAL_PREFIX_LOOKUP"
+        lookup
+        for lookup in read_jsonl_records(run_directory / "scheduler.jsonl")
+        if lookup["event"] == "INITIAL_PREFIX_LOOKUP"
     ]
     request_count = workload_settings["groups"] + workload_settings["requests"]
     assert len(request_records) == len(first_cache_lookups) == request_count
     lookup_by_request_row = {
-        parse_request_row(x["request_id"]): x for x in first_cache_lookups
+        parse_request_row(lookup["request_id"]): lookup for lookup in first_cache_lookups
     }
     assert set(lookup_by_request_row) == set(range(request_count))
-    assert sorted(r["row"] for r in request_records) == list(
+    assert sorted(request_record["row"] for request_record in request_records) == list(
         range(request_count)
     ) and all(
-        r["status"] == "COMPLETE" and r["generated_tokens"] == 64
-        for r in request_records
+        request_record["status"] == "COMPLETE" and request_record["generated_tokens"] == 64
+        for request_record in request_records
     )
     # Count eligible reads served by the first cache lookup for each request.
     mask = build_eligible_read_mask(workload_settings)
@@ -76,10 +81,7 @@ def compute_serving_results(run_directory, workload_settings):
             first_lookup["cached_tokens"]
             == 16 * cached_prefix_blocks
             == 16
-            * (
-                first_lookup["cached_HBF_full_pages"]
-                + first_lookup["cached_HBM_full_pages"]
-            )
+            * (first_lookup["cached_HBF_full_pages"] + first_lookup["cached_HBM_full_pages"])
         )
         assert 0 <= cached_prefix_blocks <= len(bits) and all(
             bits[:cached_prefix_blocks]
@@ -93,18 +95,13 @@ def compute_serving_results(run_directory, workload_settings):
             total += eligible_blocks
             measured_hbf_hits += first_lookup["cached_HBF_full_pages"]
             measured_hbm_hits += first_lookup["cached_HBM_full_pages"]
-    assert (
-        measured_hits == measured_hbf_hits + measured_hbm_hits
-        and 0 <= measured_hits <= total
-    )
+    assert measured_hits == measured_hbf_hits + measured_hbm_hits and 0 <= measured_hits <= total
     # Measure output rate and delays, including time spent draining the queue.
     measured_metrics = summarize_request_performance(measured)
     all_request_metrics = summarize_request_performance(request_records)
     begin = measured[0]["measurement_start_ns"]
     last_completion_ns = max(v["finish_ns"] for v in measured)
-    interval = max(
-        workload_settings["measurement_seconds"], (last_completion_ns - begin) / 1e9
-    )
+    interval = max(workload_settings["measurement_seconds"], (last_completion_ns - begin) / 1e9)
     measured_metrics.update(
         output_tokens_per_second=measured_metrics["output_tokens"] / interval,
         completed_requests_per_second=len(measured) / interval,
@@ -112,8 +109,7 @@ def compute_serving_results(run_directory, workload_settings):
         window_and_drain_seconds=interval,
         drain_seconds=max(
             0,
-            (last_completion_ns - begin) / 1e9
-            - workload_settings["measurement_seconds"],
+            (last_completion_ns - begin) / 1e9 - workload_settings["measurement_seconds"],
         ),
     )
     # Summarize concurrent requests and the cost of admission decisions.
@@ -121,28 +117,26 @@ def compute_serving_results(run_directory, workload_settings):
     active = [v for v in steps if v["start_ns"] >= begin]
     offers = (
         [
-            o
-            for v in read_jsonl_records(run_directory / "worker.jsonl")
-            for o in v.get("offers", [])
+            offer
+            for worker_event in read_jsonl_records(run_directory / "worker.jsonl")
+            for offer in worker_event.get("offers", [])
         ]
         if engine_settings["HBF_pages"]
         else []
     )
     decision_ns = [
-        o["decision"]["decision_cpu_ns"]
-        for o in offers
-        if "decision" in o
-        and parse_request_row(o["request_id"]) >= workload_settings["groups"]
+        offer["decision"]["decision_cpu_ns"]
+        for offer in offers
+        if "decision" in offer
+        and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
     ]
     admission = dict(
-        live_calls=sum("decision" in o for o in offers),
+        live_calls=sum("decision" in offer for offer in offers),
         measured_live_calls=len(decision_ns),
-        admitted=sum(bool(o.get("decision", {}).get("admit")) for o in offers),
-        paid_pages=sum(o.get("decision", {}).get("paid_cost", 0) for o in offers),
-        copied_bytes=sum(o.get("native_bytes", 0) for o in offers),
-        decision_CPU_microseconds=summarize_latency_samples(
-            [v / 1000 for v in decision_ns]
-        ),
+        admitted=sum(bool(offer.get("decision", {}).get("admit")) for offer in offers),
+        paid_pages=sum(offer.get("decision", {}).get("paid_cost", 0) for offer in offers),
+        copied_bytes=sum(offer.get("native_bytes", 0) for offer in offers),
+        decision_CPU_microseconds=summarize_latency_samples([v / 1000 for v in decision_ns]),
         decision_CPU_seconds=sum(decision_ns) / 1e9,
     )
     result = dict(
@@ -159,16 +153,20 @@ def compute_serving_results(run_directory, workload_settings):
         hit_ratio=measured_hits / total,
         admission=admission,
         concurrency=dict(
-            peak_active=max((v["resident_requests"] for v in active), default=0),
-            peak_waiting=max((v["waiting_requests"] for v in active), default=0),
+            peak_active=max(
+                (engine_step["resident_requests"] for engine_step in active), default=0
+            ),
+            peak_waiting=max(
+                (engine_step["waiting_requests"] for engine_step in active), default=0
+            ),
             peak_scheduled_decode=max(
-                (v["scheduled_decode_requests"] for v in active), default=0
+                (engine_step["scheduled_decode_requests"] for engine_step in active), default=0
             ),
             minimum_free_HBM_pages=min(
-                (v["HBM_free_after_schedule"] for v in active), default=None
+                (engine_step["HBM_free_after_schedule"] for engine_step in active), default=None
             ),
             native_allocation_refusals=sum(
-                v["native_KV_allocation_refusals"] for v in active
+                engine_step["native_KV_allocation_refusals"] for engine_step in active
             ),
         ),
         payload_sha256=engine_settings["payload_sha256"],
@@ -183,8 +181,8 @@ def compute_serving_results(run_directory, workload_settings):
     if engine_settings["HBF_pages"]:
         physical_rows = [
             v
-            for v in read_jsonl_records(run_directory / "worker.jsonl")
-            if v.get("event") == "PHYSICAL_CONTROLLER_CLOCK_START"
+            for worker_event in read_jsonl_records(run_directory / "worker.jsonl")
+            if worker_event.get("event") == "PHYSICAL_CONTROLLER_CLOCK_START"
         ]
         assert len(physical_rows) == 1
         origin = physical_rows[0]["origin_ns"]
@@ -217,18 +215,18 @@ def compute_serving_results(run_directory, workload_settings):
             and result["physical_writes"]["daily_allowance_respected"]
         )
         total_ns = [
-            o["decision"]["total_admission_cpu_ns"]
-            for o in offers
-            if "decision" in o
-            and parse_request_row(o["request_id"]) >= workload_settings["groups"]
+            offer["decision"]["total_admission_cpu_ns"]
+            for offer in offers
+            if "decision" in offer
+            and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
         ]
-        admission["predictor_controller_and_guard_CPU_microseconds"] = (
-            summarize_latency_samples([v / 1000 for v in total_ns])
+        admission["predictor_controller_and_guard_CPU_microseconds"] = summarize_latency_samples(
+            [v / 1000 for v in total_ns]
         )
         history_ns = [
-            o.get("history_cpu_ns", 0)
-            for o in offers
-            if parse_request_row(o["request_id"]) >= workload_settings["groups"]
+            offer.get("history_cpu_ns", 0)
+            for offer in offers
+            if parse_request_row(offer["request_id"]) >= workload_settings["groups"]
         ]
         admission["filtered_history_CPU_microseconds"] = summarize_latency_samples(
             [v / 1000 for v in history_ns]
@@ -236,14 +234,14 @@ def compute_serving_results(run_directory, workload_settings):
         admission["total_admission_CPU_microseconds"] = summarize_latency_samples(
             [
                 (
-                    o["decision"]["total_admission_cpu_ns"]
-                    + o.get("history_cpu_ns", 0)
-                    + o.get("scheduler_feature_cpu_ns", 0)
+                    offer["decision"]["total_admission_cpu_ns"]
+                    + offer.get("history_cpu_ns", 0)
+                    + offer.get("scheduler_feature_cpu_ns", 0)
                 )
                 / 1000
-                for o in offers
-                if "decision" in o
-                and parse_request_row(o["request_id"]) >= workload_settings["groups"]
+                for offer in offers
+                if "decision" in offer
+                and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
             ]
         )
         for label, key in [
@@ -252,30 +250,26 @@ def compute_serving_results(run_directory, workload_settings):
         ]:
             admission[label] = summarize_latency_samples(
                 [
-                    o["decision"][key] / 1000
-                    for o in offers
-                    if "decision" in o
-                    and parse_request_row(o["request_id"])
-                    >= workload_settings["groups"]
+                    offer["decision"][key] / 1000
+                    for offer in offers
+                    if "decision" in offer
+                    and parse_request_row(offer["request_id"]) >= workload_settings["groups"]
                 ]
             )
         admission["scheduler_feature_CPU_microseconds"] = summarize_latency_samples(
             [
-                o.get("scheduler_feature_cpu_ns", 0) / 1000
-                for o in offers
-                if parse_request_row(o["request_id"]) >= workload_settings["groups"]
+                offer.get("scheduler_feature_cpu_ns", 0) / 1000
+                for offer in offers
+                if parse_request_row(offer["request_id"]) >= workload_settings["groups"]
             ]
         )
-        decisions = [o["decision"] for o in offers if "decision" in o]
+        decisions = [offer["decision"] for offer in offers if "decision" in offer]
         admission["mechanisms"] = dict(
             threshold_active=sum(decision["have_threshold"] for decision in decisions),
-            history_boosted=sum(
-                decision["history_multiplier"] > 1 for decision in decisions
-            ),
+            history_boosted=sum(decision["history_multiplier"] > 1 for decision in decisions),
             half_behind=sum(decision["half_behind"] for decision in decisions),
             score_rejections=sum(
-                not decision["score_admit_before_physical_guard"]
-                for decision in decisions
+                not decision["score_admit_before_physical_guard"] for decision in decisions
             ),
             physical_guard_rejections=sum(
                 decision["physical_guard_rejected"] for decision in decisions
@@ -286,12 +280,8 @@ def compute_serving_results(run_directory, workload_settings):
 
 def audit_serving_results(run_directory):
     """Recompute the results and independently check cache and policy accounting."""
-    from controllers import Wallet
-
     engine_settings = read_run_json(run_directory, "engine_settings.json", "PLAN.json")
-    workload_settings = read_run_json(
-        run_directory, "workload_settings.json", "SETUP.json"
-    )
+    workload_settings = read_run_json(run_directory, "workload_settings.json", "SETUP.json")
     saved_results = read_json(run_directory / "RESULT.json")
     recomputed_results = compute_serving_results(run_directory, workload_settings)
     assert (
@@ -308,15 +298,11 @@ def audit_serving_results(run_directory):
         parse_request_row(request_record["request_id"]): request_record
         for request_record in read_jsonl_records(run_directory / "scheduler.jsonl")
         if request_record["event"] == "INITIAL_PREFIX_LOOKUP"
-        and parse_request_row(request_record["request_id"])
-        >= workload_settings["groups"]
+        and parse_request_row(request_record["request_id"]) >= workload_settings["groups"]
     }
     expected_eligible_reads = (
         len(actual)
-        * (
-            workload_settings["prefix_tokens"]
-            + workload_settings["unique_suffix_tokens"]
-        )
+        * (workload_settings["prefix_tokens"] + workload_settings["unique_suffix_tokens"])
         // 16
     )
     independent_hits = 0
@@ -327,8 +313,7 @@ def audit_serving_results(run_directory):
             and first_lookup["cached_tokens"] % 16 == 0
         )
         assert (
-            request_record["cached_tokens"] is not None
-            and request_record["cached_tokens"] >= 0
+            request_record["cached_tokens"] is not None and request_record["cached_tokens"] >= 0
         )
         independent_hits += first_lookup["cached_tokens"] // 16
     assert (
@@ -382,17 +367,14 @@ def run_serving_comparison(
     """Start a fresh engine, issue requests, drain its queue and save metrics."""
     source = Path(__file__).resolve().parent
     if source_checksums_file:
-        for n, h in read_json(source_checksums_file).items():
-            assert sha256_file(source / n) == h, n
-    os.environ["RANCHO_DIAGNOSTIC_QUEUE"] = "indexed"
+        for source_filename, expected_checksum in read_json(source_checksums_file).items():
+            assert sha256_file(source / source_filename) == expected_checksum, source_filename
     run_directory.mkdir(exist_ok=False)
     # Prepare identical prompts and the selected cache allocation.
     hbm, hbf = comparison_settings["hbm"], comparison_settings["hbf"]
     payload = build_workload_prompts(workload_settings)
     request_count = len(payload)
-    prompt_tokens = (
-        workload_settings["prefix_tokens"] + workload_settings["unique_suffix_tokens"]
-    )
+    prompt_tokens = workload_settings["prefix_tokens"] + workload_settings["unique_suffix_tokens"]
     assert (
         prompt_tokens + 64 <= workload_settings["context_limit"]
         and math.ceil((prompt_tokens + 64) / 16) <= hbm
@@ -425,9 +407,7 @@ def run_serving_comparison(
             json.dumps(payload, separators=(",", ":")).encode()
         ).hexdigest(),
         input_tokens_per_request=prompt_tokens,
-        baseline_prefix_retention=bool(
-            comparison_settings.get("retain_prefixes", not bool(hbf))
-        ),
+        baseline_prefix_retention=bool(comparison_settings.get("retain_prefixes", not bool(hbf))),
         shared_prefix_tokens=workload_settings["prefix_tokens"],
         shared_groups=workload_settings["groups"],
     )
@@ -448,7 +428,7 @@ def run_serving_comparison(
     from vllm.config import KVTransferConfig
     from vllm.sampling_params import RequestOutputKind
 
-    model = __import__("model_location").resolve_model_path()
+    model = resolve_model_path()
     llm = None
     try:
         # Install the custom scheduler and connector in a fresh vLLM engine.
@@ -463,8 +443,7 @@ def run_serving_comparison(
             max_num_seqs=workload_settings["max_num_seqs"],
             max_num_batched_tokens=2048,
             block_size=16,
-            kv_cache_memory_bytes=(1 + hbm + hbf)
-            * workload_settings["native_page_bytes"],
+            kv_cache_memory_bytes=(1 + hbm + hbf) * workload_settings["native_page_bytes"],
             gpu_memory_utilization=0.15,
             distributed_executor_backend="mp",
             async_scheduling=False,
@@ -494,10 +473,10 @@ def run_serving_comparison(
         serial = 0
 
         # Submit one request and remember its scheduled arrival time.
-        def submit(i, scheduled, begin):
-            rid = f"row{i}"
+        def submit(request_index, scheduled, begin):
+            rid = f"row{request_index}"
             state[rid] = dict(
-                row=i,
+                row=request_index,
                 expected_output_tokens=64,
                 scheduled_ns=scheduled,
                 dispatch_ns=time.monotonic_ns(),
@@ -507,12 +486,12 @@ def run_serving_comparison(
                 finish_ns=None,
                 status="RUNNING",
                 cached_tokens=None,
-                warmup=i < workload_settings["groups"],
+                warmup=request_index < workload_settings["groups"],
                 measurement_start_ns=begin,
             )
             internal = llm.llm_engine.add_request(
                 rid,
-                dict(prompt_token_ids=payload[i]),
+                dict(prompt_token_ids=payload[request_index]),
                 SamplingParams(
                     temperature=0,
                     max_tokens=64,
@@ -534,18 +513,18 @@ def run_serving_comparison(
             now = time.monotonic_ns()
             for request in outputs:
                 rid = aliases[request.request_id]
-                r = state[rid]
+                request_record = state[rid]
                 count = sum(len(item.token_ids) for item in request.outputs)
                 if count:
-                    r["first_token_ns"] = r["first_token_ns"] or now
-                    r["last_token_ns"] = now
-                    r["generated_tokens"] += count
-                r["cached_tokens"] = request.num_cached_tokens
+                    request_record["first_token_ns"] = request_record["first_token_ns"] or now
+                    request_record["last_token_ns"] = now
+                    request_record["generated_tokens"] += count
+                request_record["cached_tokens"] = request.num_cached_tokens
                 if request.finished:
-                    r.update(finish_ns=now, status="COMPLETE")
+                    request_record.update(finish_ns=now, status="COMPLETE")
                     pending.remove(rid)
                     completed += 1
-                    handle.write(json.dumps(r) + "\n")
+                    handle.write(json.dumps(request_record) + "\n")
 
         # Fill each shared context, then start the timed arrival stream.
         with (run_directory / "requests.jsonl").open("x", buffering=1) as handle:
@@ -568,11 +547,12 @@ def run_serving_comparison(
             while completed < request_count:
                 now = time.monotonic_ns()
                 while dispatched < request_count:
-                    at = dispatched - workload_settings["groups"]
+                    measured_request_index = dispatched - workload_settings["groups"]
                     scheduled = (
                         begin
                         if comparison_settings.get("pilot")
-                        else begin + round(at * 1e9 / comparison_settings["rate"])
+                        else begin
+                        + round(measured_request_index * 1e9 / comparison_settings["rate"])
                     )
                     if now < scheduled:
                         break
@@ -580,16 +560,15 @@ def run_serving_comparison(
                     dispatched += 1
                     now = time.monotonic_ns()
                 if not pending:
-                    at = dispatched - workload_settings["groups"]
-                    next_ns = begin + round(at * 1e9 / comparison_settings["rate"])
+                    measured_request_index = dispatched - workload_settings["groups"]
+                    next_ns = begin + round(
+                        measured_request_index * 1e9 / comparison_settings["rate"]
+                    )
                     time.sleep(max(0, min(0.02, (next_ns - time.monotonic_ns()) / 1e9)))
                     continue
                 advance_engine_and_record_outputs(handle)
                 now = time.monotonic_ns()
-                if (
-                    now - last_progress_ns > 15_000_000_000
-                    or completed == request_count
-                ):
+                if now - last_progress_ns > 15_000_000_000 or completed == request_count:
                     write_run_json(
                         run_directory / "PROGRESS.json",
                         dict(
@@ -619,19 +598,19 @@ def run_serving_comparison(
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--workload-settings", "--setup")
-    p.add_argument("--comparison-settings", "--job")
-    p.add_argument("--output")
-    p.add_argument("--manifest")
-    p.add_argument("--audit")
-    a = p.parse_args()
-    if a.audit:
-        audit_serving_results(Path(a.audit))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workload-settings", "--setup")
+    parser.add_argument("--comparison-settings", "--job")
+    parser.add_argument("--output")
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--audit")
+    arguments = parser.parse_args()
+    if arguments.audit:
+        audit_serving_results(Path(arguments.audit))
     else:
         run_serving_comparison(
-            read_json(a.workload_settings),
-            read_json(a.comparison_settings),
-            Path(a.output),
-            Path(a.manifest),
+            read_json(arguments.workload_settings),
+            read_json(arguments.comparison_settings),
+            Path(arguments.output),
+            arguments.manifest,
         )

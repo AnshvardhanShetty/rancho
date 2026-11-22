@@ -87,9 +87,7 @@ class Eviction(unittest.TestCase):
             b"key": dict(evictions=0, count=2, last=1.0, rid="row0", features={})
         }
         connector.serving_settings = dict(write_budget_pages=budget)
-        connector.evictions = connector.absent = connector.retained = (
-            connector.rejected
-        ) = 0
+        connector.evictions = connector.absent = connector.retained = connector.rejected = 0
         connector.offers = []
         connector.decide = lambda offer: connector.offers.append(offer) or True
         store = types.SimpleNamespace(

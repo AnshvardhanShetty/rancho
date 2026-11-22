@@ -11,18 +11,14 @@ struct Marginal {
   uint64_t tests = 0;
 
   Marginal(int n, string data, string credit, string output, int64_t first)
-      : samples(data), bits(credit + "/credit.bits"),
-        ranks(credit + "/credit.rank"), owner(n, -1),
-        last_accounted(samples.n, -1), events(output + ".gain", ios::binary),
-        next(lower_bound(samples.p, samples.p + samples.n, first) - samples.p) {
-  }
+      : samples(data), bits(credit + "/credit.bits"), ranks(credit + "/credit.rank"),
+        owner(n, -1), last_accounted(samples.n, -1), events(output + ".gain", ios::binary),
+        next(lower_bound(samples.p, samples.p + samples.n, first) - samples.p) {}
 
   uint64_t count_eligible_reads_before(size_t x) const {
     const size_t word = x / 64, tail = x % 64;
     return ranks[word] +
-           (tail
-                ? __builtin_popcountll(bits[word] & ((uint64_t(1) << tail) - 1))
-                : 0);
+           (tail ? __builtin_popcountll(bits[word] & ((uint64_t(1) << tail) - 1)) : 0);
   }
 
   void record_eviction_offer(int b, int64_t ordinal) {
@@ -31,14 +27,11 @@ struct Marginal {
       owner[b] = int(next++);
   }
 
-  void count_marginal_read_savings(const Cache &hbm_cache,
-                                   const Cache &ssd_cache,
-                                   const Map<int32_t> &block_ids,
-                                   size_t request_offset, int lookup_limit,
-                                   int reference_prefix, int request_index) {
+  void count_marginal_read_savings(const Cache &hbm_cache, const Cache &ssd_cache,
+                                   const Map<int32_t> &block_ids, size_t request_offset,
+                                   int lookup_limit, int reference_prefix, int request_index) {
     auto accessible = [&](int block_id) {
-      return hbm_cache.contains_block(block_id) ||
-             ssd_cache.contains_block(block_id);
+      return hbm_cache.contains_block(block_id) || ssd_cache.contains_block(block_id);
     };
     // Recompute a sample of the contributions by explicitly forcing one
     // identity present and absent. Duplicate positions carry one identity.
@@ -62,8 +55,7 @@ struct Marginal {
           ++prefix_without_block;
         require_condition(
             count_eligible_reads_before(request_offset + prefix_with_block) -
-                    count_eligible_reads_before(request_offset +
-                                                prefix_without_block) ==
+                    count_eligible_reads_before(request_offset + prefix_without_block) ==
                 gain,
             "toggle verification");
         ++tests;
@@ -87,9 +79,8 @@ struct Marginal {
     if (owner[block_id] < 0)
       return;
     int prefix_end = reference_prefix + 1;
-    while (prefix_end < lookup_limit &&
-           (block_ids[request_offset + prefix_end] == block_id ||
-            accessible(block_ids[request_offset + prefix_end])))
+    while (prefix_end < lookup_limit && (block_ids[request_offset + prefix_end] == block_id ||
+                                         accessible(block_ids[request_offset + prefix_end])))
       ++prefix_end;
     record(block_id, reference_prefix, prefix_end);
   }

@@ -4,39 +4,25 @@ An initial hourly predictor supplies scores for a replay that records offered
 suffixes. The final model learns from later accesses to those suffixes.
 Fitting and label cutoffs use model_training.py."""
 
-from pathlib import Path
-import sys
 import warnings
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "hbf_simulator/model"))
-import model_training
+from hbf_simulator.model import model_training
 
 
 class SyntheticTrainingData(model_training.RequestData):
     """Supply synthetic arrays to the research training and label-selection code."""
 
-    def __init__(
-        self, request_blocks, arrival_times_us, sessions, features, names, offered=None
-    ):
+    def __init__(self, request_blocks, arrival_times_us, sessions, features, names, offered=None):
         self.arrival_times_us = np.asarray(arrival_times_us, dtype=np.int64)
         self.request_count = len(arrival_times_us)
-        self.features = {
-            name: features[:, request_index] for request_index, name in enumerate(names)
-        }
-        self.feature_schema = {
-            name: {"encoding": "categorical" if request_index == 0 else "numeric"}
-            for request_index, name in enumerate(names)
-        }
+        self.features_by_name = {name: features[:, column] for column, name in enumerate(names)}
         self.offer_block_counts = np.zeros(self.request_count, dtype=np.int32)
         self.hourly_read_counts = np.zeros((168, self.request_count), dtype=np.uint64)
         self.counted_until_hour = 0
         self.observed_read_totals = np.zeros(self.request_count, dtype=np.int64)
-        self.label_kind = (
-            "offered_suffix" if offered is not None else "original_increment"
-        )
+        self.label_kind = "offered_suffix" if offered is not None else "original_increment"
         if (
             len(request_blocks) != self.request_count
             or len(sessions) != self.request_count
@@ -52,7 +38,7 @@ class SyntheticTrainingData(model_training.RequestData):
         introducing_request = {}
         for request_index, blocks in enumerate(request_blocks):
             session = sessions[request_index]
-            hour = int(self.arrival_times_us[request_index] // model_training.H)
+            hour = int(self.arrival_times_us[request_index] // model_training.HOUR_US)
             if hour >= len(self.hourly_read_counts):
                 raise ValueError("Request is beyond the supported training window")
             distinct_request_blocks = list(dict.fromkeys(blocks))
@@ -95,15 +81,15 @@ def fit_synthetic_reuse_model(data, cutoff_us, settings):
 def predict_hourly_reuse_for_offer_replay(data, settings):
     """Fit using completed hours, then predict requests in the following hour."""
     predictions = np.zeros(data.request_count, dtype=float)
-    hours = np.unique(data.arrival_times_us // model_training.H)
+    hours = np.unique(data.arrival_times_us // model_training.HOUR_US)
     for hour in hours:
-        cutoff_us = int(hour * model_training.H)
+        cutoff_us = int(hour * model_training.HOUR_US)
         earlier_requests, _ = data.get_training_rows_and_reuse(cutoff_us)
         if not len(earlier_requests):
             continue
         model, _ = fit_synthetic_reuse_model(data, cutoff_us, settings)
         requests_this_hour = np.flatnonzero(
-            data.arrival_times_us // model_training.H == hour
+            data.arrival_times_us // model_training.HOUR_US == hour
         )
         features = data.feature_table(requests_this_hour, settings["features"])
         predictions[requests_this_hour] = model_training.predict_reuse(model, features)

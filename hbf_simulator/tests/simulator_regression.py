@@ -52,12 +52,10 @@ def make_trace(folder, case):
     # Include a request beyond the end so the stopping position is also checked.
     requests.append((1_000_000, 1, [1, 2]))
     prefix = folder / "stream"
-    write_array(Path(str(prefix) + "_nb.i32"), "i", [len(r[2]) for r in requests])
-    write_array(Path(str(prefix) + "_sess.i32"), "i", [r[1] for r in requests])
-    write_array(Path(str(prefix) + "_ts.i64"), "q", [r[0] for r in requests])
-    write_array(
-        Path(str(prefix) + "_ids.i32"), "i", [b for r in requests for b in r[2]]
-    )
+    write_array(Path(str(prefix) + "_block_counts.i32"), "i", [len(r[2]) for r in requests])
+    write_array(Path(str(prefix) + "_session_numbers.i32"), "i", [r[1] for r in requests])
+    write_array(Path(str(prefix) + "_timestamps_us.i64"), "q", [r[0] for r in requests])
+    write_array(Path(str(prefix) + "_block_ids.i32"), "i", [b for r in requests for b in r[2]])
     write_array(folder / "zero", "B", [0] * len(requests))
     eligible = [
         int(r[0] >= 0 and (i % 11 != 0 or case["pattern"] == "tie"))
@@ -246,9 +244,7 @@ def main():
     if args.record_original:
         if GOLDEN.exists():
             raise ValueError("Refusing to overwrite the expected results")
-        GOLDEN.write_text(
-            json.dumps(dict(cases=CASES, results=results), indent=2) + "\n"
-        )
+        GOLDEN.write_text(json.dumps(dict(cases=CASES, results=results), indent=2) + "\n")
         print("Recorded original outputs for", len(CASES), "synthetic cases")
     else:
         expected = json.loads(GOLDEN.read_text())

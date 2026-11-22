@@ -10,9 +10,9 @@ class Observer:
     def __init__(self, *args, **kwargs):
         self.observer_preemptions = 0
         super().__init__(*args, **kwargs)
-        self.observer_file = (
-            Path(self.engine_settings["output"]) / "concurrency.jsonl"
-        ).open("a", buffering=65536)
+        self.observer_file = (Path(self.engine_settings["output"]) / "concurrency.jsonl").open(
+            "a", buffering=65536
+        )
         self.observer_step = None
         self.observer_steps = 0
         self.observer_last_resident = None
@@ -54,8 +54,7 @@ class Observer:
         computed_tokens_before.update(zip(cached.req_ids, cached.num_computed_tokens))
         scheduled = output.num_scheduled_tokens
         decode = sum(
-            computed_tokens_before[request_id]
-            >= len(self.requests[request_id].prompt_token_ids)
+            computed_tokens_before[request_id] >= len(self.requests[request_id].prompt_token_ids)
             for request_id in scheduled
         )
         prefill_tokens = sum(
@@ -88,10 +87,7 @@ class Observer:
             native_KV_allocation_refusals=len(self.observer_step_refusals),
             native_KV_allocation_refusals_total=self.observer_refusals,
             refused_request_ids=sorted(
-                {
-                    request_record["request_id"]
-                    for request_record in self.observer_step_refusals
-                }
+                {request_record["request_id"] for request_record in self.observer_step_refusals}
             ),
             refusal_samples=self.observer_step_refusals[:8],
         )
@@ -119,8 +115,7 @@ class Observer:
             step_record["tier_occupancy_sample"] = dict(
                 active_HBM_pages=self.tiers.hbm_pages - self.tiers.hbm_free_count(),
                 active_HBF_pages=sum(
-                    block.ref_cnt > 0
-                    for block in pool.blocks[self.tiers.hbm_pages + 1 :]
+                    block.ref_cnt > 0 for block in pool.blocks[self.tiers.hbm_pages + 1 :]
                 ),
                 retained_HBF_pages=sum(
                     block.block_hash is not None

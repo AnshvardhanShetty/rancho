@@ -29,12 +29,10 @@ class Storage:
             text=True,
         ).split()
         if len(mount) != 3 or mount[1] != "ext4" or not mount[2].startswith("/dev/"):
-            raise ValueError(
-                f"Expected a local block-device ext4 filesystem, found {mount}"
-            )
+            raise ValueError(f"Expected a local block-device ext4 filesystem, found {mount}")
         self.mount = mount
         self.views = list(pages.pages.values())
-        self.page_bytes = sum(v.shape[1] for v in self.views)
+        self.page_bytes = sum(layer_view.shape[1] for layer_view in self.views)
         if self.page_bytes != 1572864 or len(self.views) != 48 or pages.groups != {0}:
             raise ValueError("Expected the qualified 48-layer Qwen native geometry")
         self.capacity = capacity
@@ -77,10 +75,7 @@ class Storage:
         else:
             slot = len(self.slots)
         self.copy_block_between_gpu_and_cpu(page_id, self.buffer, True)
-        if (
-            os.pwritev(self.fd, [self.staging], slot * self.page_bytes)
-            != self.page_bytes
-        ):
+        if os.pwritev(self.fd, [self.staging], slot * self.page_bytes) != self.page_bytes:
             raise OSError("Incomplete direct SSD write")
         self.slots[key] = slot
         self.writes += 1
@@ -90,10 +85,7 @@ class Storage:
     def read_block_from_ssd(self, key):
         """Read one saved block and optionally verify its contents."""
         slot = self.slots[key]
-        if (
-            os.preadv(self.fd, [self.staging], slot * self.page_bytes)
-            != self.page_bytes
-        ):
+        if os.preadv(self.fd, [self.staging], slot * self.page_bytes) != self.page_bytes:
             raise OSError("Incomplete direct SSD read")
         if self.verify and hashlib.sha256(self.staging).digest() != self.digests[key]:
             raise ValueError("SSD payload differs from written KV")

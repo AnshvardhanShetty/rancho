@@ -26,24 +26,15 @@ class PhysicalBudget:
 
     def available_write_pages(self, now_ns, warmup, measurement_begin_ns=None):
         """Return how many more pages may be written at this time."""
-        if (
-            type(now_ns) is not int
-            or now_ns < self.last
-            or now_ns - self.origin >= DAY_NS
-        ):
-            raise ValueError(
-                "Physical clock regressed or independent device-day expired"
-            )
+        if type(now_ns) is not int or now_ns < self.last or now_ns - self.origin >= DAY_NS:
+            raise ValueError("Physical clock regressed or independent device-day expired")
         self.last = now_ns
         remaining = self.capacity - self.total
         if warmup:
             if self.begin is not None:
                 raise ValueError("Startup after measured phase began")
             return remaining
-        if (
-            measurement_begin_ns is None
-            or not self.origin <= measurement_begin_ns <= now_ns
-        ):
+        if measurement_begin_ns is None or not self.origin <= measurement_begin_ns <= now_ns:
             raise ValueError("Actual measurement-start timestamp required")
         if self.begin is None:
             self.begin = measurement_begin_ns
@@ -67,14 +58,9 @@ class PhysicalBudget:
         else:
             self.measured += cost
 
-    def summarize_write_spending(
-        self, end_ns, measurement_begin_ns, window_and_drain_seconds
-    ):
+    def summarize_write_spending(self, end_ns, measurement_begin_ns, window_and_drain_seconds):
         """Report startup and measured spending separately."""
-        if (
-            not self.origin <= measurement_begin_ns <= end_ns
-            or end_ns - self.origin >= DAY_NS
-        ):
+        if not self.origin <= measurement_begin_ns <= end_ns or end_ns - self.origin >= DAY_NS:
             raise ValueError("Invalid final physical timing")
         elapsed = (end_ns - self.origin) / 1e9
         measured_seconds = window_and_drain_seconds
@@ -92,14 +78,8 @@ class PhysicalBudget:
             daily_allowance_respected=self.total <= self.capacity,
             physical_accounting_seconds=elapsed,
             measured_window_and_drain_seconds=measured_seconds,
-            measured_write_rate_DWPD=self.measured
-            / self.capacity
-            * 86400
-            / measured_seconds,
-            startup_inclusive_write_rate_DWPD=self.total
-            / self.capacity
-            * 86400
-            / elapsed,
+            measured_write_rate_DWPD=self.measured / self.capacity * 86400 / measured_seconds,
+            startup_inclusive_write_rate_DWPD=self.total / self.capacity * 86400 / elapsed,
             startup_amortization_seconds_at_1_DWPD=self.startup / self.capacity * 86400,
             startup_rate_is_not_a_sustainable_rate=True,
             steady_initial_credit_pages=0,

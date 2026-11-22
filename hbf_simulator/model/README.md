@@ -9,17 +9,18 @@ Start in [model_training.py](model_training.py) and read these in order:
 3. `predict_reuse()` takes the four inputs and returns one prediction per request.
 4. `fit_and_predict_one_hour()` puts those steps together and saves the model and its predictions for the next hour.
 
-[tree_encoding.py](tree_encoding.py) maps known user IDs to category codes so the model treats each ID as a name. [model_settings.json](model_settings.json) has the settings used for fitting. [file_helpers.py](file_helpers.py) reads and saves the model's records.
+[model_settings.json](model_settings.json) lists the four inputs and the tree settings. [tree_encoding.py](tree_encoding.py) prepares user IDs as categories for the tree. [training_files.py](training_files.py) opens saved training files and writes fit records.
 
-[run_experiment.py](../experiments/run_experiment.py) calls the fitting code once per hour. The [CPU demo](../examples/README.md) supplies synthetic training data.
+The [CPU demo](../examples/README.md) supplies its own training examples. [synthetic_training.py](../experiments/synthetic_training.py) shows where those examples come from.
 
 ## Model files
 
 | File | What it contains |
 | --- | --- |
-| `training_recipe.json` | The feature list and tree settings under the `recipe` key |
-| `request_stream_files.json` | The location of the arrival-time array under `raw` → `_ts.i64` |
-| `training_data_files.json` | Paths to the feature table, feature types and initial reuse counts |
+| `request_features.npz` | One array per model input, in request order |
+| `arrival_order_timestamps_us.i64` | When each request arrived, in microseconds |
+| `offered_block_counts.i32` | How many distinct blocks each request offered |
+| `hourly_reuse_counts.u64` | How many times those blocks were read again in each hour |
 | `model_fit_summary.json` | The cutoff, tree count and file checksums saved after one fit |
 
-The first two files go in the model folder. The training data file list goes one level above them. Older prepared folders used `PLAN.json`, `INPUTS.json` and `RESOLVED_MODEL_INPUTS.json`. The loader still reads those names. The CPU demo already supplies its own inputs.
+Pass input paths directly to `RequestData`. All rows must describe the same requests in the same order.

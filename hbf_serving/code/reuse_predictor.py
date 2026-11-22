@@ -7,7 +7,7 @@ supplies the model folder and its expected file hashes."""
 from pathlib import Path
 import hashlib, json, pickletools
 import numpy as np
-from predictor_bridge import encode_tree_features
+from user_id_encoding import encode_tree_features
 
 FEATURES = (
     "user",
@@ -26,7 +26,7 @@ def model_fit_summary_path(model_directory):
     return model_directory / "COMPLETE.json"
 
 
-class SuffixGBT:
+class SuffixReusePredictor:
     """Hold the trained trees and the user-ID mapping used during training."""
 
     def __init__(self, predictor_settings):
@@ -35,10 +35,7 @@ class SuffixGBT:
 
         model_directory = Path(predictor_settings["directory"])
         summary_bytes = model_fit_summary_path(model_directory).read_bytes()
-        assert (
-            hashlib.sha256(summary_bytes).hexdigest()
-            == predictor_settings["receipt_sha256"]
-        )
+        assert hashlib.sha256(summary_bytes).hexdigest() == predictor_settings["receipt_sha256"]
         fit_summary = json.loads(summary_bytes)
         self.cut_us = fit_summary["cut_us"]
         self.features = FEATURES
@@ -64,35 +61,34 @@ class SuffixGBT:
         pickle_operations = list(pickletools.genops(model_bytes))
         trees = [
             arg
-            for op, arg, pos in pickle_operations
+            for operation, arg, pos in pickle_operations
             if isinstance(arg, str) and arg.startswith("tree\nversion=")
         ]
         assert len(trees) == 1
         start = next(
-            i for i, (op, arg, pos) in enumerate(pickle_operations) if arg == "vocab"
+            operation_index
+            for operation_index, (operation, arg, pos) in enumerate(pickle_operations)
+            if arg == "vocab"
         )
         stop = next(
-            i
-            for i in range(start + 1, len(pickle_operations))
-            if pickle_operations[i][1] == "transform"
+            operation_index
+            for operation_index in range(start + 1, len(pickle_operations))
+            if pickle_operations[operation_index][1] == "transform"
         )
         segment = pickle_operations[start:stop]
         arrays = [
             bytes(arg)
-            for op, arg, pos in segment
-            if op.name in ("BYTEARRAY8", "BINBYTES", "SHORT_BINBYTES")
+            for operation, arg, pos in segment
+            if operation.name in ("BYTEARRAY8", "BINBYTES", "SHORT_BINBYTES")
         ]
         assert (
-            len(arrays) == 1 and sum(op.name == "NONE" for op, arg, pos in segment) == 6
+            len(arrays) == 1
+            and sum(operation.name == "NONE" for operation, arg, pos in segment) == 6
         )
-        strings = [a for op, a, pos in segment if isinstance(a, str)]
+        strings = [argument for operation, argument, pos in segment if isinstance(argument, str)]
         assert "f8" in strings and "<" in strings and "C" in strings
         values = np.frombuffer(arrays[0], dtype="<f8").copy()
-        assert (
-            len(values) > 0
-            and np.isfinite(values).all()
-            and (values[1:] > values[:-1]).all()
-        )
+        assert len(values) > 0 and np.isfinite(values).all() and (values[1:] > values[:-1]).all()
         self.vocab = [values, None, None, None]
         self.booster = Booster(model_str=trees[0])
         assert self.booster.num_trees() == fit_summary["tree_count"]
@@ -101,7 +97,9 @@ class SuffixGBT:
 
     def predict_suffix_reuse(self, rows, now_us):
         """Encode the supplied request features and predict reads per offered block."""
-        assert now_us >= self.cut_us and all(set(r) == set(FEATURES) for r in rows)
+        assert now_us >= self.cut_us and all(
+            set(request_features) == set(FEATURES) for request_features in rows
+        )
         feature_table = np.array(
             [[request[name] for name in FEATURES] for request in rows], dtype=np.float64
         )

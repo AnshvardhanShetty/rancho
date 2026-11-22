@@ -30,18 +30,13 @@ def audit_retention(root, engine_settings, result):
                 retained_page_ids.add(added["block_id"])
                 hashes.add(added["block_hash"])
             assert row["retained_pages"] == len(retained_page_ids) <= expected
-            assert (
-                row["eviction_attempts"] == 0
-                and row["protected_pages_in_free_queue"] == 0
-            )
+            assert row["eviction_attempts"] == 0 and row["protected_pages_in_free_queue"] == 0
             if len(retained_page_ids) == expected and full_step is None:
                 full_step = row["step"]
     final_retention_record = rows[-1]
     assert (
         final_retention_record["event"] == "RETENTION_COMPLETE"
-        and final_retention_record["retained_pages"]
-        == len(retained_page_ids)
-        == expected
+        and final_retention_record["retained_pages"] == len(retained_page_ids) == expected
     )
     assert (
         final_retention_record["eviction_attempts"] == 0

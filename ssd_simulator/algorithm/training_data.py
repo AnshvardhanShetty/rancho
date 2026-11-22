@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import numpy as np
-from .settings import HOUR, TRAINING
+from .experiment_settings import HOUR, TRAINING
 
 EVICTION_RECORD_DTYPE = np.dtype(
     [(x, "<i4") for x in ("row", "block", "last", "freq", "nev", "born")]
@@ -62,9 +62,7 @@ class TrainingData:
             for key in ("timestamps", "evictions", "features", "sample_indices")
         }
         self.arrival_times_us = np.memmap(paths["timestamps"], "<i8", "r")
-        self.eviction_records = np.memmap(
-            paths["evictions"], EVICTION_RECORD_DTYPE, "r"
-        )
+        self.eviction_records = np.memmap(paths["evictions"], EVICTION_RECORD_DTYPE, "r")
         if len(self.eviction_records) != manifest["eviction_count"]:
             raise ValueError("Eviction count differs")
         if cold:
@@ -83,17 +81,13 @@ class TrainingData:
             ):
                 raise ValueError("Samples must be distinct and chronological")
         labels = dict(manifest["cumulative_labels"])
-        labels["path"] = str(
-            resolve_and_verify_input_file(labels, manifest_path.parent)
-        )
+        labels["path"] = str(resolve_and_verify_input_file(labels, manifest_path.parent))
         self.manifest = dict(manifest, cumulative_labels=labels)
 
     def find_first_eviction_at_or_after(self, cutoff):
         """Find the first eviction whose request arrived at or after this time."""
         request_row = int(np.searchsorted(self.arrival_times_us, cutoff, side="left"))
-        return int(
-            np.searchsorted(self.eviction_records["row"], request_row, side="left")
-        )
+        return int(np.searchsorted(self.eviction_records["row"], request_row, side="left"))
 
     def decision_times(self, indices):
         return np.asarray(self.arrival_times_us[self.eviction_records["row"][indices]])
@@ -184,9 +178,7 @@ class TrainingData:
             if name == "prior_touch_count":
                 values = eviction_records["freq"]
             elif name == "seconds_since_last_touch":
-                values = (
-                    eviction_times_us - self.arrival_times_us[last_touch_rows]
-                ) / 1000000.0
+                values = (eviction_times_us - self.arrival_times_us[last_touch_rows]) / 1000000.0
             elif name == "seconds_in_HBM":
                 values = (
                     eviction_times_us - self.arrival_times_us[eviction_records["born"]]

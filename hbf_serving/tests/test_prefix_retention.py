@@ -32,9 +32,7 @@ class Pool:
         self.enable_caching = True
         self.metrics_collector = None
         self.free_block_queue = Queue(self.blocks[1:])
-        self.get_num_free_blocks = lambda: len(
-            self.free_block_queue.get_all_free_blocks()
-        )
+        self.get_num_free_blocks = lambda: len(self.free_block_queue.get_all_free_blocks())
         self.get_new_blocks = lambda n: None
 
     def _maybe_evict_cached_block(self, b):
@@ -90,9 +88,7 @@ class RetentionTests(unittest.TestCase):
         self.pool.free_blocks([b])
         for _ in range(100):
             self.pool.touch([b])
-            self.retention.retain_shared_prefix_blocks(
-                [(b, "prefix")], gpu_completed=True
-            )
+            self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=True)
             self.pool.free_blocks([b])
         self.assertEqual(b.ref_cnt, 1)
         self.assertEqual(len(self.retention.by_id), 1)
@@ -100,9 +96,7 @@ class RetentionTests(unittest.TestCase):
     def test_suffix_remains_reclaimable_and_prefix_eviction_raises(self):
         prefix = self.page("prefix")
         suffix = self.page("suffix")
-        self.retention.retain_shared_prefix_blocks(
-            [(prefix, "prefix")], gpu_completed=True
-        )
+        self.retention.retain_shared_prefix_blocks([(prefix, "prefix")], gpu_completed=True)
         self.pool.free_blocks([prefix, suffix])
         self.pool._maybe_evict_cached_block(suffix)
         self.assertIsNone(suffix.block_hash)
@@ -113,9 +107,7 @@ class RetentionTests(unittest.TestCase):
     def test_no_early_pin_and_corrupted_hash_detected(self):
         b = self.page("prefix")
         with self.assertRaises(ValueError):
-            self.retention.retain_shared_prefix_blocks(
-                [(b, "prefix")], gpu_completed=False
-            )
+            self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=False)
         self.assertEqual(b.ref_cnt, 1)
         self.retention.retain_shared_prefix_blocks([(b, "prefix")], gpu_completed=True)
         b.block_hash = "corrupted"
@@ -137,18 +129,14 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual([x[0] for x in candidates], blocks[:2])
         self.assertEqual(complete, ["r"])
         self.assertEqual(
-            find_completed_shared_prefixes(
-                ["r"], {"r": request}, {"r": blocks}, {"r"}, 2
-            ),
+            find_completed_shared_prefixes(["r"], {"r": request}, {"r": blocks}, {"r"}, 2),
             ([], []),
         )
 
     def test_duplicate_physical_copy_of_hash_is_not_double_pinned(self):
         a = self.page("same")
         b = self.page("same")
-        self.retention.retain_shared_prefix_blocks(
-            [(a, "same"), (b, "same")], gpu_completed=True
-        )
+        self.retention.retain_shared_prefix_blocks([(a, "same"), (b, "same")], gpu_completed=True)
         self.assertEqual(a.ref_cnt, 2)
         self.assertEqual(b.ref_cnt, 1)
         self.assertEqual(len(self.retention.by_id), 1)

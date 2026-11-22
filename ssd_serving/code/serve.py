@@ -43,7 +43,7 @@ def validate_serving_inputs(serving_settings):
         raise ValueError("Declare policy clock")
     requests = serving_settings["requests"]
     if list(requests) != [
-        f"row{i}" for i in range(len(requests))
+        f"row{request_index}" for request_index in range(len(requests))
     ] or not 0 <= serving_settings["warmups"] < len(requests):
         raise ValueError("Ordered request IDs required")
     measured = list(requests.values())[serving_settings["warmups"] :]
@@ -51,8 +51,7 @@ def validate_serving_inputs(serving_settings):
     if (
         any(
             not math.isfinite(arrival_time)
-            for arrival_time in arrival_times
-            + [serving_settings["arrival_window_seconds"]]
+            for arrival_time in arrival_times + [serving_settings["arrival_window_seconds"]]
         )
         or arrival_times != sorted(arrival_times)
         or arrival_times[0] < 0
@@ -125,10 +124,10 @@ def run_ssd_serving_example(serving_inputs_file, output_directory):
     aliases = {}
     pending = set()
 
-    def submit(i, scheduled_ns):
-        key, request_record = requests[i]
+    def submit(request_index, scheduled_ns):
+        key, request_record = requests[request_index]
         state[key] = dict(
-            row=i,
+            row=request_index,
             expected_output_tokens=output_token_count,
             generated_tokens=0,
             scheduled_ns=scheduled_ns,
@@ -136,7 +135,7 @@ def run_ssd_serving_example(serving_inputs_file, output_directory):
             first_token_ns=None,
             last_token_ns=None,
             output_ids=[],
-            warmup=i < serving_settings["warmups"],
+            warmup=request_index < serving_settings["warmups"],
         )
         internal = engine.llm_engine.add_request(
             key, dict(prompt_token_ids=request_record["tokens"]), sampling
@@ -150,11 +149,11 @@ def run_ssd_serving_example(serving_inputs_file, output_directory):
         for result in outputs:
             key = aliases[result.request_id]
             request_record = state[key]
-            output_token_ids = [t for x in result.outputs for t in x.token_ids]
+            output_token_ids = [
+                token_id for output in result.outputs for token_id in output.token_ids
+            ]
             if output_token_ids:
-                request_record["first_token_ns"] = (
-                    request_record["first_token_ns"] or now
-                )
+                request_record["first_token_ns"] = request_record["first_token_ns"] or now
                 request_record["last_token_ns"] = now
                 request_record["output_ids"].extend(output_token_ids)
                 request_record["generated_tokens"] += len(output_token_ids)
@@ -168,25 +167,23 @@ def run_ssd_serving_example(serving_inputs_file, output_directory):
                 pending.remove(key)
 
     try:
-        for i in range(serving_settings["warmups"]):
-            submit(i, time.monotonic_ns())
+        for request_index in range(serving_settings["warmups"]):
+            submit(request_index, time.monotonic_ns())
             while pending:
                 advance_engine_and_record_outputs()
         start = time.monotonic_ns()
-        i = serving_settings["warmups"]
-        while pending or i < len(requests):
-            while i < len(requests):
-                scheduled_ns = start + round(requests[i][1]["arrival_seconds"] * 1e9)
+        request_index = serving_settings["warmups"]
+        while pending or request_index < len(requests):
+            while request_index < len(requests):
+                scheduled_ns = start + round(requests[request_index][1]["arrival_seconds"] * 1e9)
                 if scheduled_ns > time.monotonic_ns():
                     break
-                submit(i, scheduled_ns)
-                i += 1
+                submit(request_index, scheduled_ns)
+                request_index += 1
             if pending:
                 advance_engine_and_record_outputs()
-            elif i < len(requests):
-                time.sleep(
-                    min(0.02, max(0, (scheduled_ns - time.monotonic_ns()) / 1e9))
-                )
+            elif request_index < len(requests):
+                time.sleep(min(0.02, max(0, (scheduled_ns - time.monotonic_ns()) / 1e9)))
     finally:
         engine.llm_engine.engine_core.shutdown()
     rows = list(state.values())
@@ -208,8 +205,8 @@ def run_ssd_serving_example(serving_inputs_file, output_directory):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("settings", type=Path)
-    ap.add_argument("output", type=Path)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("settings", type=Path)
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args()
     run_ssd_serving_example(args.settings, args.output)

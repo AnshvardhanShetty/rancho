@@ -2,7 +2,7 @@
 
 import array, math, struct
 from pathlib import Path
-from controllers_reference import Wallet, Observation, seeded_tie_break_value
+from reference_write_controller import Wallet, Observation, seeded_tie_break_value
 
 DECISION_RECORD_LAYOUT = struct.Struct("<qqqqqddddqqq")
 REUSE_HISTORY_RECORD_LAYOUT = struct.Struct("<qq")
@@ -11,9 +11,7 @@ OFFER_HISTORY_RECORD_LAYOUT = struct.Struct("<qqqq")
 
 def scores_match(a, b):
     return a == b or (
-        math.isfinite(a)
-        and math.isfinite(b)
-        and math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-12)
+        math.isfinite(a) and math.isfinite(b) and math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-12)
     )
 
 
@@ -26,16 +24,14 @@ def compute_effective_cutoff(threshold, have, spent, budget, now, split, end, en
     )
 
 
-class BandWallet(Wallet):
+class CostBandWriteController(Wallet):
     """Compute rank boundaries independently, then compare every live decision."""
 
     def update_admission_cutoffs(self, now):
         """Rebuild the score cutoff for each group of similar write sizes"""
         super().update_admission_cutoffs(now)
         priced = [
-            offer
-            for offer in self.offer_history
-            if offer.cost > 0 and math.isfinite(offer.score)
+            offer for offer in self.offer_history if offer.cost > 0 and math.isfinite(offer.score)
         ]
         if len(priced) < 100:
             return
@@ -54,8 +50,7 @@ class BandWallet(Wallet):
             1.0,
             max(
                 0.0,
-                float(self.current_spending_limit - self.blocks_written)
-                / max(1e-9, demand),
+                float(self.current_spending_limit - self.blocks_written) / max(1e-9, demand),
             ),
         )
         groups = {}
@@ -105,7 +100,7 @@ def audit_admission_decisions(
     native = Path(native)
     density = array.array("d")
     density.frombytes(Path(density_path).read_bytes())
-    reference_controller = (BandWallet if banded else Wallet)(
+    reference_controller = (CostBandWriteController if banded else Wallet)(
         "hbf", budget, seed, end_us=end, release_us=end, reserve=0
     )
     reasons = [0] * 8
@@ -159,9 +154,7 @@ def audit_admission_decisions(
             previous_request_row, previous_arrival_us = row, time
             reference_controller.release_reserved_budget_if_due(time)
             assert predicted_reuse == density[row]
-            expected = (
-                density[row] * float(distinct) / float(cost) if cost else math.inf
-            )
+            expected = density[row] * float(distinct) / float(cost) if cost else math.inf
             boost = 1 + float(past) / float(distinct) if bonus and distinct else 1
             if soft and cost and boost > 1:
                 counts["changed_score"] += 1
@@ -187,8 +180,7 @@ def audit_admission_decisions(
                 cost
                 and reference_controller.cutoff_ready
                 and half_behind
-                and reference_controller.blocks_written * (end - split)
-                < budget * (time - split)
+                and reference_controller.blocks_written * (end - split) < budget * (time - split)
             ):
                 discounted_offers += 1
                 cutoff = compute_effective_cutoff(
@@ -229,10 +221,7 @@ def audit_admission_decisions(
                                     if expected > cutoff
                                     or (
                                         expected == cutoff
-                                        and seeded_tie_break_value(
-                                            row, seed ^ 0x5BF03635
-                                        )
-                                        < coin
+                                        and seeded_tie_break_value(row, seed ^ 0x5BF03635) < coin
                                     )
                                     else 5
                                 )
@@ -276,18 +265,13 @@ def audit_admission_decisions(
                 why,
             )
             if partition:
-                assert (
-                    0 <= regular_spend <= budget - reserve
-                    and 0 <= random_spend <= reserve
-                )
+                assert 0 <= regular_spend <= budget - reserve and 0 <= random_spend <= reserve
             reasons[why] += 1
             count += 1
             boost_sum += boost
             boost_max = max(boost_max, boost)
             boosted += boost > 1
-            reference_controller._record_offer(
-                Observation(row, expected, cost, time, distinct)
-            )
+            reference_controller._record_offer(Observation(row, expected, cost, time, distinct))
             if accept:
                 reference_controller.blocks_written += cost
                 if count <= 1000:
@@ -297,9 +281,7 @@ def audit_admission_decisions(
             assert reference_controller.blocks_written <= budget
         assert not reuse_history_file.read(1)
     history = list(
-        OFFER_HISTORY_RECORD_LAYOUT.iter_unpack(
-            (native / "final_history.bin").read_bytes()
-        )
+        OFFER_HISTORY_RECORD_LAYOUT.iter_unpack((native / "final_history.bin").read_bytes())
     )
     assert history == [
         (v.event_id, v.distinct, v.cost, v.time_us)
