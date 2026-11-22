@@ -39,8 +39,8 @@ def validate_serving_inputs(serving_settings):
         > 0
     ):
         raise ValueError("Empty serving geometry")
-    if serving_settings["clock"] not in ("monotonic", "request_logical"):
-        raise ValueError("Declare policy clock")
+    if type(serving_settings["save_to_ssd"]) != bool:
+        raise ValueError("save_to_ssd must be true or false")
     requests = serving_settings["requests"]
     if list(requests) != [
         f"row{request_index}" for request_index in range(len(requests))
@@ -63,12 +63,6 @@ def validate_serving_inputs(serving_settings):
             "output_tokens"
         ] > min(serving_settings["max_model_len"], 16 * serving_settings["hbm_pages"]):
             raise ValueError("Request cannot fit")
-        if not isinstance(request["features"], dict):
-            raise ValueError("Request feature mapping required")
-        if serving_settings["clock"] == "request_logical" and not math.isfinite(
-            request["policy_seconds"]
-        ):
-            raise ValueError("Invalid logical time")
 
 
 def run_ssd_serving_example(serving_inputs_file, output_directory):

@@ -1,15 +1,12 @@
 """Save full KV blocks to SSD before vLLM reuses their GPU slots
 
-The scheduler records block history and asks the policy what to keep
+The scheduler tracks fully computed blocks and saves them within the write budget
 The connector stages cache hits before allocation can reuse their old slots
 Saved blocks are copied back before the model reads them
 """
 
-import importlib
 import json
 import os
-import re
-import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -21,14 +18,11 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.kv_cache_utils import get_block_hash, get_group_id
 from native_pages import NativeCachePages
 from ssd_storage import Storage
-from ssd_policy import Offer
 
 
 def read_serving_settings():
-    """Read the plan supplied by the launcher."""
-    settings_file = os.environ.get("RANCHO_SSD_SERVING_SETTINGS")
-    if settings_file is None:
-        settings_file = os.environ["RANCHO_SSD_PLAN"]
+    """Read the SSD demo settings supplied by the launcher."""
+    settings_file = os.environ["RANCHO_SSD_SERVING_SETTINGS"]
     return json.loads(Path(settings_file).read_text())
 
 
@@ -59,19 +53,11 @@ class Connector(KVConnectorBase_V1):
         self.pending = {}
         self.destinations = {}
         if role == KVConnectorRole.SCHEDULER:
-            module, name = self.serving_settings["policy_factory"].split(":")
-            self.decide = getattr(importlib.import_module(module), name)(
-                self.serving_settings["policy_settings"]
-            )
-            self.clock_start = time.monotonic()
-            self.history = {}
-            self.resident = {}
-            self.request_touched = {}
+            self.resident_block_keys = {}
             self.evictions = self.absent = self.retained = self.rejected = self.restored = (
                 self.local_islands
             ) = 0
             self.new_pages = set()
-            self.now = 0.0
 
     @property
     def requires_kv_delivery(self):
@@ -119,20 +105,8 @@ class Connector(KVConnectorBase_V1):
             store.close()
             store = None
 
-    def record_allocation_start(self, request):
-        """Select the request metadata and advance the policy clock."""
-        self.trace_request_id = re.sub(r"-[0-9a-f]{8}$", "", request.request_id)
-        info = self.serving_settings["requests"][self.trace_request_id]
-        if self.serving_settings["clock"] == "monotonic":
-            self.now = time.monotonic() - self.clock_start
-        else:
-            self.now = max(self.now, info["policy_seconds"])
-        return info
-
-    def record_request_block_accesses(self, request, manager):
-        """Record one access per block per request."""
-        request_info = self.serving_settings["requests"][self.trace_request_id]
-        touched = self.request_touched.setdefault(request.request_id, set())
+    def track_resident_blocks(self, request, manager):
+        """Track each cached prompt block and protect slots allocated this step."""
         blocks = manager.get_blocks(request.request_id).blocks[0]
         for block, block_hash in zip(
             blocks, request.block_hashes[: len(request.prompt_token_ids) // 16]
@@ -140,36 +114,18 @@ class Connector(KVConnectorBase_V1):
             key = bytes(block_hash)
             if block.block_hash is None or bytes(get_block_hash(block.block_hash)) != key:
                 continue
-            page = block.block_id
-            acquired = page not in self.resident
-            if acquired:
-                self.resident[page] = (key, self.now)
-                self.new_pages.add(page)
-            if self.resident[page][0] != key:
+            page_id = block.block_id
+            if page_id not in self.resident_block_keys:
+                self.resident_block_keys[page_id] = key
+                self.new_pages.add(page_id)
+            if self.resident_block_keys[page_id] != key:
                 raise RuntimeError("Unobserved HBM reuse")
-            if key in touched:
-                if acquired:
-                    self.history[key].update(
-                        last=self.now,
-                        rid=self.trace_request_id,
-                        features=request_info["features"],
-                    )
-                continue
-            touched.add(key)
-            state = self.history.setdefault(key, dict(count=0, evictions=0))
-            state.update(
-                count=state["count"] + 1,
-                last=self.now,
-                rid=self.trace_request_id,
-                features=request_info["features"],
-            )
 
     def handle_hbm_eviction(self, block):
-        """Ask whether to save an unused GPU block before its slot is reused."""
-        resident = self.resident.pop(block.block_id, None)
-        if resident is None:
+        """Save an unused GPU block if SSD writes are enabled and affordable."""
+        key = self.resident_block_keys.pop(block.block_id, None)
+        if key is None:
             return
-        key, born = resident
         assert (
             block.ref_cnt == 0
             and block.block_hash
@@ -178,35 +134,17 @@ class Connector(KVConnectorBase_V1):
         )
         if block.block_id in self.new_pages:
             raise RuntimeError("Attempted to evict unfinished KV in the same scheduler step")
-        block_history = self.history[key]
-        prior_evictions = block_history["evictions"]
-        block_history["evictions"] += 1
         self.evictions += 1
         if key in store.slots:
             store.slots.move_to_end(key)
             self.retained += 1
             return
-        offer = Offer(
-            key,
-            self.evictions - 1,
-            self.absent,
-            self.now,
-            store.page_bytes,
-            store.writes,
-            self.serving_settings["write_budget_pages"],
-            store.capacity,
-            prior_evictions,
-            block_history["count"],
-            self.now - born,
-            self.now - block_history["last"],
-            block_history["rid"],
-            dict(block_history["features"]),
-        )
         self.absent += 1
-        decision = self.decide(offer)
-        if type(decision) != bool:
-            raise TypeError("Policy must return bool")
-        if decision and store.capacity and store.writes < offer.write_budget_pages:
+        if (
+            self.serving_settings["save_to_ssd"]
+            and store.capacity
+            and store.writes < self.serving_settings["write_budget_pages"]
+        ):
             store.write_block_to_ssd(key, block.block_id)
         else:
             self.rejected += 1
@@ -304,7 +242,7 @@ class SSDScheduler(Scheduler):
         evict = connector.pool._maybe_evict_cached_block
 
         def before_reuse(block):
-            if block.block_id in connector.resident:
+            if block.block_id in connector.resident_block_keys:
                 connector.handle_hbm_eviction(block)
             return evict(block)
 
@@ -312,11 +250,10 @@ class SSDScheduler(Scheduler):
         allocate = manager.allocate_slots
 
         def tracked_allocate(request, *args, **kwargs):
-            connector.record_allocation_start(request)
             connector.stage_cached_blocks_before_allocation(request)
             result = allocate(request, *args, **kwargs)
             if result is not None:
-                connector.record_request_block_accesses(request, manager)
+                connector.track_resident_blocks(request, manager)
             else:
                 connector.staged = []
             return result
@@ -336,9 +273,6 @@ class SSDScheduler(Scheduler):
         """Finish the step and report changed storage counters."""
         result = super().update_from_output(scheduler_output, model_runner_output)
         connector = self.connector
-        for request_id in list(connector.request_touched):
-            if request_id not in self.requests:
-                del connector.request_touched[request_id]
         counters = dict(
             written_pages=store.writes,
             read_pages=store.reads,
