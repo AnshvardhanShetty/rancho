@@ -1,11 +1,14 @@
 """Convert a JSONL trace into the arrays used by the predictor and simulator.
 
+Read the four numbered sections in preparation order:
 1. parse_request checks one request after its JSON line has been read.
-2. read_requests keeps the selected model and numbers the sessions. It
+2. read_requests repeats that check, keeps the selected model and numbers sessions. It
    saves the input-order block IDs to disk for the sorting pass.
 3. write_sorted_requests saves the same requests in arrival order in arrival_order_*
    files. Block order and repeated IDs stay the same within each request.
-4. prepare_trace runs both passes and records the file checks.
+4. prepare_trace calls those steps and records the file checks.
+
+The request container and file helpers are below the four main sections.
 
 arrival_order_to_input_rows.i64 maps sorted requests back to their input rows.
 """
@@ -32,28 +35,6 @@ TEST_END_US = 7 * 86400 * 1_000_000  # End of day 7, excluded.
 MAX_SIGNED_INT32 = 2**31 - 1
 ARRIVAL_ORDER_PREFIX = "arrival_order"
 ARRIVAL_ORDER_TO_INPUT_ROWS = "arrival_order_to_input_rows.i64"
-
-
-def trace_array_paths(stream_prefix):
-    """Return the block count, session, time and block ID paths in that order."""
-    return (
-        Path(f"{stream_prefix}_block_counts.i32"),
-        Path(f"{stream_prefix}_session_numbers.i32"),
-        Path(f"{stream_prefix}_timestamps_us.i64"),
-        Path(f"{stream_prefix}_block_ids.i32"),
-    )
-
-
-# One container for all requests; position i in every array describes request i.
-@dataclass
-class InputOrderRequests:
-    """Hold the request arrays in their original file order."""
-
-    block_counts: np.ndarray
-    session_codes: np.ndarray
-    arrival_seconds: np.ndarray
-    input_order_block_ids_path: Path
-    input_summary: dict
 
 
 # 1. Check one decoded request; skip other models and reject invalid values.
@@ -302,7 +283,32 @@ def prepare_trace(trace_path, output_directory):
     return trace_manifest
 
 
-# File helpers: check file contents and write progress/summary records.
+# Supporting definitions used by the preparation steps above.
+# read_requests() returns this container; one position describes the same request
+# in each array.
+@dataclass
+class InputOrderRequests:
+    """Hold the request arrays in their original file order."""
+
+    block_counts: np.ndarray
+    session_codes: np.ndarray
+    arrival_seconds: np.ndarray
+    input_order_block_ids_path: Path
+    input_summary: dict
+
+
+# Name the four output files. This does not create or read them.
+def trace_array_paths(stream_prefix):
+    """Return the block count, session, time and block ID paths in that order."""
+    return (
+        Path(f"{stream_prefix}_block_counts.i32"),
+        Path(f"{stream_prefix}_session_numbers.i32"),
+        Path(f"{stream_prefix}_timestamps_us.i64"),
+        Path(f"{stream_prefix}_block_ids.i32"),
+    )
+
+
+# Check file contents and write progress/summary records.
 def file_fingerprint(path):
     """Calculate a file hash for later input checks."""
     checksum = hashlib.sha256()
